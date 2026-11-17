@@ -103,6 +103,66 @@ def test_bridge_reports_missing_zeron_command_permission():
     assert "GRAPHIMO_COMMAND_DENIAL_HANDLED" in result.stdout
 
 
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+@pytest.mark.parametrize("mode", ["sessions_object", "sessions_array", "sessions_wrapped"])
+def test_sessions_accepts_marimo_object_and_common_wrappers(mode: str):
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", mode],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    marker = "GRAPHIMO_SESSIONS:"
+    encoded = next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker))
+    sessions = json.loads(encoded)
+    assert len(sessions) == 1
+    assert sessions[0]["path"] == "/tmp/graphimo-live.py"
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_sessions_strips_editor_query_and_fragment_from_api_url():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "sessions_url"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GRAPHIMO_REQUEST_URL:http://127.0.0.1:2718/api/sessions" in result.stdout
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+@pytest.mark.parametrize(
+    ("mode", "diagnostic"),
+    [
+        ("sessions_empty", "empty"),
+        ("sessions_html", "HTML or markup"),
+        ("sessions_null", "JSON null"),
+    ],
+)
+def test_sessions_error_includes_safe_http_diagnostics(mode: str, diagnostic: str):
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", mode],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    marker = "GRAPHIMO_SESSION_ERROR:"
+    message = next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker))
+    assert diagnostic in message
+    assert "HTTP 200" in message
+    assert "application/json" in message or "text/html" in message
+    assert "secret" not in message.lower()
+
+
 @pytest.mark.skipif(
     not LUAU or not MARIMO_PYTHON,
     reason="set GRAPHIMO_MARIMO_PYTHON and install the Luau CLI to run live bridge tests",

@@ -56,7 +56,8 @@ local function auth_config(token)
 end
 
 local function api_url(base)
-	return string.gsub(base, "/+$", "")
+	local path = string.match(base or "", "^[^?#]*") or ""
+	return string.gsub(path, "/+$", "")
 end
 
 function Bridge.sessions(zeron, base, token)
@@ -64,14 +65,33 @@ function Bridge.sessions(zeron, base, token)
 	local args = { "-fsS", "--connect-timeout", "3", "-H", "Accept: application/json" }
 	local config = auth_config(token)
 	if config ~= "" then table.insert(args, "--config"); table.insert(args, "-") end
+	table.insert(args, "-w")
+	table.insert(args, "\nGRAPHIMO_HTTP_META:%{http_code}:%{content_type}")
 	table.insert(args, base .. "/api/sessions")
 	return curl(zeron, args, config, 8):after(function(response)
-		local ok, data = pcall(ui.json.decode, response.stdout or "")
-		if not ok or type(data) ~= "table" then error("Could not read active marimo sessions") end
+		local output = if type(response.stdout) == "string" then response.stdout else ""
+		local marker = string.find(output, "\nGRAPHIMO_HTTP_META:", 1, true)
+		local body, http_status, content_type = output, "unknown", "unknown"
+		if marker then
+			body = string.sub(output, 1, marker - 1)
+			local meta = string.sub(output, marker + #"\nGRAPHIMO_HTTP_META:")
+			http_status, content_type = string.match(meta, "^(%d+):([^\r\n]*)")
+			http_status, content_type = http_status or "unknown", content_type or "unknown"
+		end
+		body = string.gsub(body, "[\r\n]+$", "")
+		local ok, data = pcall(ui.json.decode, body)
+		if not ok or type(data) ~= "table" then
+			local body_kind = if string.match(body, "^%s*$") then "empty" elseif string.match(body, "^%s*<") then "HTML or markup" elseif string.match(body, "^%s*null%s*$") then "JSON null" else "non-object JSON or malformed text"
+			error("Could not parse marimo /api/sessions: " .. body_kind .. "; HTTP " .. http_status .. "; Content-Type " .. content_type .. "; body " .. tostring(#body) .. " bytes")
+		end
+		local source = if type(data.sessions) == "table" then data.sessions else data
 		local sessions = {}
-		for session_id, session in data do
-			if type(session_id) == "string" and type(session) == "table" then
-				table.insert(sessions, { session_id = session_id, path = session.path or session.filename or "" })
+		for key, session in source do
+			if type(session) == "table" then
+				local session_id = if type(key) == "string" then key else (session.session_id or session.id)
+				if type(session_id) == "string" and session_id ~= "" then
+					table.insert(sessions, { session_id = session_id, path = session.path or session.filename or "" })
+				end
 			end
 		end
 		table.sort(sessions, function(a, b) return a.path < b.path end)

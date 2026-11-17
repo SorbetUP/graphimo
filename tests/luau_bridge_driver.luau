@@ -40,6 +40,12 @@ end
 local mode, notebook_path, from_cell_id, variable, to_cell_id, input_ref, cell_id = ...
 mode = mode or "inspect"
 notebook_path = notebook_path or "/tmp/graphimo-live.py"
+local session_object = { s_live = { session_id = "stable-live", filename = notebook_path, path = notebook_path } }
+local session_array = { { session_id = "s_array", filename = notebook_path, path = notebook_path } }
+local session_wrapped = { sessions = session_object }
+local session_object_json = json_encode(session_object)
+local session_array_json = json_encode(session_array)
+local session_wrapped_json = json_encode(session_wrapped)
 local capture = 0
 local captured_codes = {}
 local snapshot = {
@@ -69,9 +75,8 @@ ui = {
 		encode = json_encode,
 		decode = function(value)
 			if json_values[value] then return json_values[value] end
-			if value == "SESSION_RESPONSE" then
-				return { s_live = { session_id = "sess-live", filename = notebook_path, path = notebook_path } }
-			elseif value == "STDOUT_RESPONSE" then
+			if value == "null" then return nil end
+			if value == "STDOUT_RESPONSE" then
 				local result
 				if mode == "inspect" then result = snapshot
 				elseif mode == "list_components" then result = { ok = true, components = components }
@@ -110,7 +115,14 @@ local zeron = {}
 function zeron.run(_program, args)
 	local destination = args[#args]
 	if string.find(destination, "/api/sessions", 1, true) then
-		return setmetatable({ value = { stdout = "SESSION_RESPONSE" } }, Promise)
+		local body, content_type = session_object_json, "application/json"
+		if mode == "sessions_array" then body = session_array_json
+		elseif mode == "sessions_wrapped" then body = session_wrapped_json
+		elseif mode == "sessions_html" then body, content_type = "<!doctype html><html></html>", "text/html; charset=utf-8"
+		elseif mode == "sessions_empty" then body = ""
+		elseif mode == "sessions_null" then body = "null" end
+		if mode == "sessions_url" then print("GRAPHIMO_REQUEST_URL:" .. destination) end
+		return setmetatable({ value = { status = 0, stdout = body .. "\nGRAPHIMO_HTTP_META:200:" .. content_type } }, Promise)
 	end
 	-- The actual JSON encoder is intentionally opaque to this host shim. The
 	-- generated request body is the final argument after "-d"; code is captured
@@ -161,6 +173,9 @@ if mode == "source_safety" then
 	assert(not ok and string.find(tostring(reason), "commands permission", 1, true), tostring(reason))
 	print("GRAPHIMO_COMMAND_DENIAL_HANDLED")
 	result = true
+elseif string.sub(mode, 1, 9) == "sessions_" then
+	local base = if mode == "sessions_url" then "http://127.0.0.1:2718/?file=notebook.py#cell-1" else "http://127.0.0.1:2718"
+	result = Bridge.sessions(zeron, base, "")
 elseif mode == "inspect" then
 	result = Bridge.inspect(zeron, "http://127.0.0.1:2718", "", "s_live")
 elseif mode == "list_components" then
@@ -175,4 +190,9 @@ else
 	error("unknown test mode: " .. tostring(mode))
 end
 
-if type(result) == "table" and result.error then error(tostring(result.error)) end
+if type(result) == "table" and result.error then
+	if string.sub(mode, 1, 9) == "sessions_" then print("GRAPHIMO_SESSION_ERROR:" .. tostring(result.error))
+	else error(tostring(result.error)) end
+elseif string.sub(mode, 1, 9) == "sessions_" then
+	print("GRAPHIMO_SESSIONS:" .. json_encode(result.value))
+end
