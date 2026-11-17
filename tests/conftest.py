@@ -28,6 +28,8 @@ class FakeMarimoPort:
                  "children": [], "status": "idle", "output": None},
                 {"id": "empty", "name": None, "source": "", "defs": [], "refs": [],
                  "parents": [], "children": [], "status": "unknown", "output": None},
+                {"id": "markdown", "name": None, "source": "# Notes", "defs": [], "refs": [],
+                 "parents": [], "children": [], "status": "idle", "output": None},
             ],
             "edges": [
                 {"source_cell_id": "load", "target_cell_id": "normalize", "variable": "data"},

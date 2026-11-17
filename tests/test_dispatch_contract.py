@@ -17,7 +17,9 @@ def test_inspect_projects_all_marimo_cells_and_current_edges(host):
 
     assert result["ok"] is True
     assert result["notebook"] == {"path": "fixture.py", "session_id": "fixture"}
-    assert [cell["id"] for cell in result["cells"]] == ["load", "normalize", "arbitrary", "empty"]
+    assert [cell["id"] for cell in result["cells"]] == [
+        "load", "normalize", "arbitrary", "empty", "markdown"
+    ]
     arbitrary = next(cell for cell in result["cells"] if cell["id"] == "arbitrary")
     assert arbitrary["source"] == "x = complicated_custom_code(processed)"
     assert arbitrary["defs"] == ["x"]
@@ -122,8 +124,12 @@ def test_add_component_inserts_readable_python_with_requested_bindings(project, 
     assignment = next(node for node in tree.body if isinstance(node, ast.Assign))
     assert [target.id for target in assignment.targets if isinstance(target, ast.Name)] == ["normalized"]
     assert isinstance(assignment.value, ast.Call)
-    assert isinstance(assignment.value.func, ast.Name)
-    assert assignment.value.func.id == "normalize"
+    called_name = (
+        assignment.value.func.id
+        if isinstance(assignment.value.func, ast.Name)
+        else assignment.value.func.attr
+    )
+    assert called_name == "normalize"
     names = {node.id for node in ast.walk(assignment.value) if isinstance(node, ast.Name)}
     assert "data" in names
     assert any(isinstance(node, ast.Constant) and node.value == 0.25 for node in ast.walk(assignment.value))
@@ -150,7 +156,8 @@ def test_add_component_can_select_one_callable_from_a_multi_export_package(proje
         if isinstance(node, ast.Assign)
     )
     assert isinstance(expression, ast.Call)
-    assert isinstance(expression.func, ast.Name) and expression.func.id == "encode"
+    called_name = expression.func.id if isinstance(expression.func, ast.Name) else expression.func.attr
+    assert called_name == "encode"
     assert host.marimo.added == [("fixture", result["source"])]
 
 
