@@ -93,6 +93,7 @@ local Page = ui.component(function()
 	local session_id = ui.use_state(saved.session_id or "")
 	local sessions = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
+	local visible_cell_ids = ui.use_state({})
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
 	local component_id = ui.use_state("")
@@ -135,6 +136,7 @@ local Page = ui.component(function()
 			end
 			if session_id:peek() == "" then
 				snapshot:set({ notebook = {}, cells = {}, edges = {} })
+				visible_cell_ids:set({})
 				positions:set({}); components:set({}); selected:set("")
 			end
 			notice:set(if #items == 0 then "No active marimo notebooks found" else "Found " .. tostring(#items) .. " active notebook(s)")
@@ -151,6 +153,9 @@ local Page = ui.component(function()
 	refresh_graph = function()
 		Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek()):after(function(value)
 			snapshot:set(value)
+			local ids = {}
+			for _, cell in value.cells or {} do table.insert(ids, cell.id) end
+			visible_cell_ids:set(ids)
 			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
 			local path = value.notebook.path or ""
 			local function apply_layout(saved_positions)
@@ -198,14 +203,13 @@ local Page = ui.component(function()
 		if value ~= "" then refresh_graph() end
 	end
 
-	local function cell_ids()
-		local ids = {}
-		for _, cell in snapshot:get().cells or {} do table.insert(ids, cell.id) end
-		return ids
-	end
-
 	local function card(id)
 		local function cell() return Canvas.node(snapshot:get().cells or {}, id) end
+		local function ports(names, prefix, suffix)
+			local labels = {}
+			for _, name in names or {} do table.insert(labels, prefix .. name .. suffix) end
+			return table.concat(labels, "\n")
+		end
 		local style = Glass.style({
 			absolute = true,
 			left = function() local p = positions:get()[id] or {}; return pan_x:get() + (p.x or 0) * zoom:get() end,
@@ -231,15 +235,11 @@ local Page = ui.component(function()
 			end, style = "caption", tone = "secondary", wrap = true },
 			ui.row { w_full = true, grow = 1, items = "stretch", gap = "$space.2",
 				ui.column { w = 82, gap = "$space.1", justify = "start",
-					ui.each(function() local value = cell(); return value and value.refs or {} end, function(ref)
-						return Text { function() return "● " .. ref end, style = "caption", tone = "secondary", wrap = true }
-					end, { key = function(ref) return ref end }),
+					Text { function() local value = cell(); return ports(value and value.refs, "● ", "") end, style = "caption", tone = "secondary", wrap = true },
 				},
 				ui.div { grow = 1 },
 				ui.column { w = 82, gap = "$space.1", items = "end",
-					ui.each(function() local value = cell(); return value and value.defs or {} end, function(def)
-						return Text { function() return def .. " ●" end, style = "caption", tone = "primary", wrap = true }
-					end, { key = function(def) return def end }),
+					Text { function() local value = cell(); return ports(value and value.defs, "", " ●") end, style = "caption", tone = "primary", wrap = true },
 				},
 			},
 		})
@@ -445,7 +445,7 @@ local Page = ui.component(function()
 				Canvas.draw_edges(c, positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
 			end, pointer_events = "none" },
 			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
-				ui.each(cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
+				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
 			},
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
 				on_mount = function() ui.after(150, refresh_sessions) end,
