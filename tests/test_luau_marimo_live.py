@@ -1,0 +1,277 @@
+"""Optional integration of the production Luau bridge with pinned marimo."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DRIVER = ROOT / "tests" / "luau_bridge_driver.luau"
+LUAU = shutil.which("luau")
+MARIMO_PYTHON = os.environ.get("GRAPHIMO_MARIMO_PYTHON")
+
+def _port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _request(url: str, *, session: str | None = None, code: str | None = None) -> str:
+    headers = {"Accept": "text/event-stream"}
+    data = None
+    method = "GET"
+    if code is not None:
+        method = "POST"
+        data = json.dumps({"code": code}).encode()
+        headers["Content-Type"] = "application/json"
+    if session:
+        headers["Marimo-Session-Id"] = session
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=40) as response:
+        return response.read().decode()
+
+
+def _execute(base: str, session: str, code: str) -> str:
+    response = _request(f"{base}/api/kernel/execute", session=session, code=code)
+    values = []
+    event = None
+    for line in response.splitlines():
+        if line.startswith("event:"):
+            event = line.partition(":")[2].strip()
+        elif line.startswith("data:") and event == "stdout":
+            values.append(json.loads(line.partition(":")[2].strip()).get("data", ""))
+    joined = "".join(values)
+    marker = "GRAPHIMO_RESULT:"
+    start = joined.find(marker)
+    if start < 0:
+        raise AssertionError(f"marimo code-mode response had no Graphimo result: {joined!r}")
+    return joined[start + len(marker):].splitlines()[0]
+
+
+def _bridge_code(mode: str, *args: str) -> list[str]:
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", mode, *args],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode:
+        raise AssertionError(f"Luau bridge shim failed:\n{result.stdout}\n{result.stderr}")
+    blocks = re.findall(r"GRAPHIMO_CODE_BEGIN\n(.*?)\nGRAPHIMO_CODE_END", result.stdout, re.S)
+    assert blocks, result.stdout
+    return blocks
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_bridge_does_not_shift_later_optional_arguments_positionally():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "source_safety"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert ".normalize(std=saved_std)" in result.stdout
+    assert ".normalize(saved_std)" not in result.stdout
+
+
+@pytest.mark.skipif(
+    not LUAU or not MARIMO_PYTHON,
+    reason="set GRAPHIMO_MARIMO_PYTHON and install the Luau CLI to run live bridge tests",
+)
+def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
+    """Exercise inspect, component discovery/insertion, connect, and run dispatch."""
+    notebook = tmp_path / "graphimo_live.py"
+    notebook.write_text(
+        "import marimo\n"
+        "__generated_with = \"0.25.2\"\n"
+        "app = marimo.App()\n\n"
+        "@app.cell\n"
+        "def source():\n"
+        "    data = 3\n"
+        "    transform = lambda value: value * 2\n"
+        "    return data, transform\n\n"
+        "@app.cell\n"
+        "def prepare(data):\n"
+        "    processed = data + 1\n"
+        "    return (processed,)\n\n"
+        "@app.cell\n"
+        "def predict(processed, transform):\n"
+        "    prediction = transform(processed)\n"
+        "    return (prediction,)\n\n"
+        "if __name__ == \"__main__\":\n"
+        "    app.run()\n",
+        encoding="utf-8",
+    )
+    component_dir = tmp_path / "components"
+    component_dir.mkdir()
+    (component_dir / "normalize.py").write_text(
+        "def normalize(image):\n    return image + 1\n", encoding="utf-8"
+    )
+
+    port = _port()
+    base = f"http://127.0.0.1:{port}"
+    server_log = (tmp_path / "marimo.log").open("w", encoding="utf-8")
+    server = subprocess.Popen(
+        [
+            MARIMO_PYTHON,
+            "-m",
+            "marimo",
+            "edit",
+            str(notebook),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--headless",
+            "--no-token",
+            "--no-sandbox",
+            "--skip-update-check",
+        ],
+        cwd=tmp_path,
+        stdout=server_log,
+        stderr=subprocess.STDOUT,
+    )
+    websocket = None
+    try:
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline and server.poll() is None:
+            try:
+                _request(base)
+                break
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.2)
+        from websockets.sync.client import connect
+
+        websocket = connect(f"ws://127.0.0.1:{port}/ws?session_id=graphimo-live-test")
+        while time.monotonic() < deadline:
+            message = json.loads(websocket.recv(timeout=max(0.1, deadline - time.monotonic())))
+            if message.get("op") == "kernel-ready":
+                break
+        else:
+            raise AssertionError("marimo websocket did not report kernel-ready")
+
+        session = None
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                server_log.flush()
+                raise AssertionError(f"marimo exited:\n{(tmp_path / 'marimo.log').read_text()}")
+            try:
+                _request(base)
+                sessions = json.loads(_request(f"{base}/api/sessions"))
+                if sessions:
+                    session = next(iter(sessions))
+                    break
+            except (OSError, urllib.error.URLError, json.JSONDecodeError):
+                time.sleep(0.2)
+        assert session, f"marimo session did not start:\n{(tmp_path / 'marimo.log').read_text()}"
+
+        initialized = '''import json
+import marimo._code_mode as cm
+async with cm.get_context() as ctx:
+    for cell in list(ctx.cells): ctx.run_cell(cell.id)
+print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
+'''
+        assert json.loads(_execute(base, session, initialized))["ok"] is True
+        notebook_path = str(notebook)
+        inspect_code = _bridge_code("inspect", notebook_path)[0]
+        snapshot = None
+        initialization_deadline = time.monotonic() + 10
+        while time.monotonic() < initialization_deadline:
+            snapshot = json.loads(_execute(base, session, inspect_code))
+            if any(cell["defs"] for cell in snapshot["cells"]):
+                break
+            time.sleep(0.2)
+        assert snapshot is not None
+        cells = snapshot["cells"]
+        source = next(cell for cell in cells if "data = 3" in cell["source"])
+        target = next(cell for cell in cells if "prediction = transform(processed)" in cell["source"])
+        assert "data" in source["defs"] and "transform" in source["defs"], source
+        assert "processed" in target["refs"] and "transform" in target["refs"], target
+        assert any(edge["variable"] == "processed" for edge in snapshot["edges"])
+
+        component_code = _bridge_code("list_components", notebook_path)[0]
+        component_result = json.loads(_execute(base, session, component_code))
+        normalize = next(item for item in component_result["components"] if item["id"] == "normalize.py")
+        assert [item["name"] for item in normalize["callables"]] == ["normalize"]
+
+        add_codes = _bridge_code("add_component", notebook_path)
+        assert len(add_codes) == 2
+        real_component_result = json.loads(_execute(base, session, add_codes[0]))
+        real_normalize = next(item for item in real_component_result["components"] if item["id"] == "normalize.py")
+        assert real_normalize["callables"][0]["parameters"][0]["positional"] is True
+        added = json.loads(_execute(base, session, add_codes[1]))
+        assert added["ok"] is True
+        assert "normalize(data)" in added["source"]
+
+        connect_code = _bridge_code(
+            "connect", notebook_path, source["id"], "data", target["id"], "processed"
+        )[0]
+        connected = json.loads(_execute(base, session, connect_code))
+        assert connected["ok"] is True and connected["changed"] is True
+        after_connect = json.loads(_execute(base, session, inspect_code))
+        edited_target = next(cell for cell in after_connect["cells"] if cell["id"] == target["id"])
+        assert "prediction = transform(data)" in edited_target["source"]
+        assert any(
+            edge["source_cell_id"] == source["id"]
+            and edge["target_cell_id"] == target["id"]
+            and edge["variable"] == "data"
+            for edge in after_connect["edges"]
+        )
+
+        run_code = _bridge_code("run", notebook_path, "", "", "", "", target["id"])[0]
+        run_result = json.loads(_execute(base, session, run_code))
+        assert run_result["ok"] is True and run_result["status"] == "queued"
+        final_target = None
+        run_deadline = time.monotonic() + 10
+        while time.monotonic() < run_deadline:
+            final_snapshot = json.loads(_execute(base, session, inspect_code))
+            final_target = next(cell for cell in final_snapshot["cells"] if cell["id"] == target["id"])
+            if final_target["status"] not in {"stale", "queued", "running"}:
+                break
+            time.sleep(0.2)
+        assert final_target is not None
+        assert isinstance(final_target["status"], str) and final_target["status"]
+        assert not final_target["errors"]
+
+        prepared = next(cell for cell in final_snapshot["cells"] if "processed = data + 1" in cell["source"])
+        ambiguous_edit = f'''import json
+import marimo._code_mode as cm
+async with cm.get_context() as ctx:
+    ctx.edit_cell({target["id"]!r}, code="prediction = transform(data, fallback=1)")
+print("GRAPHIMO_RESULT:" + json.dumps({{"ok": True}}))
+'''
+        assert json.loads(_execute(base, session, ambiguous_edit))["ok"] is True
+        refusal_code = _bridge_code(
+            "connect", notebook_path, prepared["id"], "processed", target["id"], "data"
+        )[0]
+        refusal = json.loads(_execute(base, session, refusal_code))
+        assert refusal["ok"] is False
+        assert refusal["error"].startswith("unsafe_edit:")
+        unchanged = json.loads(_execute(base, session, inspect_code))
+        unchanged_target = next(cell for cell in unchanged["cells"] if cell["id"] == target["id"])
+        assert unchanged_target["source"] == "prediction = transform(data, fallback=1)"
+    finally:
+        if websocket is not None:
+            websocket.close()
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
+        server_log.close()
