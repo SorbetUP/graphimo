@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphimo"
+version = "0.1.0"
+description = "A graphical projection and operation seam for live marimo notebooks in Zeron."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+notebook = ["marimo==0.25.2"]
+dev = ["pytest>=8,<9", "ruff>=0.8"]
+
+[tool.marimo.runtime]
+cache_cells = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
