@@ -162,7 +162,7 @@ local function code_for(operation, args)
 			"        if not isinstance(name, str) or not callable(value) or inspect.isclass(value): continue",
 			"        try:",
 			"            sig = inspect.signature(value); signature = str(sig)",
-			"            parameters = [{'name': p.name, 'required': p.default is inspect.Parameter.empty} for p in sig.parameters.values() if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)]",
+			"            parameters = [{'name': p.name, 'required': p.default is inspect.Parameter.empty, 'positional': p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD} for p in sig.parameters.values() if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)]",
 			"        except (TypeError, ValueError): signature = '(...)'; parameters = []",
 			"        doc = inspect.getdoc(value) or inspect.getdoc(module) or ''",
 			"        callables.append({'name': name, 'signature': signature, 'description': doc.splitlines()[0] if doc else '', 'parameters': parameters})",
@@ -220,8 +220,10 @@ local function code_for(operation, args)
 			"        if isinstance(assignment, ast.Assign) and (len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name)): return {'ok': False, 'error': 'unsafe_edit: target assignment is ambiguous'}",
 			"        if isinstance(assignment, ast.AnnAssign) and not isinstance(assignment.target, ast.Name): return {'ok': False, 'error': 'unsafe_edit: target assignment is ambiguous'}",
 			"        call = assignment.value",
-			"        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or len(call.args) != 1 or call.keywords or not isinstance(call.args[0], ast.Name) or call.args[0].id != " .. ui.json.encode(args.input_ref) .. ": return {'ok': False, 'error': 'unsafe_edit: target call is ambiguous'}",
-			"        arg = call.args[0]; lines = target.code.splitlines(keepends=True); raw = lines[arg.lineno - 1].encode('utf-8')",
+			"        if not isinstance(call, ast.Call) or not isinstance(call.func, (ast.Name, ast.Attribute)) or not call.args or call.keywords or not all(isinstance(arg, ast.Name) for arg in call.args): return {'ok': False, 'error': 'unsafe_edit: target call is ambiguous'}",
+			"        matches = [arg for arg in call.args if arg.id == " .. ui.json.encode(args.input_ref) .. "]",
+			"        if len(matches) != 1: return {'ok': False, 'error': 'unsafe_edit: selected reference is not a unique positional argument'}",
+			"        arg = matches[0]; lines = target.code.splitlines(keepends=True); raw = lines[arg.lineno - 1].encode('utf-8')",
 			"        updated = ''.join(lines[:arg.lineno - 1]) + raw[:arg.col_offset].decode('utf-8') + " .. ui.json.encode(args.variable) .. " + raw[arg.end_col_offset:].decode('utf-8') + ''.join(lines[arg.lineno:])",
 			"        compile(updated, '<graphimo-connect>', 'exec')",
 			"        return {'ok': True, 'changed': True, 'source': updated, 'cell_id': target.id}",
@@ -264,34 +266,55 @@ local function valid_identifier(value)
 	return type(value) == "string" and string.match(value, "^[%a_][%w_]*$") ~= nil
 end
 
-function Bridge.component_source(component_id, callable, output_name, bindings, source_hash)
+function Bridge.component_source(component_id, callable, output_name, bindings, source_hash, parameter_order)
 	if type(component_id) ~= "string" or component_id == "" or string.find(component_id, "..", 1, true) or string.sub(component_id, 1, 1) == "/" or string.find(component_id, "[\r\n]") then
 		return nil, "Choose a component inside the components folder"
 	end
 	if not valid_identifier(callable) or not valid_identifier(output_name) then return nil, "Callable and output must be Python identifiers" end
 	bindings = bindings or {}
-	local args = {}
+	local bound = {}
+	local all_variables = true
 	for name, binding in bindings do
 		if not valid_identifier(name) or type(binding) ~= "table" then return nil, "Invalid component argument" end
 		if type(binding.variable) == "string" then
 			if not valid_identifier(binding.variable) then return nil, "Component inputs must be Python variable names" end
-			table.insert(args, name .. "=" .. binding.variable)
+			bound[name] = { variable = binding.variable }
 		elseif binding.literal ~= nil then
-			table.insert(args, name .. "=__import__('json').loads(" .. ui.json.encode(ui.json.encode(binding.literal)) .. ")")
+			bound[name] = { literal = binding.literal }
+			all_variables = false
 		else
 			return nil, "Each component argument needs a variable or literal value"
 		end
 	end
-	table.sort(args)
+	local order, ordered = {}, {}
+	for _, name in parameter_order or {} do
+		if bound[name] then table.insert(order, name); ordered[name] = true end
+	end
+	local remaining = {}
+	for name in bound do if not ordered[name] then table.insert(remaining, name) end end
+	table.sort(remaining)
+	for _, name in remaining do table.insert(order, name) end
+	local positional = parameter_order ~= nil and all_variables and #remaining == 0 and #order <= #parameter_order
+	if positional then
+		for index, name in order do
+			if parameter_order[index] ~= name then positional = false; break end
+		end
+	end
+	local args = {}
+	for _, name in order do
+		local binding = bound[name]
+		if positional then
+			table.insert(args, binding.variable)
+		elseif binding.variable then
+			table.insert(args, name .. "=" .. binding.variable)
+		else
+			table.insert(args, name .. "=__import__('json').loads(" .. ui.json.encode(ui.json.encode(binding.literal)) .. ")")
+		end
+	end
 	local module_rel = string.gsub(component_id, "%.py$", "")
 	module_rel = string.gsub(module_rel, "/", ".")
 	local module_name = "components." .. module_rel
-	local called = callable
-	if string.find(module_name, "[^%w_%.]", 1) then
-		called = "__import__('importlib').reload(__import__('importlib').import_module(" .. ui.json.encode(module_name) .. "))." .. callable
-	else
-		called = "__import__('importlib').reload(__import__('importlib').import_module(" .. ui.json.encode(module_name) .. "))." .. callable
-	end
+	local called = "__import__('importlib').reload(__import__('importlib').import_module(" .. ui.json.encode(module_name) .. "))." .. callable
 	local source = "# Graphimo component: " .. component_id .. "\n"
 	source ..= "# Graphimo source sha256: " .. tostring(source_hash or "unknown") .. "\n"
 	source ..= output_name .. " = " .. called .. "(" .. table.concat(args, ", ") .. ")\n"
@@ -329,7 +352,15 @@ function Bridge.add_component(zeron, base, token, session_id, component_id, call
 			local selected_component = nil
 			for _, item in result.components or {} do if item.id == component_id then selected_component = item; break end end
 			if not selected_component then error("The component changed or disappeared; refresh the library") end
-			local source, why = Bridge.component_source(component_id, callable, output_name, bindings, selected_component.source_sha256)
+			local parameter_order, callable_found = {}, false
+			for _, item in selected_component.callables do
+				if item.name == callable then
+					callable_found = true
+					for _, parameter in item.parameters or {} do if parameter.positional then table.insert(parameter_order, parameter.name) end end
+				end
+			end
+			if not callable_found then error("The callable changed or disappeared; refresh the library") end
+			local source, why = Bridge.component_source(component_id, callable, output_name, bindings, selected_component.source_sha256, parameter_order)
 			if not source then error(why) end
 			return Bridge.add_cell(zeron, base, token, session_id, source)
 		end)

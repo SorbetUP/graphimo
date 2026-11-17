@@ -123,6 +123,7 @@ local Page = ui.component(function()
 		return positioned
 	end
 
+	local refresh_graph
 	local function refresh_sessions()
 		Bridge.sessions(zeron, url:peek(), token:peek()):after(function(items)
 			sessions:set(items)
@@ -147,7 +148,7 @@ local Page = ui.component(function()
 		notice:set("Connection saved")
 	end
 
-	local function refresh_graph()
+	refresh_graph = function()
 		Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek()):after(function(value)
 			snapshot:set(value)
 			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
@@ -179,20 +180,6 @@ local Page = ui.component(function()
 			end
 			if is_local_url(url:peek()) then Layout.load(zeron, path, apply_layout) else apply_layout({}) end
 		end, function(err) notice:set("Could not inspect marimo: " .. tostring(err)) end)
-	end
-
-	local function refresh_components()
-		local current = snapshot:peek()
-		if not current.notebook or not current.notebook.session_id then return end
-		Bridge.list_components(zeron, url:peek(), token:peek(), current.notebook.session_id, current.notebook.path):after(function(value)
-			components:set(value.components or {})
-			local selected_component = component_id:peek()
-			if selected_component == "" and #value.components > 0 then
-				component_id:set(value.components[1].id)
-				callable_name:set(value.components[1].callables[1] and value.components[1].callables[1].name or "")
-			end
-			notice:set("Found " .. tostring(#(value.components or {})) .. " components")
-		end, function(err) notice:set("Component discovery failed: " .. tostring(err)) end)
 	end
 
 	local function save_positions()
