@@ -16,6 +16,9 @@ local function config_for(args)
 end
 
 local function tool_result(promise)
+	if promise == nil then
+		return { ok = false, error = { code = "command_unavailable", message = "Zeron did not start the request. Check that Graphimo is allowed to run curl and python3 in Settings → Plugins." } }
+	end
 	return promise:after(function(value)
 		if type(value) ~= "table" then return { ok = true, result = value } end
 		if value.ok == false then
@@ -43,6 +46,16 @@ local function tool_result(promise)
 	end)
 end
 
+local function start_tool(request)
+	local ok, promise = pcall(request)
+	if not ok then
+		local message = tostring(promise)
+		local code = if string.find(message, "commands permission", 1, true) then "command_unavailable" else "operation_failed"
+		return { ok = false, error = { code = code, message = message } }
+	end
+	return tool_result(promise)
+end
+
 local function is_local_url(value)
 	return string.match(value or "", "^https?://localhost([:/]|$)") ~= nil
 		or string.match(value or "", "^https?://127%.0%.0%.1([:/]|$)") ~= nil
@@ -51,32 +64,32 @@ end
 
 zeron.tool({ name = "inspect", run = function(args)
 	local url, token, session = config_for(args or {})
-	return tool_result(Bridge.inspect(zeron, url, token, session))
+	return start_tool(function() return Bridge.inspect(zeron, url, token, session) end)
 end })
 
 zeron.tool({ name = "list_components", run = function(args)
 	local url, token, session = config_for(args or {})
-	return tool_result(Bridge.inspect(zeron, url, token, session):after(function(snapshot)
+	return start_tool(function() return Bridge.inspect(zeron, url, token, session):after(function(snapshot)
 		return Bridge.list_components(zeron, url, token, snapshot.notebook.session_id, snapshot.notebook.path)
-	end))
+	end) end)
 end })
 
 zeron.tool({ name = "add_component", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
-	return tool_result(Bridge.add_component(zeron, url, token, session, args.component_id, args.callable, args.output_name, args.bindings))
+	return start_tool(function() return Bridge.add_component(zeron, url, token, session, args.component_id, args.callable, args.output_name, args.bindings) end)
 end })
 
 zeron.tool({ name = "connect", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
-	return tool_result(Bridge.connect(zeron, url, token, session, args.from_cell_id, args.variable, args.to_cell_id, args.input_ref))
+	return start_tool(function() return Bridge.connect(zeron, url, token, session, args.from_cell_id, args.variable, args.to_cell_id, args.input_ref) end)
 end })
 
 zeron.tool({ name = "run", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
-	return tool_result(Bridge.run(zeron, url, token, session, args.cell_id))
+	return start_tool(function() return Bridge.run(zeron, url, token, session, args.cell_id) end)
 end })
 
 zeron.tool({ name = "open_code", run = function(args)
@@ -94,6 +107,8 @@ local Page = ui.component(function()
 	local sessions = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local visible_cell_ids = ui.use_state({})
+	local log_entries = ui.use_state({})
+	local logs_open = ui.use_state(false)
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
 	local component_id = ui.use_state("")
@@ -112,6 +127,40 @@ local Page = ui.component(function()
 		return snapshot:get().cells or {}
 	end
 
+	local function log(message)
+		local entries = table.clone(log_entries:peek())
+		table.insert(entries, message)
+		while #entries > 40 do table.remove(entries, 1) end
+		log_entries:set(entries)
+		print("[Graphimo] " .. message)
+	end
+
+	local function observe(label, start, on_success, on_failure)
+		local ok, promise = pcall(start)
+		if not ok then
+			local message = label .. " failed to start: " .. tostring(promise)
+			log(message)
+			if on_failure then on_failure(promise) end
+			return
+		end
+		local valid, after = pcall(function() return promise and promise.after end)
+		if not valid or type(after) ~= "function" then
+			local message = label .. " failed: Zeron returned no request promise; check Graphimo's curl/python3 permissions"
+			log(message)
+			if on_failure then on_failure(message) end
+			return
+		end
+		log(label .. " started")
+		promise:after(function(value)
+			log(label .. " completed")
+			if on_success then on_success(value) end
+		end, function(err)
+			local message = label .. " failed: " .. tostring(err)
+			log(message)
+			if on_failure then on_failure(err) end
+		end)
+	end
+
 	local function positioned_cells()
 		local positioned = {}
 		local saved_positions = positions:get()
@@ -126,7 +175,9 @@ local Page = ui.component(function()
 
 	local refresh_graph
 	local function refresh_sessions()
-		Bridge.sessions(zeron, url:peek(), token:peek()):after(function(items)
+		observe("List marimo sessions", function()
+			return Bridge.sessions(zeron, url:peek(), token:peek())
+		end, function(items)
 			sessions:set(items)
 			if #items == 1 and session_id:peek() == "" then session_id:set(items[1].session_id) end
 			if session_id:peek() ~= "" then
@@ -148,10 +199,13 @@ local Page = ui.component(function()
 		local value = { url = url:peek(), token = token:peek(), session_id = session_id:peek() }
 		connection:set(value)
 		notice:set("Connection saved")
+		log("Connection settings saved (token omitted)")
 	end
 
 	refresh_graph = function()
-		Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek()):after(function(value)
+		observe("Inspect marimo graph", function()
+			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
+		end, function(value)
 			snapshot:set(value)
 			local ids = {}
 			for _, cell in value.cells or {} do table.insert(ids, cell.id) end
@@ -172,10 +226,14 @@ local Page = ui.component(function()
 				positions:set(merged)
 				if selected:peek() ~= "" and not active[selected:peek()] then selected:set("") end
 				notice:set("Showing " .. tostring(#value.cells) .. " marimo cells")
-				Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, path):after(function(component_result)
+				observe("Discover components", function()
+					return Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, path)
+				end, function(component_result)
 					local available = component_result.components or {}
 					components:set(available)
-					Bridge.refresh_component_hashes(zeron, url:peek(), token:peek(), value.notebook.session_id, available):after(function(hash_result)
+					observe("Check component sources", function()
+						return Bridge.refresh_component_hashes(zeron, url:peek(), token:peek(), value.notebook.session_id, available)
+					end, function(hash_result)
 						if #(hash_result.changed_cells or {}) > 0 then
 							notice:set("A component source changed; marimo marked its cell stale")
 							ui.after(300, refresh_graph)
@@ -183,7 +241,14 @@ local Page = ui.component(function()
 					end, function(err) notice:set("Component freshness check failed: " .. tostring(err)) end)
 				end, function(err) notice:set("Component discovery failed: " .. tostring(err)) end)
 			end
-			if is_local_url(url:peek()) then Layout.load(zeron, path, apply_layout) else apply_layout({}) end
+			if is_local_url(url:peek()) then
+				Layout.load(zeron, path, function(saved_positions, err)
+					if err then log("Load canvas layout failed: " .. tostring(err)) end
+					apply_layout(saved_positions)
+				end)
+			else
+				apply_layout({})
+			end
 		end, function(err) notice:set("Could not inspect marimo: " .. tostring(err)) end)
 	end
 
@@ -191,7 +256,11 @@ local Page = ui.component(function()
 		local path = snapshot:peek().notebook.path
 		if not path or path == "" or not is_local_url(url:peek()) then return end
 		Layout.save(zeron, path, positions:peek(), function(ok, err)
-			if not ok then notice:set("Layout save failed: " .. tostring(err)) end
+			if ok then log("Canvas layout saved") else
+				local message = "Layout save failed: " .. tostring(err)
+				log(message)
+				notice:set(message)
+			end
 		end)
 	end
 
@@ -317,7 +386,9 @@ local Page = ui.component(function()
 				for _, ref in cell.refs or {} do
 					if cell.id ~= drag.cell_id and Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, ref, false), 14 / zoom:peek()) then
 						connected = true
-						Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref):after(function()
+						observe("Connect " .. drag.variable .. " to " .. ref, function()
+							return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
+						end, function()
 							notice:set("Python source updated; marimo owns the new dependency")
 							refresh_graph()
 						end, function(err) notice:set("Connection refused: " .. tostring(err) .. " · Open code to edit it") end)
@@ -339,7 +410,9 @@ local Page = ui.component(function()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
 		notice:set("Sending run request to marimo…")
-		Bridge.run(zeron, url:peek(), token:peek(), session_id:peek(), cell.id):after(function()
+		observe("Run cell " .. cell.id, function()
+			return Bridge.run(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
+		end, function()
 			notice:set("Marimo queued the cell and its reactive dependents")
 			ui.after(500, refresh_graph)
 		end, function(err)
@@ -353,12 +426,15 @@ local Page = ui.component(function()
 		if not cell then notice:set("Select a cell first"); return end
 		zeron.open_url(url:peek())
 		notice:set("Opened the marimo editor for cell " .. cell.id)
+		log("Opened marimo editor for cell " .. cell.id)
 	end
 
 	local function delete_selected()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
-		Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), cell.id):after(function()
+		observe("Delete cell " .. cell.id, function()
+			return Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
+		end, function()
 			selected:set(""); refresh_graph()
 		end, function(err) notice:set("Could not delete cell: " .. tostring(err)) end)
 	end
@@ -400,7 +476,9 @@ local Page = ui.component(function()
 		local out = callable.name .. "_result_" .. tostring(next_number)
 		while defined[out] do next_number += 1; out = callable.name .. "_result_" .. tostring(next_number) end
 		output_counter:set(next_number + 1)
-		Bridge.add_component(zeron, url:peek(), token:peek(), session_id:peek(), item.id, callable.name, out, bindings):after(function()
+		observe("Add component " .. item.id .. "::" .. callable.name, function()
+			return Bridge.add_component(zeron, url:peek(), token:peek(), session_id:peek(), item.id, callable.name, out, bindings)
+		end, function()
 			notice:set("Inserted ordinary Python into the marimo notebook")
 			refresh_graph()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
@@ -414,6 +492,7 @@ local Page = ui.component(function()
 			Button { "Fit", tone = "secondary", size = "sm", on_click = fit },
 			Button { "−", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { "+", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+			Button { function() return if logs_open:get() then "Hide logs" else "Logs (" .. tostring(#log_entries:get()) .. ")" end, tone = "secondary", size = "sm", on_click = function() logs_open:set(not logs_open:peek()) end },
 		},
 		ui.row { w_full = true, gap = "$space.2", items = "center",
 			TextField { value = url, label = "Marimo URL", w = 270 },
@@ -457,6 +536,10 @@ local Page = ui.component(function()
 			},
 		},
 		Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
+		ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 150, gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+			Text { "Recent Graphimo logs (last 40 events; token values are not logged)", style = "caption", tone = "secondary", wrap = true },
+			Text { function() return if #log_entries:get() == 0 then "No log events yet" else table.concat(log_entries:get(), "\n") end, style = "caption", tone = "secondary", wrap = true },
+		}),
 	}
 end)
 

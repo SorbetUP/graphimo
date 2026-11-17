@@ -2,6 +2,18 @@
 -- lives beside the marimo notebook, never in the executable notebook itself.
 local Layout = {}
 
+local function run(zeron, args, timeout, done)
+	local ok, request = pcall(function()
+		return zeron.run("python3", args, { timeout = timeout })
+	end)
+	if not ok then done(nil, tostring(request)); return end
+	if request == nil then
+		done(nil, "Zeron did not start python3. Check Graphimo's commands permission in Settings → Plugins.")
+		return
+	end
+	request:after(function(result) done(result, nil) end, function(err) done(nil, tostring(err)) end)
+end
+
 function Layout.load(zeron, notebook_path, done)
 	local code = table.concat({
 		"import json, pathlib, sys",
@@ -14,11 +26,10 @@ function Layout.load(zeron, notebook_path, done)
 		"items = data.get('notebooks', {}).get(str(notebook), {}).get('cells', {})",
 		"print(json.dumps(items if isinstance(items, dict) else {}))",
 	}, "\n")
-	zeron.run("python3", { "-c", code, notebook_path }, { timeout = 10 }):after(function(result)
+	run(zeron, { "-c", code, notebook_path }, 10, function(result, err)
+		if err then done({}, err); return end
 		local ok, value = pcall(ui.json.decode, result.stdout or "{}")
-		done(if ok and type(value) == "table" then value else {})
-	end, function()
-		done({})
+		done(if ok and type(value) == "table" then value else {}, nil)
 	end)
 end
 
@@ -45,10 +56,8 @@ function Layout.save(zeron, notebook_path, cells, done)
 		"with os.fdopen(fd, 'w', encoding='utf-8') as stream: json.dump(data, stream, indent=2, sort_keys=True); stream.write('\\n')",
 		"os.replace(temp, path)",
 	}, "\n")
-	zeron.run("python3", { "-c", code, notebook_path, ui.json.encode(clean) }, { timeout = 10 }):after(function()
-		if done then done(true) end
-	end, function(err)
-		if done then done(false, tostring(err)) end
+	run(zeron, { "-c", code, notebook_path, ui.json.encode(clean) }, 10, function(_, err)
+		if done then done(err == nil, err) end
 	end)
 end
 

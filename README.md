@@ -13,6 +13,8 @@ stores only cell presentation state in `.graphimo.json`.
 - Pan, zoom, fit, drag cards, and persist positions keyed by cell ID.
 - Run or delete a cell through the live marimo session, show its current
   status/output summary, and open the marimo editor.
+- Inspect the last 40 canvas, marimo, and layout events in the **Logs** panel;
+  token values are never added to those messages.
 - Discover public callables in `.py` files and packages under the notebook's
   `components/` directory, then insert a readable ordinary Python cell.
 - Drag an output to an input for one deliberately narrow Python edit. Ambiguous

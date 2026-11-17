@@ -153,6 +153,14 @@ if mode == "source_safety" then
 	assert(source, why)
 	print("GRAPHIMO_SOURCE:" .. source)
 	result = true
+	elseif mode == "command_denied" then
+	local unavailable = { run = function() return nil end }
+	local ok, reason = pcall(function()
+		return Bridge.sessions(unavailable, "http://127.0.0.1:2718", "")
+	end)
+	assert(not ok and string.find(tostring(reason), "commands permission", 1, true), tostring(reason))
+	print("GRAPHIMO_COMMAND_DENIAL_HANDLED")
+	result = true
 elseif mode == "inspect" then
 	result = Bridge.inspect(zeron, "http://127.0.0.1:2718", "", "s_live")
 elseif mode == "list_components" then

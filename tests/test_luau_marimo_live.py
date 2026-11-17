@@ -89,6 +89,20 @@ def test_bridge_does_not_shift_later_optional_arguments_positionally():
     assert ".normalize(saved_std)" not in result.stdout
 
 
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_bridge_reports_missing_zeron_command_permission():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "command_denied"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GRAPHIMO_COMMAND_DENIAL_HANDLED" in result.stdout
+
+
 @pytest.mark.skipif(
     not LUAU or not MARIMO_PYTHON,
     reason="set GRAPHIMO_MARIMO_PYTHON and install the Luau CLI to run live bridge tests",

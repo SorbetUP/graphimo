@@ -44,7 +44,9 @@ local function result_from_sse(text)
 end
 
 local function curl(zeron, args, stdin, timeout)
-	return zeron.run("curl", args, { stdin = stdin, timeout = timeout or 15 })
+	local request = zeron.run("curl", args, { stdin = stdin, timeout = timeout or 15 })
+	if request == nil then error("Zeron did not start curl. Check Graphimo's commands permission in Settings → Plugins.") end
+	return request
 end
 
 local function auth_config(token)
