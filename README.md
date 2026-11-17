@@ -1,60 +1,79 @@
 # Graphimo
 
-Graphimo is intended to be a Zeron canvas view over a live marimo notebook. The
-notebook and marimo runtime own cells, dependencies, execution, outputs, and
-cache. Graphimo's domain adapter is deliberately small: it projects a fresh
-marimo snapshot, inserts ordinary Python, delegates Run, and stores only node
-presentation state in `.graphimo.json`.
+Graphimo is a small Zeron v3 plugin that projects a live marimo notebook onto a
+canvas. marimo owns the notebook, dependency graph, execution, cell outputs,
+and cache. Graphimo reads that state, offers conservative source edits, and
+stores only cell presentation state in `.graphimo.json`.
 
-## Current implementation
+## What works
 
-`adapter.graphimo_adapter` is the SDK-independent operation seam. The Zeron
-binding supplies a `context` with a `marimo` port implementing:
+- Discover and select active marimo notebook sessions.
+- Render every marimo cell with its refs/defs and edges derived from marimo's
+  current dependency graph, including cells not created by Graphimo.
+- Pan, zoom, fit, drag cards, and persist positions keyed by cell ID.
+- Run or delete a cell through the live marimo session, show its current
+  status/output summary, and open the marimo editor.
+- Discover public callables in `.py` files and packages under the notebook's
+  `components/` directory, then insert a readable ordinary Python cell.
+- Drag an output to an input for one deliberately narrow Python edit. Ambiguous
+  edits are refused and the source remains available in marimo's editor.
+- Detect source hash changes for inserted components and update their marker
+  in the marimo cell, allowing marimo to mark and recompute it.
 
-- `list_active_notebooks()`
-- `inspect(session_id)` returning the current notebook, cells, and edges
-- `add_cell(session_id, source)`
-- `replace_cell_source(session_id, cell_id, source)`
-- `run_cell(session_id, cell_id)`
-- `delete_cell(session_id, cell_id)`
+## Install and connect
 
-The optional `context.open_code(cell_id)` callback navigates through Zeron's
-existing code-opening capability. Call `dispatch({"op": ...}, context)` for
-`inspect`, `list_components`, `add_component`, `connect`, `run`, `delete`, and
-`open_code`. Every operation returns JSON-shaped data with `ok`; errors carry
-`error.code`, `error.message`, and `error.cell_id`.
+Install Graphimo through Zeron's plugin manager. On the Graphimo page, enter the
+URL of the marimo editor and its access token if enabled, then choose an active
+notebook and press **Connect**. The plugin invokes `curl` to reach marimo's
+local session API and `python3` to read/write the sidecar layout; those are the
+only external commands in the plugin manifest. The Zeron host and marimo server
+must be able to see the same local notebook path for component discovery and
+layout persistence.
 
-Layout helpers implement the `.graphimo.json` v1 shape:
+Component discovery uses the convention:
 
-```json
-{"version":1,"notebooks":{"notebook.py":{"cells":{"cell-id":{"x":80,"y":80}}}}}
+```text
+notebook.py
+components/
+  data-processing/
+    normalize.py
+    image/
+      __init__.py
+      open_jpg.py
 ```
 
-Only visual keys are persisted. Graph, source, refs/defs, output, and execution
-state are never written there. Missing cells receive a simple grid position.
+Public functions are discovered with `inspect.signature`; `__all__` is
+respected when present. No Graphimo base class, decorator, manifest, or
+annotation is required. A selected function becomes a normal marimo cell, for
+example `normalized = ...normalize(image=image)`, which can be edited freely.
 
-## Marimo support
+## Persistence and boundaries
 
-The examples target marimo 0.25.2 (`pip install -e '.[notebook]'`). The
-`[tool.marimo.runtime] cache_cells = true` setting uses marimo's own cell
-cache. Open an example normally with `marimo edit examples/simple_pipeline.py`.
+`.graphimo.json` contains only visual metadata (`x`, `y`, collapse/size hints,
+and optional group), scoped by notebook path and stable marimo cell ID. It does
+not contain code, edges, values, execution state, or cache. Removing it loses
+custom placement only; marimo still opens the notebook normally.
 
-Marimo's documented MCP server provides live notebook discovery, cell maps,
-runtime details, outputs, and dependency graphs. Its documented tools do not
-edit or execute cells; marimo directs notebook manipulation to marimo-pair.
-Graphimo therefore accepts the live-session port as an injected boundary and
-does not claim a second executor or private marimo integration. The concrete
-Zeron-to-marimo transport and canvas registration still need an SDK binding
-that can reach the same live session for both inspection and mutation.
+The Zeron-specific canvas and command binding lives in `plugin/`. The
+SDK-independent Python operation seam and contract tests live in `adapter/`.
+`plugin/marimo_bridge.luau` is the single marimo transport and private API
+boundary. It uses marimo's local HTTP session endpoints and the code-mode
+context API to read current cell/graph data and ask the active session to edit
+or run cells. Graphimo does not implement a graph store, executor, scheduler,
+or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
 
 ## Development
 
+Install the pinned notebook runtime and development tools, then run the
+independent contract suite:
+
 ```bash
-pip install -e '.[dev]'
-rtk pytest -q
-rtk ruff check adapter
+python3 -m pip install -e '.[notebook,dev]'
+rtk proxy env PYTHONDONTWRITEBYTECODE=1 pytest -q
+rtk ruff check adapter examples components
 ```
 
-The contract tests use a fake live-session port; they verify translation
-behavior without starting a notebook server. They do not constitute an
-end-to-end Zeron/marimo integration test.
+The pytest suite exercises `adapter.graphimo_adapter` through a fake marimo
+port. It does not replace an end-to-end run inside Zeron with a live marimo
+server. Example notebooks are ordinary marimo `.py` files and use marimo's
+`cache_cells = true` setting.

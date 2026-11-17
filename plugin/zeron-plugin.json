@@ -1,0 +1,18 @@
+{
+  "id": "graphimo",
+  "name": "Graphimo",
+  "version": "0.1.0",
+  "description": "A live canvas view over marimo notebooks.",
+  "entry": "init.luau",
+  "icon": "graphimo.svg",
+  "permissions": ["pages.add", "tools", "commands", "links.open"],
+  "commands": ["curl", "python3"],
+  "tools": [
+    {"name":"inspect","description":"Inspect the live cells and dependencies of the selected marimo notebook.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
+    {"name":"list_components","description":"List public callables in the selected notebook project's components folder.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
+    {"name":"add_component","description":"Insert a readable Python cell calling a selected component.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"component_id":{"type":"string"},"callable":{"type":"string"},"output_name":{"type":"string"},"bindings":{"type":"object"}},"required":["component_id","callable","output_name"],"additionalProperties":false}},
+    {"name":"connect","description":"Safely replace one simple component call input with an upstream variable.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"from_cell_id":{"type":"string"},"variable":{"type":"string"},"to_cell_id":{"type":"string"},"input_ref":{"type":"string"}},"required":["from_cell_id","variable","to_cell_id","input_ref"],"additionalProperties":false}},
+    {"name":"run","description":"Ask the active marimo session to run one cell.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"cell_id":{"type":"string"}},"required":["cell_id"],"additionalProperties":false}},
+    {"name":"open_code","description":"Open the corresponding notebook in marimo's editor.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"cell_id":{"type":"string"}},"required":["cell_id"],"additionalProperties":false}}
+  ]
+}
