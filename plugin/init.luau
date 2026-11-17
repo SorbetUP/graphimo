@@ -15,6 +15,34 @@ local function config_for(args)
 	return args.url or saved.url or "http://127.0.0.1:2718", saved.token or "", args.session_id or saved.session_id or ""
 end
 
+local function tool_result(promise)
+	return promise:after(function(value)
+		if type(value) ~= "table" then return { ok = true, result = value } end
+		if value.ok == false then
+			local detail = value.error
+			if type(detail) == "table" then return value end
+			local message = tostring(detail or "Operation failed")
+			local code = "operation_failed"
+			if string.sub(message, 1, 12) == "unsafe_edit:" then
+				code = "unsafe_edit"
+				message = string.gsub(string.sub(message, 13), "^%s+", "")
+			end
+			return { ok = false, error = { code = code, message = message, cell_id = value.cell_id } }
+		end
+		local result = table.clone(value)
+		result.ok = true
+		return result
+	end, function(err)
+		local message = tostring(err)
+		local code = "operation_failed"
+		if string.sub(message, 1, 12) == "unsafe_edit:" then
+			code = "unsafe_edit"
+			message = string.gsub(string.sub(message, 13), "^%s+", "")
+		end
+		return { ok = false, error = { code = code, message = message } }
+	end)
+end
+
 local function is_local_url(value)
 	return string.match(value or "", "^https?://localhost([:/]|$)") ~= nil
 		or string.match(value or "", "^https?://127%.0%.0%.1([:/]|$)") ~= nil
@@ -23,32 +51,32 @@ end
 
 zeron.tool({ name = "inspect", run = function(args)
 	local url, token, session = config_for(args or {})
-	return Bridge.inspect(zeron, url, token, session)
+	return tool_result(Bridge.inspect(zeron, url, token, session))
 end })
 
 zeron.tool({ name = "list_components", run = function(args)
 	local url, token, session = config_for(args or {})
-	return Bridge.inspect(zeron, url, token, session):after(function(snapshot)
+	return tool_result(Bridge.inspect(zeron, url, token, session):after(function(snapshot)
 		return Bridge.list_components(zeron, url, token, snapshot.notebook.session_id, snapshot.notebook.path)
-	end)
+	end))
 end })
 
 zeron.tool({ name = "add_component", run = function(args)
 	local url, token, session = config_for(args or {})
-	if not session then error("Select a live marimo notebook in Graphimo first") end
-	return Bridge.add_component(zeron, url, token, session, args.component_id, args.callable, args.output_name, args.bindings)
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return tool_result(Bridge.add_component(zeron, url, token, session, args.component_id, args.callable, args.output_name, args.bindings))
 end })
 
 zeron.tool({ name = "connect", run = function(args)
 	local url, token, session = config_for(args or {})
-	if not session then error("Select a live marimo notebook in Graphimo first") end
-	return Bridge.connect(zeron, url, token, session, args.from_cell_id, args.variable, args.to_cell_id, args.input_ref)
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return tool_result(Bridge.connect(zeron, url, token, session, args.from_cell_id, args.variable, args.to_cell_id, args.input_ref))
 end })
 
 zeron.tool({ name = "run", run = function(args)
 	local url, token, session = config_for(args or {})
-	if not session then error("Select a live marimo notebook in Graphimo first") end
-	return Bridge.run(zeron, url, token, session, args.cell_id)
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return tool_result(Bridge.run(zeron, url, token, session, args.cell_id))
 end })
 
 zeron.tool({ name = "open_code", run = function(args)

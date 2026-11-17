@@ -54,8 +54,15 @@ and optional group), scoped by notebook path and stable marimo cell ID. It does
 not contain code, edges, values, execution state, or cache. Removing it loses
 custom placement only; marimo still opens the notebook normally.
 
-The Zeron-specific canvas and command binding lives in `plugin/`. The
-SDK-independent Python operation seam and contract tests live in `adapter/`.
+The Zeron-specific canvas and host binding live in `plugin/`. Because Zeron
+plugins run in Luau, production requests go through `plugin/marimo_bridge.luau`;
+the Python module in `adapter/` is an SDK-independent contract harness used by
+the pytest suite, not a runtime dependency of the plugin. Both expose the same
+operations and JSON result envelope: successful results have `ok: true`, and
+errors have `ok: false` with `error.code`, `error.message`, and optional
+`error.cell_id`. Contract tests exercise the Python seam; they do not execute
+the Luau bridge, so the host binding still needs an end-to-end Zeron check.
+
 `plugin/marimo_bridge.luau` is the single marimo transport and private API
 boundary. It uses marimo's local HTTP session endpoints and the code-mode
 context API to read current cell/graph data and ask the active session to edit
