@@ -2,11 +2,12 @@ local zeron = require("./zeron")("graphimo")
 local Bridge = require("./marimo_bridge")
 local Layout = require("./layout")
 local Canvas = require("./canvas")
+local Library = require("./component_library")
 local Text = require("@ds/text")
 local Button = require("@ds/button")
-local Select = require("@ds/select")
 local Glass = require("@ds/glass")
 local Markdown = require("@ds/markdown")
+local SearchField = require("@ds/search_field")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -113,6 +114,9 @@ local Page = ui.component(function()
 	local server_log_text = ui.use_state("")
 	local problem_log_text = ui.use_state("")
 	local logs_open = ui.use_state(false)
+	local components_open = ui.use_state(true)
+	local library_query = ui.use_state("")
+	local expanded_component = ui.use_state("")
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
 	local component_id = ui.use_state("")
@@ -601,30 +605,13 @@ local Page = ui.component(function()
 		end, function(err) notice:set("Could not delete cell: " .. tostring(err)) end)
 	end
 
-	local function component_options()
-		local options = {}
-		for _, item in components:get() do table.insert(options, { value = item.id, label = string.gsub(item.id, "/", " · ") }) end
-		if #options == 0 then table.insert(options, { value = "", label = "No components found" }) end
-		return options
-	end
-
-	local function callable_options()
-		local options = {}
-		for _, item in components:get() do
-			if item.id == component_id:get() then
-				for _, entry in item.callables do table.insert(options, { value = entry.name, label = entry.name .. entry.signature }) end
-			end
-		end
-		if #options == 0 then table.insert(options, { value = "", label = "Choose a component first" }) end
-		return options
-	end
-
-	local function add_selected_component()
-		local item, callable = nil, nil
-		for _, candidate in components:peek() do
-			if candidate.id == component_id:peek() then
-				item = candidate
-				for _, entry in candidate.callables do if entry.name == callable_name:peek() then callable = entry end end
+	local function add_selected_component(item, callable)
+		if not item or not callable then
+			for _, candidate in components:peek() do
+				if candidate.id == component_id:peek() then
+					item = candidate
+					for _, entry in candidate.callables do if entry.name == callable_name:peek() then callable = entry end end
+				end
 			end
 		end
 		if not item or not callable then notice:set("Choose a component and callable"); return end
@@ -646,6 +633,45 @@ local Page = ui.component(function()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
 	end
 
+	local function component_library_panel()
+		local groups = ui.computed(function()
+			return Library.project(components:get(), library_query:get())
+		end)
+		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
+			Text { "Components", style = "heading" },
+			SearchField { value = library_query, placeholder = "Search components", name = "Search components", size = "sm", quiet = true, w_full = true },
+			ui.show(function() return #groups:get() == 0 end, Text { function()
+				return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"
+			end, style = "caption", tone = "secondary", wrap = true }),
+			ui.each(groups, function(group)
+				return ui.column { w_full = true, gap = "$space.1",
+					Text { group.category, style = "caption", tone = "secondary" },
+					ui.each(group.components, function(item)
+						return ui.column { w_full = true, gap = "$space.1",
+							Button {
+								function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
+								tone = "secondary", size = "sm", w_full = true,
+								on_click = function()
+									component_id:set(item.id)
+									callable_name:set(item.callables and item.callables[1] and item.callables[1].name or "")
+									expanded_component:set(if expanded_component:peek() == item.id then "" else item.id)
+								end,
+							},
+							ui.show(function() return expanded_component:get() == item.id end, ui.column { w_full = true, gap = "$space.1",
+								ui.each(item.callables or {}, function(callable)
+									return ui.row { w_full = true, items = "center", gap = "$space.1",
+										Text { (callable.name or "") .. (callable.signature or ""), style = "caption", tone = "secondary", grow = 1, wrap = true },
+										Button { "Add", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = function() add_selected_component(item, callable) end },
+									}
+								end),
+							}),
+						}
+					end),
+				}
+			end),
+		}
+	end
+
 	return ui.column { w_full = true, h_full = true, min_h = 0, gap = "$space.3", p = "$space.4",
 		ui.row { w_full = true, items = "center", gap = "$space.2",
 			ui.canvas { w = 30, h = 30, draw = function(c)
@@ -661,21 +687,19 @@ local Page = ui.component(function()
 			Button { "Fit", tone = "secondary", size = "sm", on_click = fit },
 			Button { "−", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { "+", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			Button { function() return if logs_open:get() then "Hide logs" else "Logs (" .. tostring(#problem_entries:get()) .. ")" end, tone = "secondary", size = "sm", on_click = function() logs_open:set(not logs_open:peek()) end },
+			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
+			Button { function() return if logs_open:get() then "Terminal −" else "Terminal +" end, tone = "secondary", size = "sm", on_click = function() logs_open:set(not logs_open:peek()) end },
 		},
 		ui.row { w_full = true, gap = "$space.2", items = "center",
-			Select { value = component_id, options = component_options, label = "Component", w = 220, on_change = function(value)
-				component_id:set(value)
-				for _, item in components:peek() do if item.id == value then callable_name:set(item.callables[1] and item.callables[1].name or "") end end
-			end },
-			Select { value = callable_name, options = callable_options, label = "Callable", w = 230 },
-			Button { "Add block", tone = "secondary", size = "sm", on_click = add_selected_component },
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_selected },
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
 			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 		},
-		ui.div { ref = canvas, grow = 1, min_h = 0, w_full = true, relative = true, rounded = "$radius.lg", overflow = "hidden",
+		ui.row { grow = 1, min_h = 0, w_full = true, gap = "$space.3",
+			ui.show(function() return components_open:get() end, component_library_panel()),
+			ui.column { grow = 1, min_w = 0, min_h = 0, gap = "$space.3",
+			ui.div { ref = canvas, grow = 1, min_h = 0, w_full = true, relative = true, rounded = "$radius.lg", overflow = "hidden",
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c, w, h)
 				Canvas.draw_grid(c, w, h, zoom:get(), pan_x:get(), pan_y:get(), grid:get())
 			end, pointer_events = "none" },
@@ -698,9 +722,9 @@ local Page = ui.component(function()
 					return true
 				end,
 			},
-		},
-		Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
-		ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+			},
+			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
+			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
 				Button { "Read marimo log", tone = "secondary", size = "sm", on_click = refresh_marimo_log },
@@ -718,7 +742,9 @@ local Page = ui.component(function()
 				if server_log_text:get() ~= "" then table.insert(view, "--- Marimo process log ---"); table.insert(view, server_log_text:get()) end
 				return if #view == 0 then "No log events yet" else table.concat(view, "\n")
 			end, style = "caption", tone = "secondary", wrap = true },
-		}),
+			}),
+			},
+			},
 	}
 end)
 
