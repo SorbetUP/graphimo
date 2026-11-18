@@ -25,7 +25,9 @@ def test_list_components_exposes_only_safe_parameter_metadata(tmp_path, host):
         "unsafe_annotation = Unsafe()\n"
         "unsafe_default = Unsafe()\n"
         "def inspect_unsafe(value: unsafe_annotation = unsafe_default):\n"
-        "    return value\n",
+        "    return value\n"
+        "def inspect_unsupported_literal(choice: Literal[unsafe_default] = 'small'):\n"
+        "    return choice\n",
         encoding="utf-8",
     )
 
@@ -74,3 +76,9 @@ def test_list_components_exposes_only_safe_parameter_metadata(tmp_path, host):
     assert "annotation" not in unsafe_parameter
     assert "Unsafe" not in unsafe["signature"]
     assert "..." in unsafe["signature"]
+
+    unsupported_literal = callables["inspect_unsupported_literal"]
+    unsupported_parameter = unsupported_literal["parameters"][0]
+    assert "annotation" not in unsupported_parameter
+    assert "choices" not in unsupported_parameter
+    assert "Unsafe" not in unsupported_literal["signature"]

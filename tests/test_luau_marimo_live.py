@@ -463,7 +463,9 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
         "unsafe_annotation = Unsafe()\n"
         "unsafe_default = Unsafe()\n"
         "def inspect_unsafe(value: unsafe_annotation = unsafe_default):\n"
-        "    return value\n",
+        "    return value\n"
+        "def inspect_unsupported_literal(choice: Literal[unsafe_default] = 'small'):\n"
+        "    return choice\n",
         encoding="utf-8",
     )
 
@@ -578,6 +580,11 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         assert unsafe_parameter["has_default"] is True
         assert "default" not in unsafe_parameter and "annotation" not in unsafe_parameter
         assert "Unsafe" not in unsafe["signature"] and "..." in unsafe["signature"]
+        unsupported_literal = metadata["inspect_unsupported_literal"]
+        unsupported_parameter = unsupported_literal["parameters"][0]
+        assert "annotation" not in unsupported_parameter
+        assert "choices" not in unsupported_parameter
+        assert "Unsafe" not in unsupported_literal["signature"]
         assert json.loads(json.dumps(component_result, allow_nan=False)) == component_result
 
         add_codes = _bridge_code("add_component", notebook_path)
