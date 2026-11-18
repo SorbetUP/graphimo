@@ -155,8 +155,7 @@ def test_inspect_links_only_exact_generated_component_markers_and_call(tmp_path,
         "def normalize(image):\n    return image + 1\n",
         encoding="utf-8",
     )
-    discovered = dispatch({"op": "list_components", "root": str(component.parent)}, host.context)
-    source_hash = discovered["components"][0]["source_sha256"]
+    source_hash = "a" * 64
     generated = (
         "# Graphimo component: normalize.py\n"
         f"# Graphimo source sha256: {source_hash}\n"
