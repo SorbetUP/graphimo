@@ -614,16 +614,20 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         real_component_result = json.loads(_execute(base, session, add_codes[0]))
         real_normalize = next(item for item in real_component_result["components"] if item["id"] == "normalize.py")
         assert real_normalize["callables"][0]["parameters"][0]["positional"] is True
+        real_hash = real_normalize["source_sha256"]
+        assert len(real_hash) == 64 and all(char in "0123456789abcdef" for char in real_hash)
         added = json.loads(_execute(base, session, add_codes[1]))
         assert added["ok"] is True
         assert "normalize(data)" in added["source"]
         assert "# Graphimo callable: normalize" in added["source"]
+        shim_hash = "a" * 64
+        assert f"# Graphimo source sha256: {shim_hash}\n" in added["source"]
         linked_snapshot = json.loads(_execute(base, session, inspect_code))
         linked_cell = next(cell for cell in linked_snapshot["cells"] if cell["id"] == added["cell_id"])
         assert linked_cell["graphimo_component"] == {
             "component_id": "normalize.py",
             "callable": "normalize",
-            "source_sha256": real_normalize["source_sha256"],
+            "source_sha256": shim_hash,
         }
 
         connect_code = _bridge_code(
