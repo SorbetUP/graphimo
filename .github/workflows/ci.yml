@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "chatgpt/**"]
+  pull_request:
+
+jobs:
+  python-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Graphimo test dependencies
+        run: python -m pip install -e '.[notebook,dev]' websockets
+      - name: Ruff
+        run: ruff check adapter examples components tests
+      - name: Pytest
+        env:
+          GRAPHIMO_MARIMO_PYTHON: ${{ env.pythonLocation }}/bin/python
+        run: pytest -q
+
+  plugin-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate manifest and architectural invariants
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("plugin/zeron-plugin.json").read_text())
+          assert manifest["id"] == "graphimo"
+          assert {"pages.add", "tools", "commands", "web"}.issubset(manifest["permissions"])
+
+          init = Path("plugin/init.luau").read_text()
+          bridge = Path("plugin/marimo_bridge.luau").read_text()
+          meta = Path("plugin/pytorch_meta_editor.luau").read_text()
+
+          assert '@ds/code_editor' in init
+          assert 'zeron.open_url(started.url)' not in init
+          assert 'ui.webview' in init
+          assert 'marimo._code_mode' in bridge
+          assert 'clone().embed(defs=' in bridge
+          assert 'class GraphimoModel(nn.Module)' in bridge
+          assert 'ctx.run_cell' in bridge
+          assert 'ctx.edit_cell' in bridge
+          assert 'Elements are definition-only' in meta
+          PY
