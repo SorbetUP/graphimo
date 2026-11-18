@@ -93,6 +93,24 @@ zeron.tool({ name = "connect", run = function(args)
 	return start_tool(function() return Bridge.connect(zeron, url, token, session, args.from_cell_id, args.variable, args.to_cell_id, args.input_ref) end)
 end })
 
+zeron.tool({ name = "save_group", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function()
+		return Bridge.save_group(zeron, url, token, session, saved.path or "", args.cell_ids or {}, args.positions or {}, args.name or "Group", args.category or "general")
+	end)
+end })
+
+zeron.tool({ name = "add_group", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function()
+		return Bridge.add_group(zeron, url, token, session, saved.path or "", args.group_id, args.output_prefix or "group")
+	end)
+end })
+
 zeron.tool({ name = "run", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
