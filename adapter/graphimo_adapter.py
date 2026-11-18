@@ -144,7 +144,7 @@ def _safe_annotation_text(annotation: Any) -> str | None:
             return None
     choices = _literal_choices(annotation)
     if choices is not None and all(_scalar_default(choice) for choice in choices):
-        return "Literal[" + ", ".join(json.dumps(choice, ensure_ascii=False) for choice in choices) + "]"
+        return "Literal[" + ", ".join(repr(choice) for choice in choices) + "]"
     return None
 
 
@@ -185,7 +185,7 @@ def _safe_signature(signature: inspect.Signature) -> str:
         text = _safe_annotation_text(parameter.annotation)
         choices = _literal_choices(parameter.annotation)
         if text is None and choices is not None and all(_scalar_default(choice) for choice in choices):
-            text = "Literal[" + ", ".join(json.dumps(choice, ensure_ascii=False) for choice in choices) + "]"
+            text = "Literal[" + ", ".join(repr(choice) for choice in choices) + "]"
         default = (
             parameter.default
             if parameter.default is inspect.Parameter.empty or _scalar_default(parameter.default)
