@@ -15,6 +15,8 @@ local ContextMenu = require("@ds/context_menu")
 local Dialog = require("@ds/dialog").Dialog
 local TextField = require("@ds/text_field")
 local TextArea = require("@ds/text_area")
+local Select = require("@ds/select")
+local Slider = require("@ds/slider")
 local PyTorchMeta = require("./pytorch_meta")
 local PyTorchMetaEditor = require("./pytorch_meta_editor")
 
@@ -170,6 +172,12 @@ zeron.tool({ name = "save_component", run = function(args)
 	end)
 end })
 
+zeron.tool({ name = "set_control", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return start_tool(function() return Bridge.set_control(zeron, url, token, session, args.object_id, args.frontend_value) end)
+end })
+
 zeron.tool({ name = "run", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
@@ -265,6 +273,7 @@ local Page = ui.component(function()
 	local notice = ui.use_state("")
 	local canvas = ui.ref()
 	local drag = nil
+	local control_states = {}
 
 	local function cells_now()
 		return snapshot:get().cells or {}
@@ -272,8 +281,21 @@ local Page = ui.component(function()
 
 	local base_blocks = ui.computed(function()
 		local blocks = BaseBlock.by_cell(components:get(), cells_now())
+		local controls_by_cell = {}
+		for _, control in snapshot:get().controls or {} do
+			local list = controls_by_cell[control.cell_id] or {}
+			controls_by_cell[control.cell_id] = list
+			table.insert(list, control)
+		end
 		for _, cell in cells_now() do
-			if cell.graphimo_kind == "display" then
+			local cell_controls = controls_by_cell[cell.id]
+			if cell_controls and #cell_controls > 0 then
+				local outputs = {}
+				for _, name in cell.defs or {} do
+					table.insert(outputs, { name = name, port_key = name, annotation = (cell.values and cell.values[name] and cell.values[name].type) or "UIElement", expression = name, variable = name, runtime = cell.values and cell.values[name] or nil })
+				end
+				blocks[cell.id] = { cell_id = cell.id, callable = if #cell_controls == 1 then tostring(cell_controls[1].label or cell_controls[1].kind) else "Controls", kind = "control", inputs = {}, outputs = outputs, controls = cell_controls }
+			elseif cell.graphimo_kind == "display" then
 				blocks[cell.id] = { cell_id = cell.id, callable = "Display", kind = "display", inputs = { { name = "value", port_key = "value", annotation = "Any" } }, outputs = {} }
 			elseif cell.graphimo_kind == "annotation" then
 				blocks[cell.id] = { cell_id = cell.id, callable = "Annotation", kind = "annotation", inputs = {}, outputs = {} }
@@ -426,6 +448,14 @@ local Page = ui.component(function()
 			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
 		end, function(value)
 			snapshot:set(value)
+			for _, control in value.controls or {} do
+				local key = tostring(control.object_id or (control.cell_id .. ":" .. control.name))
+				local state = control_states[key]
+				if state then
+					local next_value = if control.kind == "dropdown" then control.selected_key else control.frontend_value
+					if next_value ~= nil and state:peek() ~= next_value then state:set(next_value) end
+				end
+			end
 			local ids = {}
 			for _, cell in value.cells or {} do table.insert(ids, cell.id) end
 			visible_cell_ids:set(ids)
@@ -619,6 +649,81 @@ local Page = ui.component(function()
 		text = tostring(text or "")
 		if #text <= limit then return text end
 		return string.sub(text, 1, math.max(1, limit - 1)) .. "…"
+	end
+
+	local function control_state(control)
+		local key = tostring(control.object_id or (control.cell_id .. ":" .. control.name))
+		local state = control_states[key]
+		local initial = control.frontend_value
+		if control.kind == "dropdown" then
+			initial = control.selected_key
+		end
+		if state == nil then
+			state = ui.state("graphimo_control_" .. key, initial)
+			control_states[key] = state
+		end
+		return state
+	end
+
+	local function send_control(control, frontend_value)
+		observe("Set control " .. tostring(control.label or control.name), function()
+			return Bridge.set_control(zeron, url:peek(), token:peek(), session_id:peek(), control.object_id, frontend_value)
+		end, function()
+			ui.after(80, refresh_graph)
+		end, function(err) notice:set("Control update failed: " .. tostring(err)) end)
+	end
+
+	local function control_node(control)
+		local state = control_state(control)
+		if control.kind == "slider" then
+			local steps = control.steps or {}
+			local min = tonumber(control.min) or 0
+			local max = tonumber(control.max) or 1
+			local step = tonumber(control.step)
+			return Slider {
+				value = state,
+				min = min,
+				max = max,
+				step = step,
+				label = tostring(control.label or control.name or "Slider"),
+				w_full = true,
+				format = function(v)
+					if #steps > 0 then
+						local index = math.floor(v + 0.5) + 1
+						return tostring(steps[index] or v)
+					end
+					return tostring(v)
+				end,
+				on_change = function(v) send_control(control, v) end,
+			}
+		elseif control.kind == "dropdown" then
+			local options = {}
+			for _, choice in control.choices or {} do table.insert(options, { value = choice.frontend_value, label = tostring(choice.label) }) end
+			return Select {
+				value = state,
+				label = tostring(control.label or control.name or "Dropdown"),
+				options = options,
+				w_full = true,
+				on_change = function(v) send_control(control, if v == nil then {} else { v }) end,
+			}
+		end
+		return Text { tostring(control.label or control.name or "Unsupported marimo control"), style = "caption", tone = "secondary" }
+	end
+
+	local function control_overlay(cell)
+		local block = base_blocks:get()[cell.id]
+		if not block or block.kind ~= "control" then return nil end
+		local p = positions:get()[cell.id] or { x = 0, y = 0 }
+		local width = Canvas.width_of(p)
+		return ui.column {
+			absolute = true,
+			left = function() return pan_x:get() + ((positions:get()[cell.id] or {}).x or 0) * zoom:get() + 12 * zoom:get() end,
+			top = function() return pan_y:get() + ((positions:get()[cell.id] or {}).y or 0) * zoom:get() + (Canvas.header_height + 36) * zoom:get() end,
+			w = function() return math.max(120, (Canvas.width_of(positions:get()[cell.id] or {}) - 24) * zoom:get()) end,
+			gap = "$space.2",
+			pointer_events = "auto",
+			ui.each(function() return (base_blocks:get()[cell.id] and base_blocks:get()[cell.id].controls) or {} end, control_node, { key = function(control) return tostring(control.object_id or control.name) end }),
+		}
 	end
 
 	local function card(id)
@@ -1384,6 +1489,7 @@ local Page = ui.component(function()
 				end,
 				},
 			},
+			ui.each(function() return positioned_cells() end, function(cell) return control_overlay(cell) end, { key = function(cell) return cell.id end, absolute = true, left = 0, top = 0, w_full = true, h_full = true, pointer_events = "none" }),
 			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
 			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
