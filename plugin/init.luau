@@ -167,7 +167,15 @@ local Page = ui.component(function()
 	end
 
 	local base_blocks = ui.computed(function()
-		return BaseBlock.by_cell(components:get(), cells_now())
+		local blocks = BaseBlock.by_cell(components:get(), cells_now())
+		for _, cell in cells_now() do
+			if cell.graphimo_kind == "display" then
+				blocks[cell.id] = { cell_id = cell.id, callable = "Display", kind = "display", inputs = { { name = "value", port_key = "value", annotation = "Any" } }, outputs = {} }
+			elseif cell.graphimo_kind == "annotation" then
+				blocks[cell.id] = { cell_id = cell.id, callable = "Annotation", kind = "annotation", inputs = {}, outputs = {} }
+			end
+		end
+		return blocks
 	end)
 
 	local function log(message, level)
@@ -550,10 +558,20 @@ local Page = ui.component(function()
 					end, { key = function(output) return tostring(output.port_key or output.variable or output.name) end }),
 				},
 			},
-			-- Rich marimo output is only shown for ordinary/display cells. Function
-			-- blocks expose their values through output ports instead.
-			ui.show(function() local value = cell(); return block() == nil and value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
-				ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 64, fit = "contain" }),
+			-- Function blocks expose values through ports. Display/annotation blocks
+			-- intentionally render marimo's main rich output inside the card.
+			ui.show(function()
+				local value, b = cell(), block()
+				return value and type(value.output) == "table" and value.output.image_data_url ~= nil and (b == nil or b.kind == "display" or b.kind == "annotation")
+			end, ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 74, fit = "contain" }),
+			ui.show(function()
+				local value, b = cell(), block()
+				return value and type(value.output) == "table" and value.output.mimetype == "text/markdown" and (b == nil or b.kind == "display" or b.kind == "annotation")
+			end, Markdown { text = function() local value = cell(); return value and value.output and value.output.preview or "" end }),
+			ui.show(function()
+				local value, b = cell(), block()
+				return value and type(value.output) == "table" and not value.output.image_data_url and value.output.mimetype ~= "text/markdown" and (b and b.kind == "display")
+			end, Text { function() local value = cell(); return truncate(value and value.output and value.output.preview or "", 180) end, style = "caption", tone = "secondary", wrap = true }),
 		})
 		return ui.div(style)
 	end
@@ -705,7 +723,7 @@ local Page = ui.component(function()
 		end, function(err) notice:set("Could not delete cell: " .. tostring(err)) end)
 	end
 
-	local function add_selected_component(item, callable)
+	local function add_selected_component(item, callable, at_x, at_y)
 		if not item or not callable then
 			for _, candidate in components:peek() do
 				if candidate.id == component_id:peek() then
@@ -727,9 +745,15 @@ local Page = ui.component(function()
 		output_counter:set(next_number + 1)
 		observe("Add component " .. item.id .. "::" .. callable.name, function()
 			return Bridge.add_component(zeron, url:peek(), token:peek(), session_id:peek(), item.id, callable.name, out, bindings)
-		end, function()
+		end, function(value)
+			if at_x and at_y and type(value) == "table" and value.cell_id then
+				local next = table.clone(positions:peek())
+				next[value.cell_id] = { x = at_x, y = at_y }
+				positions:set(next)
+				save_positions()
+			end
 			notice:set("Inserted ordinary Python into the marimo notebook")
-			refresh_graph()
+			ui.after(120, refresh_graph)
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
 	end
 
@@ -759,6 +783,55 @@ local Page = ui.component(function()
 					end, function(err) notice:set("Could not save cell: " .. tostring(err)) end)
 				end,
 			},
+		}
+	end
+
+	local function create_block_at(source, x, y, label)
+		observe(label or "Create block", function()
+			return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), source)
+		end, function(value)
+			if type(value) == "table" and value.cell_id then
+				local next = table.clone(positions:peek())
+				next[value.cell_id] = { x = x, y = y }
+				positions:set(next)
+				save_positions()
+				selected:set(value.cell_id)
+			end
+			ui.after(120, refresh_graph)
+		end, function(err) notice:set("Could not create block: " .. tostring(err)) end)
+	end
+
+	local function component_context_entries(x, y)
+		local groups = Library.project(components:peek(), "")
+		local result = {}
+		for _, group in groups do
+			local entries = {}
+			for _, item in group.components or {} do
+				if #(item.callables or {}) == 1 then
+					local callable = item.callables[1]
+					table.insert(entries, { label = callable.name, on_select = function() add_selected_component(item, callable, x, y) end })
+				else
+					local callable_entries = {}
+					for _, callable in item.callables or {} do
+						table.insert(callable_entries, { label = callable.name, on_select = function() add_selected_component(item, callable, x, y) end })
+					end
+					table.insert(entries, { label = string.gsub(item.id, "/", " · "), submenu = callable_entries })
+				end
+			end
+			if #entries > 0 then table.insert(result, { label = group.category, submenu = entries }) end
+		end
+		return result
+	end
+
+	local function canvas_menu(at)
+		local x, y = Canvas.point({ local_x = at.local_x, local_y = at.local_y }, zoom:peek(), pan_x:peek(), pan_y:peek())
+		local component_entries = component_context_entries(x, y)
+		return {
+			{ label = "Code block", icon = "code", on_select = function() create_block_at("pass", x, y, "Create code block") end },
+			{ label = "Annotation", icon = "text", on_select = function() create_block_at("# Graphimo annotation\\n__import__('marimo').md(\\"Annotation\\")", x, y, "Create annotation") end },
+			{ label = "Display", icon = "eye", on_select = function() create_block_at("# Graphimo display\\nNone", x, y, "Create display block") end },
+			{ separator = true },
+			{ label = "Component", icon = "blocks", disabled = if #component_entries == 0 then "No components found" else false, submenu = component_entries },
 		}
 	end
 
@@ -838,7 +911,11 @@ local Page = ui.component(function()
 			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
 				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
 			},
-			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
+			ContextMenu {
+				items = canvas_menu,
+				label = "Graphimo canvas actions",
+				absolute = true, left = 0, top = 0, right = 0, bottom = 0,
+				ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
 				on_mount = function()
 					ui.after(150, function()
 						if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
@@ -850,16 +927,29 @@ local Page = ui.component(function()
 					if e.dy ~= 0 then zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), e.local_x or (canvas.width or 0) / 2, e.local_y or (canvas.height or 0) / 2) end
 					return true
 				end,
-			},
-			},
+				},
+			},			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
 			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
-				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
+				Button { "Terminal", tone = function() return if terminal_mode:get() == "terminal" then "primary" else "secondary" end, size = "sm", on_click = function() terminal_mode:set("terminal") end },
+				Button { "All logs", tone = function() return if terminal_mode:get() == "all" then "primary" else "secondary" end, size = "sm", on_click = function() terminal_mode:set("all") end },
+				ui.div { grow = 1 },
 				Button { "Read marimo log", tone = "secondary", size = "sm", on_click = refresh_marimo_log },
 				Button { "Export logs", tone = "secondary", size = "sm", on_click = export_logs },
 			},
 			Text { function()
+				if terminal_mode:get() == "terminal" then
+					local lines = {}
+					for _, cell in snapshot:get().cells or {} do
+						if #(cell.console or {}) > 0 then
+							local b = base_blocks:get()[cell.id]
+							table.insert(lines, "> " .. tostring((b and b.callable) or cell.name or ("Cell " .. string.sub(cell.id, 1, 7))))
+							for _, message in cell.console or {} do table.insert(lines, tostring(message.text or "")) end
+						end
+					end
+					return if #lines == 0 then "No stdout/stderr from blocks yet" else table.concat(lines, "\n")
+				end
 				local recent = log_entries:get()
 				local problems = problem_entries:get()
 				local first = math.max(1, #recent - 30)
