@@ -25,6 +25,9 @@ stores only cell presentation state in `.graphimo.json`.
   The on-screen log state survives page reloads.
 - Discover public callables in `.py` files and packages under the notebook's
   `components/` directory, then insert a readable ordinary Python cell.
+- Browse the discovered library in the collapsible **Components** panel, search
+  component IDs/categories/callable details, and expand a component to add one
+  of its callables. **Terminal** and its saved logs can be closed independently.
 - Drag an output to an input for one deliberately narrow Python edit. Ambiguous
   edits are refused and the source remains available in marimo's editor.
 - Detect source hash changes for inserted components and update their marker
@@ -66,6 +69,15 @@ Public functions are discovered with `inspect.signature`; `__all__` is
 respected when present. No Graphimo base class, decorator, manifest, or
 annotation is required. A selected function becomes a normal marimo cell, for
 example `normalized = ...normalize(image=image)`, which can be edited freely.
+The Components panel groups entries by their `category` metadata (or **Components**
+for root-level files) and searches callable names, signatures, and descriptions.
+Parameter metadata is inspected safely for discovery; dedicated parameter editing
+controls are not implemented yet, so adjust values in the generated Python cell.
+Generated component cards can show a read-only Base Block summary of safe,
+signature-derived inputs and outputs; these labels are not interactive ports.
+Bridge inspection can inventory live marimo `slider` and `dropdown` widgets on the
+pinned marimo 0.25.2 runtime, but Graphimo does not render or edit those controls;
+use marimo for widget interaction.
 
 ## Persistence and boundaries
 
