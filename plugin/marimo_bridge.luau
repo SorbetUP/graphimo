@@ -208,14 +208,16 @@ end
 -- Find a running no-token marimo editor for this notebook, or ask marimo to
 -- start one on its own default free port. The detached process is only the
 -- bridge needed to own a live marimo session; all notebook work stays there.
-function Bridge.open_notebook(zeron, notebook_path)
+function Bridge.open_notebook(zeron, notebook_path, environment)
 	if type(notebook_path) ~= "string" or notebook_path == "" then
 		return future():after(function() return failure("Choose a notebook first", "selection_required") end)
 	end
 	local script = table.concat({
 		"import glob, json, os, pathlib, re, shutil, subprocess, sys, time, urllib.request, venv",
 		"notebook = pathlib.Path(sys.argv[1]).expanduser().resolve()",
-		"if notebook.suffix.lower() != '.py' or not notebook.is_file(): raise SystemExit('Choose an existing Python notebook (.py)')",
+		"environment = sys.argv[2] if len(sys.argv) > 2 else 'auto'",
+		"if environment not in ('auto', 'project-.venv', 'project-venv', 'system', 'managed'): raise SystemExit('Unknown Graphimo execution environment: ' + environment)",
+		"if notebook.suffix.lower() != '.py' or not notebook.is_file(): raise SystemExit('Choose an existing Python notebook (.py)')"
 		"registry = pathlib.Path.home() / '.local/state/marimo/servers'",
 		"def registered():",
 		"    for name in sorted(glob.glob(str(registry / '*.json'))):",
@@ -257,20 +259,33 @@ function Bridge.open_notebook(zeron, notebook_path)
 		"binary_dir = 'Scripts' if os.name == 'nt' else 'bin'",
 		"python_name = 'python.exe' if os.name == 'nt' else 'python'",
 		"state = pathlib.Path.home() / '.local/share/graphimo/marimo-0.25.2'",
-		"candidates = [notebook.parent / '.venv' / binary_dir / python_name, notebook.parent / 'venv' / binary_dir / python_name, pathlib.Path(sys.executable), state / binary_dir / python_name]",
-		"runtime = next((str(candidate) for candidate in candidates if candidate.is_file() and version_for(candidate) == PINNED_MARIMO), None)",
-		"cli = shutil.which('marimo')",
-		"if not runtime and cli:",
-		"    try:",
-		"        output = subprocess.run([cli, '--version'], capture_output=True, check=False, text=True, timeout=10).stdout",
-		"        version = re.search(r'\\b(\\d+\\.\\d+\\.\\d+)\\b', output)",
-		"        if version and version.group(1) == PINNED_MARIMO: cli = cli",
-		"        else: cli = None",
-		"    except Exception: cli = None",
+		"candidate_map = {",
+		"    'project-.venv': notebook.parent / '.venv' / binary_dir / python_name,",
+		"    'project-venv': notebook.parent / 'venv' / binary_dir / python_name,",
+		"    'system': pathlib.Path(sys.executable),",
+		"    'managed': state / binary_dir / python_name,",
+		"}",
+		"runtime = None; cli = None",
+		"if environment == 'auto':",
+		"    candidates = [candidate_map['project-.venv'], candidate_map['project-venv'], candidate_map['system'], candidate_map['managed']]",
+		"    runtime = next((str(candidate) for candidate in candidates if candidate.is_file() and version_for(candidate) == PINNED_MARIMO), None)",
+		"    cli = shutil.which('marimo')",
+		"    if not runtime and cli:",
+		"        try:",
+		"            output = subprocess.run([cli, '--version'], capture_output=True, check=False, text=True, timeout=10).stdout",
+		"            version = re.search(r'\\b(\\d+\\.\\d+\\.\\d+)\\b', output)",
+		"            if not version or version.group(1) != PINNED_MARIMO: cli = None",
+		"        except Exception: cli = None",
+		"else:",
+		"    candidate = candidate_map[environment]",
+		"    if candidate.is_file() and version_for(candidate) == PINNED_MARIMO: runtime = str(candidate)",
 		"with log_path.open('ab') as log:",
 		"    try:",
 		"        if not runtime and not cli:",
-		"            log.write(('No Python environment with marimo==' + PINNED_MARIMO + ' was found; preparing a private environment.\\n').encode())",
+		"            if environment not in ('auto', 'managed'):",
+		"                candidate = candidate_map[environment]",
+		"                raise RuntimeError(str(candidate) + ' does not contain marimo==' + PINNED_MARIMO)",
+		"            log.write(('No selected environment with marimo==' + PINNED_MARIMO + ' was found; preparing Graphimo managed environment.\\n').encode())",
 		"            state.parent.mkdir(parents=True, exist_ok=True)",
 		"            venv.EnvBuilder(with_pip=True, clear=state.exists()).create(str(state))",
 		"            managed_python = state / binary_dir / python_name",
@@ -294,7 +309,7 @@ function Bridge.open_notebook(zeron, notebook_path)
 		"tail = log_path.read_text(errors='replace')[-6000:] if log_path.exists() else ''",
 		"raise SystemExit('marimo did not start (pid %s). Log: %s\\n%s' % (process.pid, log_path, tail))",
 	}, "\n")
-	local request = zeron.run("python3", { "-c", script, notebook_path }, { timeout = 300 })
+	local request = zeron.run("python3", { "-c", script, notebook_path, environment or "auto" }, { timeout = 300 })
 	return from_zeron(request):after(function(response)
 		local stdout = if type(response.stdout) == "string" then response.stdout else ""
 		local marker = string.find(stdout, "GRAPHIMO_LAUNCH:", 1, true)
