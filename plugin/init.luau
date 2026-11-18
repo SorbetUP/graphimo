@@ -239,6 +239,10 @@ local Page = ui.component(function()
 	local component_save_dialog = ui.use_state(false)
 	local component_save_name = ui.use_state("component")
 	local component_save_category = ui.use_state("general")
+	local agent_dialog = ui.use_state(false)
+	local agent_prompt = ui.use_state("")
+	local agent_mode = ui.use_state("create")
+	local agent_target = ui.use_state("")
 	local library_query = ui.use_state("")
 	local expanded_component = ui.use_state("")
 	local positions = ui.use_state({})
@@ -1124,6 +1128,55 @@ local Page = ui.component(function()
 		start_notebook(group.path)
 	end
 
+	local function project_dir(path)
+		if type(path) ~= "string" then return nil end
+		local normalized = string.gsub(path, "\\\\", "/")
+		local parent = string.match(normalized, "^(.*)/[^/]+$")
+		return parent
+	end
+
+	local function open_agent_dialog(mode)
+		agent_mode:set(mode or "create")
+		local cell = selected_cell()
+		agent_target:set(cell and cell.id or "")
+		if mode == "create" then
+			agent_prompt:set("Create a Python block that ")
+		else
+			agent_prompt:set("Improve this block while preserving its intended inputs and outputs. ")
+		end
+		agent_dialog:set(true)
+	end
+
+	local function launch_agent()
+		local notebook = snapshot:peek().notebook.path or active_notebook:peek().path or ""
+		local mode = agent_mode:peek()
+		local target = agent_target:peek()
+		local user_words = agent_prompt:peek()
+		local cell = nil
+		for _, item in cells_now() do if item.id == target then cell = item; break end end
+		local instructions = {
+			"You are editing Graphimo, a Zeron visual frontend over a live marimo notebook.",
+			"Use the Graphimo plugin tools instead of inventing another graph/runtime.",
+			"Active notebook: " .. notebook,
+		}
+		if mode == "create" then
+			table.insert(instructions, "Task: create one new Graphimo/marimo code block. Inspect the graph first, then call graphimo__create_block with readable Python source. If explicit ports are needed for non-function-like code, use graphimo__set_ports after creation.")
+		elseif cell and cell.graphimo_meta then
+			table.insert(instructions, "Task: edit PyTorch Meta Block " .. tostring(cell.graphimo_meta.meta_id) .. ". Use graphimo__get_pytorch_meta and graphimo__save_pytorch_meta. Internal PyTorch Elements are definition-only; never turn them into marimo cells.")
+		elseif cell and cell.graphimo_group then
+			table.insert(instructions, "Task: edit the referenced Group Block " .. tostring(cell.graphimo_group.group_id) .. ". Its definition is a marimo notebook under components/groups. Preserve reference semantics and do not inline/copy it into the parent notebook.")
+		else
+			table.insert(instructions, "Task: edit block/cell id " .. target .. ". Read it with graphimo__open_code, change it with graphimo__edit_block, and inspect the graph after the edit.")
+		end
+		table.insert(instructions, "User request: " .. user_words)
+		table.insert(instructions, "Do not modify unrelated blocks. Keep normal Python readable outside Graphimo.")
+		local cwd = project_dir(notebook)
+		agent_dialog:set(false)
+		zeron.new_chat({ prompt = table.concat(instructions, "\n\n"), cwd = cwd }):after(function(result)
+			if result and result.chat then zeron.open({ session = result.chat }) end
+		end, function(err) notice:set("Could not start agent: " .. tostring(err)) end)
+	end
+
 	local function open_ports_editor()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a block first"); return end
@@ -1364,6 +1417,7 @@ local Page = ui.component(function()
 		end
 		return {
 			{ label = "Code block", on_select = function() create_block_at("pass", x, y, "Create code block") end },
+			{ label = "Create with agent…", on_select = function() selected:set(""); selected_many:set({}); open_agent_dialog("create") end },
 			{ label = "Annotation", on_select = function() create_block_at("# Graphimo annotation\\n__import__('marimo').md(\\"Annotation\\")", x, y, "Create annotation") end },
 			{ label = "Display", on_select = function() create_block_at("# Graphimo display\\nNone", x, y, "Create display block") end },
 			{ separator = true },
@@ -1464,6 +1518,7 @@ local Page = ui.component(function()
 		ui.row { w_full = true, gap = "$space.2", items = "center",
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_selected },
+			Button { "Agent", tone = "secondary", size = "sm", on_click = function() open_agent_dialog(if selected:get() == "" then "create" else "edit") end },
 			Button { "Ports", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_ports_editor },
 			Button { "Save component", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function()
 				local cell = selected_cell(); if cell then component_save_name:set(cell.name or "component"); component_save_dialog:set(true) end
@@ -1554,6 +1609,13 @@ local Page = ui.component(function()
 			h = 2,
 			pointer_events = "none",
 		}),
+		Dialog {
+			open = agent_dialog,
+			title = function() return if agent_mode:get() == "create" then "Create block with agent" else "Edit with agent" end,
+			body = "A normal Zeron agent chat will open and use Graphimo's tools against this same live notebook.",
+			confirm = { label = "Open agent", on_click = launch_agent, disabled = function() return agent_prompt:get() == "" end },
+			TextArea { value = agent_prompt, rows = 6, max_rows = 16, w_full = true, name = "Agent request", autofocus = true },
+		},
 		Dialog {
 			open = ports_dialog,
 			title = "Block ports",
