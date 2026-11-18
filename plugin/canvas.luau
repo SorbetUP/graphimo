@@ -1,9 +1,15 @@
 local Canvas = {}
 Canvas.width = 300
+Canvas.min_width = 220
+Canvas.max_width = 900
 Canvas.header_height = 70
 Canvas.port_gap = 27
 
-function Canvas.height(cell, block)
+function Canvas.width_of(view)
+	return math.clamp(tonumber(view and view.width) or Canvas.width, Canvas.min_width, Canvas.max_width)
+end
+
+function Canvas.natural_height(cell, block)
 	if type(block) == "table" then
 		local rows = math.max(#(block.inputs or {}), #(block.outputs or {}), 1)
 		local rich = if block.kind == "display" or block.kind == "annotation" then 96 else 0
@@ -12,6 +18,10 @@ function Canvas.height(cell, block)
 	local rows = math.max(#(cell.refs or {}), #(cell.defs or {}), 1)
 	local media = if type(cell.output) == "table" and cell.output.image_data_url then 72 else 0
 	return math.max(132, Canvas.header_height + rows * Canvas.port_gap + 30 + media)
+end
+
+function Canvas.height(cell, block, view)
+	return math.max(Canvas.natural_height(cell, block), tonumber(view and view.height) or 0)
 end
 
 function Canvas.node(cells, id)
@@ -94,7 +104,7 @@ function Canvas.draw_edges(c, cells, edges, zoom, pan_x, pan_y, selected, pendin
 		local to = Canvas.node(cells, edge.target_cell_id)
 		if from and to then
 			local from_block, to_block = blocks[from.id], blocks[to.id]
-			local x1, y1 = screen((from.x or 0) + Canvas.width, Canvas.port(from, edge.variable, true, from_block))
+			local x1, y1 = screen((from.x or 0) + Canvas.width_of(from), Canvas.port(from, edge.variable, true, from_block))
 			local target_keys = Canvas.input_ports_for_variable(to_block, edge.variable)
 			if #target_keys == 0 then target_keys = { edge.variable } end
 			for _, target_key in target_keys do
@@ -107,7 +117,7 @@ function Canvas.draw_edges(c, cells, edges, zoom, pan_x, pan_y, selected, pendin
 		local from = Canvas.node(cells, pending.from_cell_id)
 		if from then
 			local block = blocks[from.id]
-			local x1, y1 = screen((from.x or 0) + Canvas.width, Canvas.port(from, pending.variable, true, block))
+			local x1, y1 = screen((from.x or 0) + Canvas.width_of(from), Canvas.port(from, pending.variable, true, block))
 			local x2, y2 = screen(pending.x, pending.y)
 			local bend = math.max(52 * zoom, math.abs(x2 - x1) * 0.42)
 			c:stroke(ui.path():move(x1, y1):cubic(x1 + bend, y1, x2 - bend, y2, x2, y2), "$accent", 2 * zoom, { cap = "round" })
