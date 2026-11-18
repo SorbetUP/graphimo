@@ -447,6 +447,25 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
     (component_dir / "normalize.py").write_text(
         "def normalize(image):\n    return image + 1\n", encoding="utf-8"
     )
+    (component_dir / "parameter_metadata.py").write_text(
+        "from typing import Literal\n"
+        "def inspect_values(required, implicit, none_value=None, flag: bool = True, "
+        "count: int = 7, ratio: float = 1.25, label: str = 'sample', "
+        "forward: 'NotImported' = 'x', absent: None = None, "
+        "mode: Literal['small', 'large'] = 'small', "
+        "sequence: list[int] = [], payload: dict = {'x': 1}, "
+        "infinity: float = float('inf')):\n"
+        "    return required, implicit, none_value, flag, count, ratio, label, "
+        "forward, absent, mode, sequence, payload, infinity\n"
+        "class Unsafe:\n"
+        "    def __repr__(self): raise AssertionError('repr was called')\n"
+        "    def __str__(self): raise AssertionError('str was called')\n"
+        "unsafe_annotation = Unsafe()\n"
+        "unsafe_default = Unsafe()\n"
+        "def inspect_unsafe(value: unsafe_annotation = unsafe_default):\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
 
     port = _port()
     base = f"http://127.0.0.1:{port}"
@@ -536,6 +555,30 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         component_result = json.loads(_execute(base, session, component_code))
         normalize = next(item for item in component_result["components"] if item["id"] == "normalize.py")
         assert [item["name"] for item in normalize["callables"]] == ["normalize"]
+        metadata = next(item for item in component_result["components"] if item["id"] == "parameter_metadata.py")["callables"]
+        metadata = {callable_item["name"]: callable_item for callable_item in metadata}
+        values = metadata["inspect_values"]
+        parameters = {parameter["name"]: parameter for parameter in values["parameters"]}
+        assert parameters["required"]["has_default"] is False
+        assert parameters["required"]["required"] is True
+        assert parameters["none_value"]["has_default"] is True
+        assert parameters["none_value"]["default"] is None
+        assert parameters["flag"]["default"] is True and parameters["flag"]["annotation"] == "bool"
+        assert parameters["count"]["default"] == 7 and parameters["count"]["annotation"] == "int"
+        assert parameters["ratio"]["default"] == 1.25 and parameters["ratio"]["annotation"] == "float"
+        assert parameters["label"]["default"] == "sample" and parameters["label"]["annotation"] == "str"
+        assert parameters["forward"]["annotation"] == "NotImported"
+        assert parameters["absent"]["annotation"] == "None"
+        assert parameters["mode"]["choices"] == ["small", "large"]
+        for name in ("sequence", "payload", "infinity"):
+            assert parameters[name]["has_default"] is True
+            assert "default" not in parameters[name]
+        unsafe = metadata["inspect_unsafe"]
+        unsafe_parameter = unsafe["parameters"][0]
+        assert unsafe_parameter["has_default"] is True
+        assert "default" not in unsafe_parameter and "annotation" not in unsafe_parameter
+        assert "Unsafe" not in unsafe["signature"] and "..." in unsafe["signature"]
+        assert json.loads(json.dumps(component_result, allow_nan=False)) == component_result
 
         add_codes = _bridge_code("add_component", notebook_path)
         assert len(add_codes) == 2
