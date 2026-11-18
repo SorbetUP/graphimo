@@ -14,6 +14,8 @@ local CodeEditor = require("@ds/code_editor")
 local ContextMenu = require("@ds/context_menu")
 local Dialog = require("@ds/dialog").Dialog
 local TextField = require("@ds/text_field")
+local TextArea = require("@ds/text_area")
+local PyTorchMeta = require("./pytorch_meta")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -171,6 +173,20 @@ local Page = ui.component(function()
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
 	local groups = ui.use_state({})
+	local metas = ui.use_state({})
+	local meta_create_dialog = ui.use_state(false)
+	local meta_create_name = ui.use_state("PyTorch model")
+	local meta_create_category = ui.use_state("models")
+	local meta_create_x = ui.use_state(120)
+	local meta_create_y = ui.use_state(120)
+	local meta_editor_open = ui.use_state(false)
+	local meta_editor_id = ui.use_state("")
+	local meta_editor_data = ui.use_state({})
+	local meta_selected = ui.use_state("")
+	local meta_params_text = ui.use_state("{}")
+	local meta_dirty = ui.use_state(false)
+	local meta_pending = ui.use_state(nil)
+	local meta_node_counter = ui.use_state(10)
 	local group_dialog = ui.use_state(false)
 	local group_name = ui.use_state("New group")
 	local group_category = ui.use_state("general")
@@ -210,6 +226,19 @@ local Page = ui.component(function()
 				table.sort(outputs, function(a, b) return a.name < b.name end)
 				local shown = string.match(ref.group_id or "Group", "([^/]+)$") or "Group"
 				blocks[cell.id] = { cell_id = cell.id, callable = shown, kind = "group", group_id = ref.group_id, inputs = inputs, outputs = outputs }
+			elseif cell.graphimo_kind == "meta" and type(cell.graphimo_meta) == "table" then
+				local ref = cell.graphimo_meta
+				local shown = string.match(ref.meta_id or "PyTorch model", "([^/]+)$") or "PyTorch model"
+				for _, meta in metas:get() do if meta.id == ref.meta_id then shown = meta.name or shown; break end end
+				blocks[cell.id] = {
+					cell_id = cell.id,
+					callable = shown,
+					kind = "meta",
+					meta_kind = ref.kind,
+					meta_id = ref.meta_id,
+					inputs = {},
+					outputs = { { name = "model", port_key = "model", annotation = "torch.nn.Module", expression = shown, variable = ref.output, runtime = cell.values and cell.values[ref.output] or nil } },
+				}
 			end
 		end
 		return blocks
@@ -309,7 +338,7 @@ local Page = ui.component(function()
 			if session_id:peek() == "" then
 				snapshot:set({ notebook = {}, cells = {}, edges = {} })
 				visible_cell_ids:set({})
-				positions:set({}); components:set({}); groups:set({}); selected:set(""); selected_many:set({})
+				positions:set({}); components:set({}); groups:set({}); metas:set({}); selected:set(""); selected_many:set({})
 			end
 			notice:set(if #items == 0 then "No active marimo notebooks found" else "Found " .. tostring(#items) .. " active notebook(s)")
 			if session_id:peek() ~= "" then refresh_graph() end
@@ -346,6 +375,7 @@ local Page = ui.component(function()
 					local available = component_result.components or {}
 					components:set(available)
 					groups:set(component_result.groups or {})
+					metas:set(component_result.metas or {})
 					observe("Check component sources", function()
 						return Bridge.refresh_component_hashes(zeron, url:peek(), token:peek(), value.notebook.session_id, available)
 					end, function(hash_result)
