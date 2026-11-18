@@ -382,9 +382,12 @@ def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, An
     unique_expression = expressions[0] if all(item == expressions[0] for item in expressions) else None
     names = [node.id if isinstance(node, ast.Name) else None for node in values]
     unique_name = names[0] if names[0] and all(item == names[0] for item in names) else None
-    scalar_annotation = annotation_text in _SAFE_SCALAR_ANNOTATIONS
+    scalar_annotation = annotation_text in _SAFE_SCALAR_ANNOTATIONS or (
+        isinstance(annotation_text, str) and annotation_text.startswith("Literal[")
+    )
     scalar_constants = all(
-        isinstance(node, ast.Constant) and type(node.value) in (bool, int, float, str)
+        isinstance(node, ast.Constant)
+        and (type(node.value) in (bool, int, str) or (type(node.value) is float and math.isfinite(node.value)))
         for node in values
     )
     if not scalar_annotation and not scalar_constants:
