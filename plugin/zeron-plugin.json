@@ -1,7 +1,7 @@
 {
   "id": "graphimo",
   "name": "Graphimo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A native Zeron block canvas over live marimo notebooks.",
   "entry": "init.luau",
   "icon": "graphimo.svg",
@@ -397,6 +397,24 @@
         "required": [
           "cell_id",
           "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_control",
+      "description": "Update the frontend value of a real marimo UIElement; marimo remains authoritative and reruns dependents.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "object_id": {
+            "type": "string"
+          },
+          "frontend_value": {}
+        },
+        "required": [
+          "object_id",
+          "frontend_value"
         ],
         "additionalProperties": false
       }
