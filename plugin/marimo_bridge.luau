@@ -393,6 +393,15 @@ local function code_for(operation, args)
 			"    except Exception: return None",
 			"    if not isinstance(input_map, dict) or not isinstance(output_map, dict): return None",
 			"    return {'group_id': group.group(1), 'source_sha256': digest.group(1), 'inputs': input_map, 'outputs': output_map}",
+			"def graphimo_meta_reference(source):",
+			"    if not isinstance(source, str): return None",
+			"    lines = source.splitlines()",
+			"    if len(lines) < 4: return None",
+			"    meta = re.fullmatch(r'# Graphimo meta: pytorch:([^\\r\\n]+)', lines[0])",
+			"    digest = re.fullmatch(r'# Graphimo meta sha256: ([0-9a-f]{64})', lines[1])",
+			"    output = re.fullmatch(r'# Graphimo meta output: ([A-Za-z_][A-Za-z0-9_]*)', lines[2])",
+			"    if not meta or not digest or not output: return None",
+			"    return {'kind': 'pytorch', 'meta_id': meta.group(1), 'source_sha256': digest.group(1), 'output': output.group(1)}",
 			"async with cm.get_context() as ctx:",
 			"    graph_cells = ctx.graph.cells",
 			"    owners = {}",
@@ -509,8 +518,10 @@ local function code_for(operation, args)
 			"        row = {'id': cid, 'name': cell.name or None, 'source': cell.code, 'defs': defs, 'refs': refs, 'values': values, 'console': console, 'parents': [{'cell_id': key, 'variables': sorted(set(value))} for key, value in parents.items()], 'children': [{'cell_id': key, 'variables': sorted(set(value))} for key, value in children.items()], 'status': str(status or 'unknown'), 'output': output, 'errors': errors}",
 			"        reference = graphimo_reference(cell.code)",
 			"        group_reference = graphimo_group_reference(cell.code)",
+			"        meta_reference = graphimo_meta_reference(cell.code)",
 			"        if reference is not None: row['graphimo_component'] = reference; row['graphimo_kind'] = 'base'",
 			"        elif group_reference is not None: row['graphimo_group'] = group_reference; row['graphimo_kind'] = 'group'",
+			"        elif meta_reference is not None: row['graphimo_meta'] = meta_reference; row['graphimo_kind'] = 'meta'",
 			"        elif cell.code.startswith('# Graphimo annotation'): row['graphimo_kind'] = 'annotation'",
 			"        elif cell.code.startswith('# Graphimo display'): row['graphimo_kind'] = 'display'",
 			"        cells.append(row)",
@@ -678,7 +689,120 @@ local function code_for(operation, args)
 			"            digest = hashlib.sha256(notebook.read_bytes()).hexdigest()",
 			"            groups.append({'id': group_id, 'name': str(meta.get('name') or meta_path.parent.name), 'category': str(meta.get('category') or 'Groups'), 'path': str(notebook), 'source_sha256': digest, 'inputs': meta.get('inputs') or [], 'outputs': meta.get('outputs') or []})",
 			"        except Exception: continue",
-			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'components': components, 'groups': groups}, separators=(',', ':'))) ",
+			"metas = []",
+			"meta_root = root / 'meta' / 'pytorch'",
+			"if meta_root.is_dir():",
+			"    for meta_path in sorted(meta_root.rglob('meta.json')):",
+			"        try:",
+			"            meta = json.loads(meta_path.read_text(encoding='utf-8')); model = meta_path.parent / 'model.py'",
+			"            if not isinstance(meta, dict) or meta.get('kind') != 'pytorch' or meta.get('version') != 1 or not model.is_file(): continue",
+			"            meta_id = meta_path.parent.relative_to(meta_root).as_posix(); digest = hashlib.sha256(model.read_bytes()).hexdigest()",
+			"            metas.append({'id': meta_id, 'name': str(meta.get('name') or meta_path.parent.name), 'category': str(meta.get('category') or 'models'), 'kind': 'pytorch', 'path': str(meta_path), 'model_path': str(model), 'source_sha256': digest})",
+			"        except Exception: continue",
+			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'components': components, 'groups': groups, 'metas': metas}, separators=(',', ':'))) ",
+		}, "\n")
+	elseif operation == "save_pytorch_meta" then
+		return table.concat({
+			"import hashlib, json, pathlib, re",
+			"root = pathlib.Path(" .. ui.json.encode(args.components_root) .. ").resolve() / 'meta' / 'pytorch'",
+			"meta = json.loads(" .. ui.json.encode(ui.json.encode(args.meta or {})) .. ")",
+			"meta_id = str(meta.get('id') or '')",
+			"parts = [part for part in meta_id.split('/') if part]",
+			"if not parts or any(part in ('.', '..') or not re.fullmatch(r'[A-Za-z0-9_-]+', part) for part in parts): raise ValueError('Invalid PyTorch Meta Block id')",
+			"folder = root.joinpath(*parts).resolve()",
+			"if folder != root and root not in folder.parents: raise ValueError('Invalid PyTorch Meta Block path')",
+			"nodes = meta.get('nodes') or []; edges = meta.get('edges') or []",
+			"if not isinstance(nodes, list) or not isinstance(edges, list): raise ValueError('Meta nodes/edges must be arrays')",
+			"by_id = {}",
+			"for node in nodes:",
+			"    if not isinstance(node, dict) or not isinstance(node.get('id'), str) or node['id'] in by_id: raise ValueError('Each Meta element needs a unique id')",
+			"    by_id[node['id']] = node",
+			"allowed = {'Conv1d','Conv2d','Conv3d','Linear','ReLU','GELU','BatchNorm1d','BatchNorm2d','LayerNorm','Dropout','Flatten','MaxPool2d','AdaptiveAvgPool2d','Identity'}",
+			"incoming = {key: [] for key in by_id}; outgoing = {key: [] for key in by_id}",
+			"for edge in edges:",
+			"    if not isinstance(edge, dict) or edge.get('from') not in by_id or edge.get('to') not in by_id or edge.get('from') == edge.get('to'): raise ValueError('Invalid Meta edge')",
+			"    incoming[edge['to']].append(edge['from']); outgoing[edge['from']].append(edge['to'])",
+			"degree = {key: len(incoming[key]) for key in by_id}; queue = [key for key in by_id if degree[key] == 0]; order = []",
+			"while queue:",
+			"    key = queue.pop(0); order.append(key)",
+			"    for child in outgoing[key]:",
+			"        degree[child] -= 1",
+			"        if degree[child] == 0: queue.append(child)",
+			"if len(order) != len(by_id): raise ValueError('PyTorch Meta Block contains a cycle')",
+			"inputs = [by_id[key] for key in order if by_id[key].get('kind') == 'input']; outputs = [by_id[key] for key in order if by_id[key].get('kind') == 'output']",
+			"if not inputs or not outputs: raise ValueError('PyTorch Meta Block needs at least one Input and Output element')",
+			"def ident(text):",
+			"    value = re.sub(r'[^A-Za-z0-9_]', '_', str(text)); value = value if value and not value[0].isdigit() else '_' + value",
+			"    return value",
+			"input_names = []; seen_names = set()",
+			"for index, node in enumerate(inputs, start=1):",
+			"    name = ident((node.get('params') or {}).get('name') or ('x' if index == 1 else f'x{index}'))",
+			"    if name in seen_names: raise ValueError('PyTorch input names must be unique')",
+			"    seen_names.add(name); input_names.append(name)",
+			"lines = ['import importlib', 'import torch', 'from torch import nn', '', 'class GraphimoModel(nn.Module):', '    def __init__(self):', '        super().__init__()']",
+			"module_nodes = [by_id[key] for key in order if by_id[key].get('kind') in ('module','custom')]",
+			"if not module_nodes: lines.append('        pass')",
+			"for node in module_nodes:",
+			"    attr = 'n_' + ident(node['id']); params = node.get('params') or {}; op = node.get('op')",
+			"    if node.get('kind') == 'custom':",
+			"        module_name, class_name = params.get('module'), params.get('class_name'); kwargs = params.get('kwargs') or {}",
+			"        if not isinstance(module_name, str) or not module_name or not isinstance(class_name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', class_name) or not isinstance(kwargs, dict): raise ValueError('Custom nn.Module needs module, class_name and kwargs')",
+			"        lines.append('        self.' + attr + ' = getattr(importlib.import_module(' + repr(module_name) + '), ' + repr(class_name) + ')(**' + repr(kwargs) + ')')",
+			"    else:",
+			"        if op not in allowed: raise ValueError('Unsupported torch.nn element: ' + str(op))",
+			"        if not isinstance(params, dict): raise ValueError('Element params must be an object')",
+			"        lines.append('        self.' + attr + ' = nn.' + op + '(**' + repr(params) + ')')",
+			"lines.append('')",
+			"lines.append('    def forward(self, ' + ', '.join(input_names) + '):')",
+			"values = {}",
+			"for node, name in zip(inputs, input_names): values[node['id']] = name",
+			"for key in order:",
+			"    node = by_id[key]; kind, op = node.get('kind'), node.get('op'); var = 'v_' + ident(key)",
+			"    if kind == 'input': continue",
+			"    parents = incoming[key]",
+			"    if kind in ('module','custom'):",
+			"        if len(parents) != 1: raise ValueError(str(op) + ' needs exactly one incoming element')",
+			"        lines.append('        ' + var + ' = self.n_' + ident(key) + '(' + values[parents[0]] + ')'); values[key] = var",
+			"    elif kind == 'merge' and op == 'Add':",
+			"        if len(parents) < 2: raise ValueError('Add needs at least two incoming elements')",
+			"        lines.append('        ' + var + ' = ' + ' + '.join(values[parent] for parent in parents)); values[key] = var",
+			"    elif kind == 'merge' and op == 'Concat':",
+			"        if len(parents) < 1: raise ValueError('Concat needs at least one incoming element')",
+			"        dim = int((node.get('params') or {}).get('dim', 1)); lines.append('        ' + var + ' = torch.cat((' + ', '.join(values[parent] for parent in parents) + ',), dim=' + str(dim) + ')'); values[key] = var",
+			"    elif kind == 'output':",
+			"        if len(parents) != 1: raise ValueError('Output needs exactly one incoming element')",
+			"        values[key] = values[parents[0]]",
+			"    else: raise ValueError('Unsupported Meta element kind/op: ' + str(kind) + '/' + str(op))",
+			"returned = [values[node['id']] for node in outputs]",
+			"lines.append('        return ' + (returned[0] if len(returned) == 1 else '(' + ', '.join(returned) + ')'))",
+			"lines.extend(['', 'def build_model():', '    return GraphimoModel()', ''])",
+			"folder.mkdir(parents=True, exist_ok=True); model_path = folder / 'model.py'; model_path.write_text('\\n'.join(lines), encoding='utf-8')",
+			"meta['kind'] = 'pytorch'; meta['version'] = 1; (folder / 'meta.json').write_text(json.dumps(meta, indent=2, sort_keys=True) + '\\n', encoding='utf-8')",
+			"digest = hashlib.sha256(model_path.read_bytes()).hexdigest()",
+			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'meta': meta, 'path': str(folder / 'meta.json'), 'model_path': str(model_path), 'source_sha256': digest}, separators=(',', ':'))) ",
+		}, "\n")
+	elseif operation == "get_pytorch_meta" then
+		return table.concat({
+			"import hashlib, json, pathlib",
+			"root = pathlib.Path(" .. ui.json.encode(args.components_root) .. ").resolve() / 'meta' / 'pytorch'",
+			"folder = (root / " .. ui.json.encode(args.meta_id) .. ").resolve()",
+			"if root not in folder.parents: raise ValueError('Invalid PyTorch Meta Block path')",
+			"meta_path, model_path = folder / 'meta.json', folder / 'model.py'; meta = json.loads(meta_path.read_text(encoding='utf-8'))",
+			"digest = hashlib.sha256(model_path.read_bytes()).hexdigest()",
+			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'meta': meta, 'path': str(meta_path), 'model_path': str(model_path), 'source_sha256': digest}, separators=(',', ':'))) ",
+		}, "\n")
+	elseif operation == "add_pytorch_meta" then
+		return table.concat({
+			"import hashlib, json, pathlib, re",
+			"root = pathlib.Path(" .. ui.json.encode(args.components_root) .. ").resolve() / 'meta' / 'pytorch'",
+			"meta_id = " .. ui.json.encode(args.meta_id),
+			"folder = (root / meta_id).resolve()",
+			"if root not in folder.parents: raise ValueError('Invalid PyTorch Meta Block path')",
+			"meta = json.loads((folder / 'meta.json').read_text(encoding='utf-8')); model_path = folder / 'model.py'; digest = hashlib.sha256(model_path.read_bytes()).hexdigest()",
+			"output = re.sub(r'[^A-Za-z0-9_]', '_', " .. ui.json.encode(args.output_name or "model") .. ") or 'model'",
+			"if output[0].isdigit(): output = '_' + output",
+			"lines = [f'# Graphimo meta: pytorch:{meta_id}', f'# Graphimo meta sha256: {digest}', f'# Graphimo meta output: {output}', \"_graphimo_meta_util = __import__('importlib.util', fromlist=['spec_from_file_location','module_from_spec'])\", \"_graphimo_meta_spec = _graphimo_meta_util.spec_from_file_location('graphimo_meta_' + \" + repr(hashlib.sha256(str(model_path).encode()).hexdigest()[:12]) + \", \" + repr(str(model_path)) + \")\", \"_graphimo_meta_module = _graphimo_meta_util.module_from_spec(_graphimo_meta_spec)\", \"_graphimo_meta_spec.loader.exec_module(_graphimo_meta_module)\", output + ' = _graphimo_meta_module.build_model()']",
+			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'source': '\\n'.join(lines) + '\\n', 'meta_id': meta_id, 'output': output, 'source_sha256': digest}, separators=(',', ':'))) ",
 		}, "\n")
 	elseif operation == "save_group" then
 		return table.concat({
@@ -1012,6 +1136,51 @@ function Bridge.add_component(zeron, base, token, session_id, component_id, call
 			if not source then return failure(why, "invalid_component_arguments") end
 			return Bridge.add_cell(zeron, base, token, session_id, source)
 		end)
+	end)
+end
+
+local function meta_components_root(notebook_path)
+	return string.gsub(notebook_path, "[^/]+$", "") .. "components"
+end
+
+function Bridge.save_pytorch_meta(zeron, base, token, session_id, notebook_path, meta)
+	return execute(zeron, base, token, session_id, code_for("save_pytorch_meta", {
+		components_root = meta_components_root(notebook_path),
+		meta = meta,
+	}), 60)
+end
+
+function Bridge.create_pytorch_meta(zeron, base, token, session_id, notebook_path, meta_id, name, category)
+	local default = {
+		id = meta_id,
+		name = name,
+		category = category,
+		kind = "pytorch",
+		version = 1,
+		nodes = {
+			{ id = "input_1", kind = "input", label = "Input", params = { name = "x" }, x = 60, y = 120 },
+			{ id = "output_1", kind = "output", label = "Output", params = { name = "output" }, x = 420, y = 120 },
+		},
+		edges = { { from = "input_1", to = "output_1" } },
+	}
+	return Bridge.save_pytorch_meta(zeron, base, token, session_id, notebook_path, default)
+end
+
+function Bridge.get_pytorch_meta(zeron, base, token, session_id, notebook_path, meta_id)
+	return execute(zeron, base, token, session_id, code_for("get_pytorch_meta", {
+		components_root = meta_components_root(notebook_path),
+		meta_id = meta_id,
+	}), 30)
+end
+
+function Bridge.add_pytorch_meta(zeron, base, token, session_id, notebook_path, meta_id, output_name)
+	return execute(zeron, base, token, session_id, code_for("add_pytorch_meta", {
+		components_root = meta_components_root(notebook_path),
+		meta_id = meta_id,
+		output_name = output_name,
+	}), 30):after(function(result)
+		if is_failure(result) then return result end
+		return Bridge.add_cell(zeron, base, token, session_id, result.source)
 	end)
 end
 
