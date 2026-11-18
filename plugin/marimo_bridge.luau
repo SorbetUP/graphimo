@@ -179,6 +179,32 @@ function Bridge.sessions(zeron, base, token)
 	end)
 end
 
+function Bridge.set_control(zeron, base, token, session_id, object_id, frontend_value)
+	base = api_url(base)
+	if type(session_id) ~= "string" or session_id == "" then return future():after(function() return failure("Select a marimo session first", "selection_required") end) end
+	if type(object_id) ~= "string" or object_id == "" then return future():after(function() return failure("The marimo control no longer exists", "control_unavailable") end) end
+	local payload = ui.json.encode({ objectIds = { object_id }, values = { frontend_value } })
+	local args = {
+		"-fsS",
+		"--connect-timeout", "3",
+		"-X", "POST",
+		"-H", "Accept: application/json",
+		"-H", "Content-Type: application/json",
+		"-H", "Marimo-Session-Id: " .. session_id,
+		"--data-binary", payload,
+	}
+	local config = auth_config(token)
+	if config ~= "" then table.insert(args, "--config"); table.insert(args, "-") end
+	table.insert(args, base .. "/api/kernel/set_ui_element_value")
+	return curl(zeron, args, config, 10):after(function(response)
+		if type(response) ~= "table" then return failure("Marimo returned no response", "control_update_failed") end
+		if tonumber(response.status or 0) ~= 0 then
+			return failure((response.stderr or "Marimo rejected the control update"), "control_update_failed")
+		end
+		return { ok = true }
+	end)
+end
+
 -- Find a running no-token marimo editor for this notebook, or ask marimo to
 -- start one on its own default free port. The detached process is only the
 -- bridge needed to own a live marimo session; all notebook work stays there.
@@ -468,17 +494,32 @@ local function code_for(operation, args)
 			"                    else: continue",
 			"                    if not isinstance(widget, UIElement): continue",
 			"                    value = widget.value",
-			"                    item = {'cell_id': cid, 'name': name, 'kind': kind, 'label': name}",
+			"                    item = {'cell_id': cid, 'name': name, 'kind': kind, 'label': name, 'object_id': str(widget._id)}",
 			"                    try:",
 			"                        raw_label = widget._args.label",
 			"                        if type(raw_label) is str and raw_label: item['label'] = raw_label",
 			"                    except Exception: pass",
+			"                    try:",
+			"                        frontend = widget._value_frontend",
+			"                        if control_scalar(frontend) or (isinstance(frontend, list) and all(control_scalar(part) for part in frontend)): item['frontend_value'] = frontend",
+			"                    except Exception: pass",
 			"                    if control_scalar(value): item['value'] = value",
+			"                    if kind == 'slider':",
+			"                        try:",
+			"                            args = widget._component_args or {}",
+			"                            start, stop, step = args.get('start'), args.get('stop'), args.get('step')",
+			"                            if control_scalar(start): item['min'] = start",
+			"                            if control_scalar(stop): item['max'] = stop",
+			"                            if control_scalar(step): item['step'] = step",
+			"                            steps = args.get('steps') or []",
+			"                            if isinstance(steps, list) and len(steps) <= 500 and all(control_scalar(part) for part in steps): item['steps'] = steps",
+			"                        except Exception: pass",
 			"                    if kind == 'dropdown':",
 			"                        try:",
 			"                            options = widget.options",
-			"                            if type(options) is dict and all(type(key) is str and control_scalar(option) for key, option in options.items()):",
-			"                                item['choices'] = [{'label': key, 'value': option} for key, option in options.items()]",
+			"                            if type(options) is dict:",
+			"                                item['choices'] = [{'label': str(key), 'frontend_value': key} for key in options.keys()]",
+			"                                item['selected_key'] = widget.selected_key",
 			"                        except Exception: pass",
 			"                    controls.append(item)",
 			"                except Exception: continue",
