@@ -12,6 +12,8 @@ local SearchField = require("@ds/search_field")
 local Tooltip = require("@ds/tooltip")
 local CodeEditor = require("@ds/code_editor")
 local ContextMenu = require("@ds/context_menu")
+local Dialog = require("@ds/dialog").Dialog
+local TextField = require("@ds/text_field")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -150,6 +152,10 @@ local Page = ui.component(function()
 	local expanded_component = ui.use_state("")
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
+	local groups = ui.use_state({})
+	local group_dialog = ui.use_state(false)
+	local group_name = ui.use_state("New group")
+	local group_category = ui.use_state("general")
 	local component_id = ui.use_state("")
 	local callable_name = ui.use_state("")
 	local selected = ui.use_state("")
@@ -174,6 +180,18 @@ local Page = ui.component(function()
 				blocks[cell.id] = { cell_id = cell.id, callable = "Display", kind = "display", inputs = { { name = "value", port_key = "value", annotation = "Any" } }, outputs = {} }
 			elseif cell.graphimo_kind == "annotation" then
 				blocks[cell.id] = { cell_id = cell.id, callable = "Annotation", kind = "annotation", inputs = {}, outputs = {} }
+			elseif cell.graphimo_kind == "group" and type(cell.graphimo_group) == "table" then
+				local ref, inputs, outputs = cell.graphimo_group, {}, {}
+				for name, variable in ref.inputs or {} do
+					table.insert(inputs, { name = name, port_key = name, annotation = "Any", binding = { kind = "variable", variable = variable } })
+				end
+				for name, variable in ref.outputs or {} do
+					table.insert(outputs, { name = name, port_key = name, annotation = "Any", expression = name, variable = variable, runtime = cell.values and cell.values[variable] or nil })
+				end
+				table.sort(inputs, function(a, b) return a.name < b.name end)
+				table.sort(outputs, function(a, b) return a.name < b.name end)
+				local shown = string.match(ref.group_id or "Group", "([^/]+)$") or "Group"
+				blocks[cell.id] = { cell_id = cell.id, callable = shown, kind = "group", group_id = ref.group_id, inputs = inputs, outputs = outputs }
 			end
 		end
 		return blocks
@@ -273,7 +291,7 @@ local Page = ui.component(function()
 			if session_id:peek() == "" then
 				snapshot:set({ notebook = {}, cells = {}, edges = {} })
 				visible_cell_ids:set({})
-				positions:set({}); components:set({}); selected:set("")
+				positions:set({}); components:set({}); groups:set({}); selected:set(""); selected_many:set({})
 			end
 			notice:set(if #items == 0 then "No active marimo notebooks found" else "Found " .. tostring(#items) .. " active notebook(s)")
 			if session_id:peek() ~= "" then refresh_graph() end
@@ -309,6 +327,7 @@ local Page = ui.component(function()
 				end, function(component_result)
 					local available = component_result.components or {}
 					components:set(available)
+					groups:set(component_result.groups or {})
 					observe("Check component sources", function()
 						return Bridge.refresh_component_hashes(zeron, url:peek(), token:peek(), value.notebook.session_id, available)
 					end, function(hash_result)
@@ -820,6 +839,59 @@ local Page = ui.component(function()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
 	end
 
+	local function selected_ids()
+		local set = selected_set()
+		local ids = {}
+		for id in set do table.insert(ids, id) end
+		table.sort(ids)
+		return ids
+	end
+
+	local function selected_count()
+		return #selected_ids()
+	end
+
+	local function save_selected_group()
+		local ids = selected_ids()
+		if #ids < 2 then notice:set("Select at least two blocks with Shift-click"); return end
+		local path = snapshot:peek().notebook.path or ""
+		observe("Save Group Block", function()
+			return Bridge.save_group(zeron, url:peek(), token:peek(), session_id:peek(), path, ids, positions:peek(), group_name:peek(), group_category:peek())
+		end, function(value)
+			group_dialog:set(false)
+			notice:set("Saved Group Block " .. tostring(value and value.group and value.group.name or group_name:peek()))
+			refresh_graph()
+		end, function(err) notice:set("Could not save Group Block: " .. tostring(err)) end)
+	end
+
+	local function group_by_id(id)
+		for _, group in groups:peek() do if group.id == id then return group end end
+		return nil
+	end
+
+	local function add_group_at(group, x, y)
+		if not group then return end
+		local prefix = string.gsub(string.match(group.id or "group", "([^/]+)$") or "group", "[^%w_]", "_")
+		observe("Add Group Block " .. tostring(group.name or group.id), function()
+			return Bridge.add_group(zeron, url:peek(), token:peek(), session_id:peek(), snapshot:peek().notebook.path or "", group.id, prefix)
+		end, function(value)
+			if type(value) == "table" and value.cell_id then
+				local next = table.clone(positions:peek())
+				next[value.cell_id] = { x = x, y = y }
+				positions:set(next); save_positions(); selected:set(value.cell_id); selected_many:set({})
+			end
+			ui.after(120, refresh_graph)
+		end, function(err) notice:set("Could not add Group Block: " .. tostring(err)) end)
+	end
+
+	local function edit_group_graphically()
+		local cell = selected_cell()
+		if not cell or not cell.graphimo_group then notice:set("Select a Group Block first"); return end
+		local group = group_by_id(cell.graphimo_group.group_id)
+		if not group then notice:set("Group definition is missing; refresh Components"); return end
+		start_notebook(group.path)
+	end
+
 	local function code_editor_panel()
 		return ui.column {
 			w = 500, h_full = true, min_h = 0, shrink = 0, gap = "$space.2", p = "$space.2",
@@ -889,12 +961,18 @@ local Page = ui.component(function()
 	local function canvas_menu(at)
 		local x, y = Canvas.point({ local_x = at.local_x, local_y = at.local_y }, zoom:peek(), pan_x:peek(), pan_y:peek())
 		local component_entries = component_context_entries(x, y)
+		local group_entries = {}
+		for _, group in groups:peek() do
+			local chosen = group
+			table.insert(group_entries, { label = tostring(group.category or "general") .. " · " .. tostring(group.name or group.id), on_select = function() add_group_at(chosen, x, y) end })
+		end
 		return {
 			{ label = "Code block", on_select = function() create_block_at("pass", x, y, "Create code block") end },
 			{ label = "Annotation", on_select = function() create_block_at("# Graphimo annotation\\n__import__('marimo').md(\\"Annotation\\")", x, y, "Create annotation") end },
 			{ label = "Display", on_select = function() create_block_at("# Graphimo display\\nNone", x, y, "Create display block") end },
 			{ separator = true },
 			{ label = "Component", disabled = if #component_entries == 0 then "No components found" else false, submenu = component_entries },
+			{ label = "Group Block", disabled = if #group_entries == 0 then "No saved groups" else false, submenu = group_entries },
 		}
 	end
 
@@ -959,6 +1037,8 @@ local Page = ui.component(function()
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_selected },
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
+			Button { "Save group", tone = "secondary", size = "sm", disabled = function() return selected_count() < 2 end, on_click = function() group_dialog:set(true) end },
+			Button { "Edit group", tone = "secondary", size = "sm", disabled = function() local cell = selected_cell(); return not (cell and cell.graphimo_group) end, on_click = edit_group_graphically },
 			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 		},
 		ui.row { grow = 1, min_h = 0, w_full = true, gap = "$space.3",
@@ -1028,6 +1108,14 @@ local Page = ui.component(function()
 			}),
 			},
 			ui.show(function() return code_open:get() end, code_editor_panel()),
+		},
+		Dialog {
+			open = group_dialog,
+			title = "Save Group Block",
+			body = "The selected blocks become one reusable referenced marimo group. Instances point to this definition; they do not copy it.",
+			confirm = { label = "Save", on_click = save_selected_group, disabled = function() return group_name:get() == "" end },
+			TextField { value = group_name, label = "Name", placeholder = "Body Part model", w_full = true, autofocus = true },
+			TextField { value = group_category, label = "Category", placeholder = "models", w_full = true },
 		},
 	}
 end)
