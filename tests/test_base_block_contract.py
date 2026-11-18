@@ -28,7 +28,7 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
     root = tmp_path / "base_block_components"
     root.mkdir()
     (root / "contracts.py").write_text(
-        "from typing import NamedTuple\n"
+        "from typing import Literal, NamedTuple\n"
         "def obtenir_infos(prix: float, quantite: int, stock: int) -> tuple[float, int, int]:\n"
         "    flower = 3 + stock\n"
         "    return prix + 0.2, quantite + stock, flower\n"
@@ -37,6 +37,10 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
         "    return answer\n"
         "def scalar_expression(value: int) -> int:\n"
         "    return value * 2\n"
+        "def scalar_literal(value) -> Literal[1, 2.0]:\n"
+        "    return 1\n"
+        "def nonfinite_scalar():\n"
+        "    return 1e309\n"
         "def no_return(value):\n"
         "    value + 1\n"
         "def explicit_none() -> None:\n"
@@ -84,6 +88,14 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
     assert scalar_expression["outputs"] == [
         {"index": 1, "name": "output_1", "expression": "value * 2", "annotation": "int"}
     ]
+    scalar_literal = callables["scalar_literal"]["base_block"]
+    assert scalar_literal["output_mode"] == "single"
+    assert scalar_literal["outputs"] == [
+        {"index": 1, "name": "output_1", "expression": "1", "annotation": "Literal[1, 2.0]"}
+    ]
+    nonfinite = callables["nonfinite_scalar"]["base_block"]
+    assert nonfinite["output_mode"] == "object"
+    assert nonfinite["outputs"] == [{"index": 1, "name": "result", "annotation": "object"}]
 
     assert callables["no_return"]["base_block"] == {
         "inputs": callables["no_return"]["parameters"],

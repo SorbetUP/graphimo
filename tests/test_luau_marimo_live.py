@@ -447,11 +447,16 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
         "def normalize(image):\n    return image + 1\n", encoding="utf-8"
     )
     (component_dir / "base_contracts.py").write_text(
+        "from typing import Literal\n"
         "def obtenir_infos(prix: float, quantite: int, stock: int) -> tuple[float, int, int]:\n"
         "    flower = 3 + stock\n"
         "    return prix + 0.2, quantite + stock, flower\n"
         "def scalar(value: int) -> int:\n"
         "    return value * 2\n"
+        "def scalar_literal(value) -> Literal[1, 2.0]:\n"
+        "    return 1\n"
+        "def nonfinite_scalar():\n"
+        "    return 1e309\n"
         "def no_return(value):\n"
         "    value + 1\n",
         encoding="utf-8",
@@ -573,6 +578,9 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         assert contract_callables["obtenir_infos"]["base_block"]["output_mode"] == "tuple"
         assert [output["annotation"] for output in contract_callables["obtenir_infos"]["base_block"]["outputs"]] == ["float", "int", "int"]
         assert contract_callables["scalar"]["base_block"]["output_mode"] == "single"
+        assert contract_callables["scalar_literal"]["base_block"]["output_mode"] == "single"
+        assert contract_callables["scalar_literal"]["base_block"]["outputs"][0]["annotation"] == "Literal[1, 2.0]"
+        assert contract_callables["nonfinite_scalar"]["base_block"]["output_mode"] == "object"
         assert contract_callables["no_return"]["base_block"]["output_mode"] == "none"
         metadata = next(item for item in component_result["components"] if item["id"] == "parameter_metadata.py")["callables"]
         metadata = {callable_item["name"]: callable_item for callable_item in metadata}
