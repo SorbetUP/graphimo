@@ -96,6 +96,8 @@ def test_production_inspect_projects_only_safe_live_slider_and_dropdown_controls
         "        def __str__(self): raise AssertionError('unsafe str called')\n"
         "    z_slider = mo.ui.slider(0, 10, value=3, label='')\n"
         "    a_dropdown = mo.ui.dropdown({'One': 1, 'Two': 2}, value='Two', label='Choose')\n"
+        "    large_dropdown = mo.ui.dropdown({'Too large': 2**53}, value='Too large', label='Large')\n"
+        "    mixed_dropdown = mo.ui.dropdown({'Null': None, 'Boolean': True, 'Text': 'ready', 'Fraction': 1.5}, value='Boolean', label='Scalars')\n"
         "    toggle = mo.ui.checkbox(value=True, label='Toggle')\n"
         "    unsafe_dropdown = mo.ui.dropdown({'Unsafe': UnsafeValue()}, value='Unsafe', label='Unsafe')\n"
         "    return a_dropdown, z_slider, toggle, unsafe_dropdown\n\n"
@@ -179,6 +181,8 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
 
         assert [(item["cell_id"], item["name"]) for item in controls] == [
             (controls_cell["id"], "a_dropdown"),
+            (controls_cell["id"], "large_dropdown"),
+            (controls_cell["id"], "mixed_dropdown"),
             (controls_cell["id"], "unsafe_dropdown"),
             (controls_cell["id"], "z_slider"),
             (later_cell["id"], "aa_later"),
@@ -193,18 +197,37 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         }
         assert controls[1] == {
             "cell_id": controls_cell["id"],
+            "name": "large_dropdown",
+            "kind": "dropdown",
+            "label": "Large",
+        }
+        assert controls[2] == {
+            "cell_id": controls_cell["id"],
+            "name": "mixed_dropdown",
+            "kind": "dropdown",
+            "label": "Scalars",
+            "value": True,
+            "choices": [
+                {"label": "Null", "value": None},
+                {"label": "Boolean", "value": True},
+                {"label": "Text", "value": "ready"},
+                {"label": "Fraction", "value": 1.5},
+            ],
+        }
+        assert controls[3] == {
+            "cell_id": controls_cell["id"],
             "name": "unsafe_dropdown",
             "kind": "dropdown",
             "label": "Unsafe",
         }
-        assert controls[2] == {
+        assert controls[4] == {
             "cell_id": controls_cell["id"],
             "name": "z_slider",
             "kind": "slider",
             "label": "z_slider",
             "value": 3,
         }
-        assert controls[3] == {
+        assert controls[5] == {
             "cell_id": later_cell["id"],
             "name": "aa_later",
             "kind": "slider",
