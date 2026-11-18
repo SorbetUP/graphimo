@@ -402,6 +402,15 @@ local function code_for(operation, args)
 			"    output = re.fullmatch(r'# Graphimo meta output: ([A-Za-z_][A-Za-z0-9_]*)', lines[2])",
 			"    if not meta or not digest or not output: return None",
 			"    return {'kind': 'pytorch', 'meta_id': meta.group(1), 'source_sha256': digest.group(1), 'output': output.group(1)}",
+			"def graphimo_manual_ports(source):",
+			"    if not isinstance(source, str): return None",
+			"    lines = source.splitlines(); first = lines[0] if lines else ''",
+			"    match = re.fullmatch(r'# Graphimo ports: (.+)', first)",
+			"    if not match: return None",
+			"    try: value = json.loads(match.group(1))",
+			"    except Exception: return None",
+			"    if not isinstance(value, dict) or not isinstance(value.get('inputs', []), list) or not isinstance(value.get('outputs', []), list): return None",
+			"    return value",
 			"async with cm.get_context() as ctx:",
 			"    graph_cells = ctx.graph.cells",
 			"    owners = {}",
@@ -519,9 +528,11 @@ local function code_for(operation, args)
 			"        reference = graphimo_reference(cell.code)",
 			"        group_reference = graphimo_group_reference(cell.code)",
 			"        meta_reference = graphimo_meta_reference(cell.code)",
+			"        manual_ports = graphimo_manual_ports(cell.code)",
 			"        if reference is not None: row['graphimo_component'] = reference; row['graphimo_kind'] = 'base'",
 			"        elif group_reference is not None: row['graphimo_group'] = group_reference; row['graphimo_kind'] = 'group'",
 			"        elif meta_reference is not None: row['graphimo_meta'] = meta_reference; row['graphimo_kind'] = 'meta'",
+			"        elif manual_ports is not None: row['graphimo_ports'] = manual_ports; row['graphimo_kind'] = 'manual'",
 			"        elif cell.code.startswith('# Graphimo annotation'): row['graphimo_kind'] = 'annotation'",
 			"        elif cell.code.startswith('# Graphimo display'): row['graphimo_kind'] = 'display'",
 			"        cells.append(row)",
@@ -664,7 +675,7 @@ local function code_for(operation, args)
 			"        except (TypeError, ValueError): signature = '(...)'; parameters = []",
 			"        base_block = base_contract(value, sig, parameters) if sig is not None else {'inputs': [], 'outputs': [{'index': 1, 'name': 'result', 'annotation': 'object'}], 'output_mode': 'object'}",
 			"        doc = inspect.getdoc(value) or inspect.getdoc(module) or ''",
-			"        callables.append({'name': name, 'signature': signature, 'description': doc.splitlines()[0] if doc else '', 'parameters': parameters, 'base_block': base_block})",
+			"        callables.append({'name': name, 'signature': signature, 'description': doc.splitlines()[0] if doc else '', 'parameters': parameters, 'base_block': base_block, 'is_async': inspect.iscoroutinefunction(value)})",
 			"    if callables:",
 			"        item_path = pathlib.Path(component_id)",
 			"        category = list(item_path.parts[:-1]) if kind == 'file' else list(item_path.parts[:-1])",
@@ -700,6 +711,55 @@ local function code_for(operation, args)
 			"            metas.append({'id': meta_id, 'name': str(meta.get('name') or meta_path.parent.name), 'category': str(meta.get('category') or 'models'), 'kind': 'pytorch', 'path': str(meta_path), 'model_path': str(model), 'source_sha256': digest})",
 			"        except Exception: continue",
 			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'components': components, 'groups': groups, 'metas': metas}, separators=(',', ':'))) ",
+		}, "\n")
+	elseif operation == "save_component" then
+		return table.concat({
+			"import ast, json, pathlib, re, textwrap",
+			"import marimo._code_mode as cm",
+			"def slug(text):",
+			"    value = re.sub(r'[^A-Za-z0-9_-]+', '-', str(text).strip()).strip('-_').lower()",
+			"    return value or 'component'",
+			"def ident(text):",
+			"    value = re.sub(r'[^A-Za-z0-9_]+', '_', str(text).strip())",
+			"    if not value: value = 'component'",
+			"    if value[0].isdigit(): value = '_' + value",
+			"    return value",
+			"cell_id = " .. ui.json.encode(args.cell_id),
+			"notebook_path = pathlib.Path(" .. ui.json.encode(args.notebook_path or "") .. ").resolve()",
+			"name = " .. ui.json.encode(args.name or "component"),
+			"category_raw = " .. ui.json.encode(args.category or "general"),
+			"async with cm.get_context() as ctx:",
+			"    cell = ctx.cells[cell_id]; impl = ctx.graph.cells.get(cell.id)",
+			"    code = cell.code; lines = code.splitlines(); manual = None",
+			"    if lines and lines[0].startswith('# Graphimo ports: '):",
+			"        try: manual = json.loads(lines[0][len('# Graphimo ports: '):]); code = '\\n'.join(lines[1:])",
+			"        except Exception: manual = None",
+			"    if manual:",
+			"        input_items = [item for item in manual.get('inputs', []) if isinstance(item, dict) and isinstance(item.get('name'), str)]",
+			"        output_items = [item for item in manual.get('outputs', []) if isinstance(item, dict) and isinstance(item.get('name'), str)]",
+			"    else:",
+			"        input_items = [{'name': value, 'type': 'Any'} for value in sorted(getattr(impl, 'refs', set()))]",
+			"        output_items = [{'name': value, 'type': 'Any'} for value in sorted(getattr(impl, 'defs', set()))]",
+			"    params = []",
+			"    for item in input_items:",
+			"        pname = ident(item['name']); ptype = str(item.get('type') or 'Any'); params.append(pname + ': ' + repr(ptype))",
+			"    returns = [str(item.get('type') or 'Any') for item in output_items]",
+			"    return_annotation = ''",
+			"    if len(returns) == 1: return_annotation = ' -> ' + repr(returns[0])",
+			"    elif len(returns) > 1: return_annotation = ' -> tuple[' + ', '.join(repr(value) for value in returns) + ']'",
+			"    try: tree = ast.parse(code or 'pass'); is_async = any(isinstance(node, (ast.Await, ast.AsyncFor, ast.AsyncWith)) for node in ast.walk(tree))",
+			"    except Exception: is_async = False",
+			"    fn = ident(name); prefix = 'async def' if is_async else 'def'",
+			"    source = ['from __future__ import annotations', '', prefix + ' ' + fn + '(' + ', '.join(params) + ')' + return_annotation + ':', textwrap.indent(code or 'pass', '    ')]",
+			"    output_names = [ident(item['name']) for item in output_items]",
+			"    if output_names:",
+			"        returned = ', '.join(output_names); returned = returned + ',' if len(output_names) == 1 else returned; source.append('    return (' + returned + ')')",
+			"    source.append('')",
+			"    category_parts = [slug(part) for part in re.split(r'[/\\\\]+', category_raw) if part.strip()] or ['general']",
+			"    folder = notebook_path.parent / 'components'",
+			"    for part in category_parts: folder = folder / part",
+			"    folder.mkdir(parents=True, exist_ok=True); path = folder / (slug(name).replace('-', '_') + '.py'); path.write_text('\\n'.join(source), encoding='utf-8')",
+			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'path': str(path), 'callable': fn}, separators=(',', ':'))) ",
 		}, "\n")
 	elseif operation == "save_pytorch_meta" then
 		return table.concat({
@@ -1030,7 +1090,7 @@ local function valid_identifier(value)
 	return type(value) == "string" and string.match(value, "^[%a_][%w_]*$") ~= nil
 end
 
-function Bridge.component_source(component_id, callable, output_name, bindings, source_hash, parameters, contract)
+function Bridge.component_source(component_id, callable, output_name, bindings, source_hash, parameters, contract, is_async)
 	if type(component_id) ~= "string" or component_id == "" or string.find(component_id, "..", 1, true) or string.sub(component_id, 1, 1) == "/" or string.find(component_id, "[\r\n]") then
 		return nil, "Choose a component inside the components folder"
 	end
@@ -1067,6 +1127,7 @@ function Bridge.component_source(component_id, callable, output_name, bindings, 
 	local module_name = "components." .. module_rel
 	local called = "__import__('importlib').reload(__import__('importlib').import_module(" .. ui.json.encode(module_name) .. "))." .. callable
 	local call = called .. "(" .. table.concat(args, ", ") .. ")"
+	if is_async then call = "await " .. call end
 	local source = "# Graphimo component: " .. component_id .. "\n"
 	source ..= "# Graphimo source sha256: " .. tostring(source_hash or "unknown") .. "\n"
 	source ..= "# Graphimo callable: " .. callable .. "\n"
@@ -1131,12 +1192,22 @@ function Bridge.add_component(zeron, base, token, session_id, component_id, call
 				bindings,
 				selected_component.source_sha256,
 				selected_callable.parameters or {},
-				selected_callable.base_block
+				selected_callable.base_block,
+				selected_callable.is_async == true
 			)
 			if not source then return failure(why, "invalid_component_arguments") end
 			return Bridge.add_cell(zeron, base, token, session_id, source)
 		end)
 	end)
+end
+
+function Bridge.save_component(zeron, base, token, session_id, notebook_path, cell_id, name, category)
+	return execute(zeron, base, token, session_id, code_for("save_component", {
+		notebook_path = notebook_path,
+		cell_id = cell_id,
+		name = name,
+		category = category,
+	}), 60)
 end
 
 local function meta_components_root(notebook_path)
