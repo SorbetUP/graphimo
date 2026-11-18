@@ -873,8 +873,8 @@ local Page = ui.component(function()
 			end, style = "caption", tone = "secondary", wrap = true },
 			}),
 			},
-			},
 			ui.show(function() return code_open:get() end, code_editor_panel()),
+		},
 	}
 end)
 
