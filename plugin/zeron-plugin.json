@@ -1,18 +1,426 @@
 {
   "id": "graphimo",
   "name": "Graphimo",
-  "version": "0.2.1",
-  "description": "A live canvas view over marimo notebooks.",
+  "version": "0.7.0",
+  "description": "A native Zeron block canvas over live marimo notebooks.",
   "entry": "init.luau",
   "icon": "graphimo.svg",
-  "permissions": ["pages.add", "tools", "commands", "links.open", "files"],
-  "commands": ["curl", "python3"],
+  "permissions": [
+    "pages.add",
+    "tools",
+    "commands",
+    "links.open",
+    "files",
+    "web",
+    "messages.send",
+    "navigate"
+  ],
+  "commands": [
+    "curl",
+    "python3"
+  ],
   "tools": [
-    {"name":"inspect","description":"Inspect the live cells and dependencies of the selected marimo notebook.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
-    {"name":"list_components","description":"List public callables in the selected notebook project's components folder.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
-    {"name":"add_component","description":"Insert a readable Python cell calling a selected component.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"component_id":{"type":"string"},"callable":{"type":"string"},"output_name":{"type":"string"},"bindings":{"type":"object"}},"required":["component_id","callable","output_name"],"additionalProperties":false}},
-    {"name":"connect","description":"Safely replace one simple component call input with an upstream variable.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"from_cell_id":{"type":"string"},"variable":{"type":"string"},"to_cell_id":{"type":"string"},"input_ref":{"type":"string"}},"required":["from_cell_id","variable","to_cell_id","input_ref"],"additionalProperties":false}},
-    {"name":"run","description":"Ask the active marimo session to run one cell.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"cell_id":{"type":"string"}},"required":["cell_id"],"additionalProperties":false}},
-    {"name":"open_code","description":"Open the corresponding notebook in marimo's editor.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"},"cell_id":{"type":"string"}},"required":["cell_id"],"additionalProperties":false}}
+    {
+      "name": "inspect",
+      "description": "Inspect the live cells and dependencies of the selected marimo notebook.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_components",
+      "description": "List public callables in the selected notebook project's components folder.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_component",
+      "description": "Insert a readable Python cell calling a selected component.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "component_id": {
+            "type": "string"
+          },
+          "callable": {
+            "type": "string"
+          },
+          "output_name": {
+            "type": "string"
+          },
+          "bindings": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "component_id",
+          "callable",
+          "output_name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "connect",
+      "description": "Safely replace one simple component call input with an upstream variable.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "from_cell_id": {
+            "type": "string"
+          },
+          "variable": {
+            "type": "string"
+          },
+          "to_cell_id": {
+            "type": "string"
+          },
+          "input_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_cell_id",
+          "variable",
+          "to_cell_id",
+          "input_ref"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "run",
+      "description": "Ask the active marimo session to run one cell.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "cell_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "open_code",
+      "description": "Read the current Python source of one Graphimo/marimo block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "cell_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_block",
+      "description": "Create a marimo-backed Graphimo code block from Python source.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "edit_block",
+      "description": "Replace the Python source of one Graphimo/marimo block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "cell_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_id",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_block",
+      "description": "Delete one Graphimo/marimo block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "cell_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_group",
+      "description": "Save selected marimo blocks as one reusable referenced Group Block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "cell_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "positions": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_ids",
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_group",
+      "description": "Insert a saved Group Block reference into the active Graphimo notebook.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "string"
+          },
+          "output_prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_pytorch_meta",
+      "description": "Create a reusable PyTorch Meta Block definition that compiles Elements into one nn.Module.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "meta_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meta_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_pytorch_meta",
+      "description": "Read one PyTorch Meta Block definition and its internal Elements.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "meta_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meta_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_pytorch_meta",
+      "description": "Save a PyTorch Meta Block definition and regenerate its model.py.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "meta"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_pytorch_meta",
+      "description": "Insert a PyTorch Meta Block reference into the active notebook.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "meta_id": {
+            "type": "string"
+          },
+          "output_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meta_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_ports",
+      "description": "Declare manual input/output ports for an arbitrary Python block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "cell_id": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "cell_id",
+          "inputs",
+          "outputs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_component",
+      "description": "Save one current block as an opt-in reusable Python component.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "cell_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_id",
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_control",
+      "description": "Update the frontend value of a real marimo UIElement; marimo remains authoritative and reruns dependents.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "object_id": {
+            "type": "string"
+          },
+          "frontend_value": {}
+        },
+        "required": [
+          "object_id",
+          "frontend_value"
+        ],
+        "additionalProperties": false
+      }
+    }
   ]
 }

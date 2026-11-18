@@ -1,132 +1,303 @@
 # Graphimo
 
-Graphimo is a small Zeron v3 plugin that projects a live marimo notebook onto a
-canvas. marimo owns the notebook, dependency graph, execution, cell outputs,
-and cache. Graphimo reads that state, offers conservative source edits, and
-stores only cell presentation state in `.graphimo.json`.
+Graphimo is a native Zeron plugin that presents a live **marimo notebook as a
+block canvas**.
 
-## What works
+The architectural rule is intentionally strict:
 
-- Discover and select active marimo notebook sessions.
-- Render every marimo cell with its refs/defs and edges derived from marimo's
-  current dependency graph, including cells not created by Graphimo.
-- Pan, zoom, fit, drag cards, and persist positions keyed by cell ID.
-- Run or delete a cell through the live marimo session, show its current
-  status/output summary, and open the marimo editor. Output summaries preserve
-  marimo's MIME type; HTML is reduced to readable text instead of injected into
-  Zeron's UI.
-- Open an existing `.py` notebook or create a new ordinary marimo notebook
-  from the Graphimo page. Graphimo reuses an already-running local marimo
-  session for that file or starts `marimo edit` on marimo's default free port;
-  the user never enters a URL, port, or token.
-- Inspect saved events and problems in **Logs**. Problems are appended to
-  `~/.local/state/graphimo/problems.log`; managed marimo stdout/stderr is kept
-  under `~/.local/state/graphimo/` and can be read or exported from the panel.
-  The on-screen log state survives page reloads.
-- Discover public callables in `.py` files and packages under the notebook's
-  `components/` directory, then insert a readable ordinary Python cell.
-- Browse the discovered library in the collapsible **Components** panel, search
-  component IDs/categories/callable details, and expand a component to add one
-  of its callables. **Terminal** and its saved logs can be closed independently.
-- Drag an output to an input for one deliberately narrow Python edit. Ambiguous
-  edits are refused and the source remains available in marimo's editor.
-- Detect source hash changes for inserted components and update their marker
-  in the marimo cell, allowing marimo to mark and recompute it.
+> **marimo owns Python execution, dependencies, reactivity, state, cache and
+> notebook sessions. Graphimo owns the visual projection and editing UX.**
 
-## Install and connect
+Graphimo does not implement a workflow engine, scheduler, ML runtime, artifact
+store or second DAG.
 
-Install Graphimo through Zeron's plugin manager and allow its `files` and
-`commands` permissions. Choose **Open notebook** or **New notebook**. Graphimo
-uses Zeron's native file dialog, starts or reuses a local marimo editor, then
-opens it once so marimo can establish its live session. Marimo chooses its own
-free port. Graphimo uses an existing environment with the pinned marimo version
-when available; otherwise it creates a private environment under
-`~/.local/share/graphimo/` and installs `marimo==0.25.2`. The global Python
-installation is not modified. This first setup needs access to the package
-index. Graphimo invokes `curl` for marimo's local session API and `python3` for
-the minimal detached-process bridge and sidecar layout; it does not own cell
-execution or dependency scheduling. Zeron and marimo must see the same local
-notebook path for component discovery and layout persistence.
+## Block model
 
-If startup fails, open **Logs** and choose **Read marimo log**. The full
-environment setup and marimo output are stored under
-`~/.local/state/graphimo/`. See [the marimo runtime guide](docs/marimo-runtime.md)
-for interpreter selection and recovery details.
+Every live marimo cell is a Graphimo block. Existing notebooks do not need to
+be converted.
 
-Component discovery uses the convention:
+Graphimo currently projects these visual families:
+
+- **Base Block** — ordinary Python/marimo code. Its real refs/defs are ports.
+  Function-backed components additionally expose signature defaults, annotations
+  and conservative return-expression metadata.
+- **Control Block** — real marimo `mo.ui.slider` and `mo.ui.dropdown`
+  elements rendered with native Zeron controls. Changes are sent back to the
+  original marimo UIElement, so marimo remains responsible for downstream
+  reactivity.
+- **Display Block** — a connected display-only block. Images and Markdown are
+  rendered directly; supported HTML/media is shown in a Zeron webview using
+  marimo's rendered output.
+- **Annotation** — Markdown/documentation.
+- **Group Block** — a reference to a reusable group of real marimo blocks.
+  Instances point to one saved definition; they are not copies.
+- **Meta Block** — a domain-specific definition made of internal **Elements**
+  that are not marimo cells. The first implementation is a PyTorch Model Meta
+  Block that compiles its Elements into one `torch.nn.Module`.
+
+## Ports
+
+For a component such as:
+
+```python
+def obtenir_infos(
+    prix: float,
+    quantite: int,
+    stock: int,
+) -> tuple[float, int, int]:
+    flower = 3 + stock
+    return prix + 0.2, quantite + stock, flower
+```
+
+the block exposes three input ports and three output ports.
+
+Inputs use the function signature:
+
+- `prix (float)`
+- `quantite (int)`
+- `stock (int)`
+
+A default such as `prix: float = 19.2` is shown compactly as
+`prix (19.2)`; its full hover text is `prix (19.2 | float)`.
+
+Outputs use the declared type and the actual return expression:
+
+- `float (prix + 0.2)`
+- `int (quantite + stock)`
+- `int (flower)`
+
+After a successful run, JSON-safe runtime values are added without replacing
+the expression, for example `float (19.4 | prix + 0.2)`.
+
+One output may feed any number of downstream inputs.
+
+For arbitrary Python that cannot be inferred cleanly, Graphimo supports an
+optional manual port contract. Python remains authoritative; the declaration is
+only the visual interface.
+
+## Canvas and editing
+
+The Zeron canvas supports:
+
+- pan, zoom and fit;
+- drag blocks;
+- Shift-click multi-selection and group movement;
+- per-block resize, persisted as presentation metadata;
+- output-to-input wiring;
+- right-click creation of Code, Annotation, Display, Component, Group and Meta
+  blocks;
+- run selected block through marimo;
+- edit cell source inside Zeron with `@ds/code_editor`;
+- delete a block;
+- save an ad-hoc block into the reusable component library only when explicitly
+  requested;
+- save multiple selected blocks as a reusable Group Block.
+
+`.graphimo.json` stores only visual state such as x/y/width/height. Deleting
+it cannot change the notebook program.
+
+## Components
+
+A project may contain:
 
 ```text
 notebook.py
 components/
   data-processing/
+    open_csv.py
     normalize.py
-    image/
+  models/
+    bodypart/
       __init__.py
-      open_jpg.py
+  groups/
+  meta/
+    pytorch/
 ```
 
-Public functions are discovered with `inspect.signature`; `__all__` is
-respected when present. No Graphimo base class, decorator, manifest, or
-annotation is required. A selected function becomes a normal marimo cell, for
-example `normalized = ...normalize(image=image)`, which can be edited freely.
-The Components panel groups entries by their `category` metadata (or **Components**
-for root-level files) and searches callable names, signatures, and descriptions.
-Parameter metadata is inspected safely for discovery; dedicated parameter editing
-controls are not implemented yet, so adjust values in the generated Python cell.
-Generated component cards can show a read-only Base Block summary of safe,
-signature-derived inputs and outputs; these labels are not interactive ports.
-Bridge inspection can inventory live marimo `slider` and `dropdown` widgets on the
-pinned marimo 0.25.2 runtime, but Graphimo does not render or edit those controls;
-use marimo for widget interaction.
+Folders form categories. Normal `.py` files and Python packages are discovered
+automatically.
 
-## Persistence and boundaries
+There is no mandatory Graphimo base class, decorator or manifest for ordinary
+components. Public callables are inspected with `inspect.signature`;
+`__all__` is respected when present.
 
-`.graphimo.json` contains only visual metadata (`x`, `y`, collapse/size hints,
-and optional group), scoped by notebook path and stable marimo cell ID. It does
-not contain code, edges, values, execution state, or cache. Removing it loses
-custom placement only; marimo still opens the notebook normally.
+New canvas blocks are **not** automatically saved to this library. Use
+**Save component** when a block has become reusable.
 
-The Zeron-specific canvas and host binding live in `plugin/`. Because Zeron
-plugins run in Luau, production requests go through `plugin/marimo_bridge.luau`;
-the Python module in `adapter/` is an SDK-independent contract harness used by
-the pytest suite, not a runtime dependency of the plugin. Both expose the same
-operations and JSON result envelope: successful results have `ok: true`, and
-errors have `ok: false` with `error.code`, `error.message`, and optional
-`error.cell_id`. Contract tests exercise the Python seam; they do not execute
-the Luau bridge, so the host binding still needs an end-to-end Zeron check.
+## Group Blocks
 
-`plugin/marimo_bridge.luau` is the single marimo transport and private API
-boundary. It uses marimo's local HTTP session endpoints and the code-mode
-context API to read current cell/graph data and ask the active session to edit
-or run cells. Graphimo does not implement a graph store, executor, scheduler,
-or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
+Selecting two or more blocks and choosing **Save group** creates a referenced
+definition under:
+
+```text
+components/groups/<category>/<name>/
+  group.py
+  group.json
+```
+
+`group.py` is an ordinary marimo notebook. A parent notebook reuses it with
+marimo app composition (`clone().embed(defs=...)`).
+
+Therefore:
+
+- the group definition exists once;
+- instances remain references;
+- changing the definition changes future executions of its instances;
+- the parent graph sees only the group's boundary inputs/outputs;
+- **Edit group** opens the group's own Graphimo graph.
+
+## PyTorch Meta Block
+
+A PyTorch Meta Block is intentionally different from a Group Block.
+
+Its internal items are **Elements**, not Graphimo blocks. They have no marimo
+cell, Run action, cache or stdout of their own.
+
+The initial element library includes:
+
+- Input / Output;
+- Conv1d / Conv2d / Conv3d;
+- Linear;
+- ReLU / GELU;
+- BatchNorm1d / BatchNorm2d / LayerNorm;
+- Dropout;
+- Flatten;
+- MaxPool2d / AdaptiveAvgPool2d;
+- Identity;
+- Add / Concat;
+- Custom `nn.Module`.
+
+The editor validates a directed acyclic graph and generates one readable:
+
+```python
+class GraphimoModel(nn.Module):
+    ...
+    def forward(self, ...):
+        ...
+```
+
+plus `build_model()`.
+
+On the main Graphimo canvas the Meta Block is therefore one normal block whose
+output is a `torch.nn.Module`. PyTorch, autograd, CUDA and optional
+`torch.compile` operate on that model normally; Graphimo never executes every
+layer as a separate notebook cell.
+
+## marimo controls and rich output
+
+Graphimo inventories live marimo controls from the active kernel.
+
+For supported controls, Zeron renders the native control while sending the
+frontend value back to the original marimo UIElement through marimo's official
+kernel endpoint. No duplicate reactive state machine is introduced.
+
+Display Blocks use marimo's already-rendered output rather than reimplementing
+DataFrame/chart/video renderers.
+
+## Terminal and logs
+
+`print()`/stdout/stderr are not displayed inside normal Base Blocks.
+
+The bottom panel has two modes:
+
+- **Terminal** — console output grouped by block;
+- **All logs** — Graphimo bridge/runtime diagnostics.
+
+## Agents
+
+Graphimo publishes tools to Zeron agents for inspecting and changing the same
+live notebook used by the human UI, including:
+
+- inspect;
+- create/edit/delete/run block;
+- add/connect components;
+- manual ports;
+- save/add Group Blocks;
+- create/get/save/add PyTorch Meta Blocks;
+- set marimo control values;
+- save a block as a reusable Component.
+
+The UI also offers **Create with agent** and **Agent**. They open a normal Zeron
+chat scoped to the current project and instruct it to use Graphimo's tools.
+There is no separate AI graph representation.
+
+## marimo session and Python environment
+
+Graphimo pins `marimo==0.25.2` while it relies on marimo private code-mode
+APIs.
+
+The top bar can choose:
+
+- Auto;
+- project `.venv`;
+- project `venv`;
+- system Python;
+- Graphimo-managed environment.
+
+If Graphimo must start `marimo edit`, the editor is **not opened visibly**.
+An off-screen Zeron webview establishes the marimo websocket/session while the
+user stays in Graphimo.
+
+The managed runtime and logs live under:
+
+```text
+~/.local/share/graphimo/
+~/.local/state/graphimo/
+```
+
+## Boundaries
+
+The production bridge is `plugin/marimo_bridge.luau`. It is the single
+boundary for marimo private APIs and local HTTP calls.
+
+Graphimo deliberately does **not** own:
+
+- dependency resolution;
+- execution ordering;
+- notebook namespace;
+- cache;
+- model training/checkpoint policy;
+- distributed scheduling;
+- remote command routing.
+
+Future Zeron device execution can be consumed as a host capability without
+changing Graphimo's block semantics.
+
+The Python `adapter/` directory is an older SDK-independent contract harness
+used by existing tests. Production behavior is defined by the Luau bridge; new
+Graphimo features should be tested against that bridge or the live marimo
+runtime rather than assuming the adapter is authoritative.
 
 ## Development
 
-Install the pinned notebook runtime and development tools, then run the
-independent contract suite:
+Install the pinned notebook runtime and Python test tools:
 
 ```bash
-python3 -m pip install -e '.[notebook,dev]'
-rtk proxy env PYTHONDONTWRITEBYTECODE=1 pytest -q
-rtk ruff check adapter examples components
+python -m pip install -e '.[notebook,dev]' websockets
+pytest -q
+ruff check adapter examples components tests
 ```
 
-The pytest suite exercises `adapter.graphimo_adapter` through a fake marimo
-port. It does not replace an end-to-end run inside Zeron with a live marimo
-server. Example notebooks are ordinary marimo `.py` files and use marimo's
-`cache_cells = true` setting.
-
-For a live marimo integration check of the production Luau bridge's generated
-requests (inspect, component discovery/insertion, connect, and Run dispatch), install
-the pinned marimo extra and the Luau CLI, then run:
+The repository contains optional Luau/live-marimo tests. When the Luau CLI is
+available:
 
 ```bash
-GRAPHIMO_MARIMO_PYTHON="$(command -v python3)" rtk proxy pytest -q tests/test_luau_marimo_live.py
+GRAPHIMO_MARIMO_PYTHON="$(command -v python)" pytest -q tests/test_luau_marimo_live.py
 ```
 
-This test launches an isolated marimo server and executes Python generated by
-`plugin/marimo_bridge.luau` against it. Its small Luau driver replaces only
-Zeron's command transport and promise/JSON host, so the test still does not
-exercise Zeron's rendered page or permission prompt. That final host check must
-be done in Zeron with a disposable notebook.
+CI runs Python contracts and architectural invariant checks automatically.
+
+### End-to-end host check
+
+The final integration layer is Zeron itself. Before a release, test a
+disposable notebook in the current Zeron build and verify at minimum:
+
+1. notebook bootstrap stays invisible;
+2. cards/ports render;
+3. output wiring edits Python and marimo recomputes downstream cells;
+4. Zeron code editing saves into the live cell;
+5. slider/dropdown updates rerun dependents;
+6. Display HTML/image output renders;
+7. Group save/reinsert/edit works;
+8. PyTorch Meta creation/edit/save produces an importable `nn.Module`;
+9. agent tools operate on the same live notebook.
