@@ -586,19 +586,32 @@ local Page = ui.component(function()
 	local function on_press(e)
 		local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
 		local current_cells = snapshot:peek().cells or {}
-		local ps = positions:peek()
+		local ps, blocks = positions:peek(), base_blocks:peek()
 		for index = #current_cells, 1, -1 do
 			local cell = current_cells[index]
-			local pos = ps[cell.id] or { x = 0, y = 0 }
-			for _, variable in cell.defs or {} do
-				if Canvas.near(x, y, pos.x + Canvas.width, pos.y + Canvas.port(cell, variable, true), 12 / zoom:peek()) then
-					selected:set(cell.id); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
+			local pos, block = ps[cell.id] or { x = 0, y = 0 }, blocks[cell.id]
+			if block then
+				for _, output in block.outputs or {} do
+					if output.variable and Canvas.near(x, y, pos.x + Canvas.width, Canvas.port(cell, output.port_key, true, block), 12 / zoom:peek()) then
+						selected:set(cell.id)
+						drag = { kind = "wire", cell_id = cell.id, variable = output.variable, port_key = output.port_key }
+						return
+					end
+				end
+				for _, input in block.inputs or {} do
+					if Canvas.near(x, y, pos.x, Canvas.port(cell, input.port_key, false, block), 12 / zoom:peek()) then selected:set(cell.id); return end
+				end
+			else
+				for _, variable in cell.defs or {} do
+					if Canvas.near(x, y, pos.x + Canvas.width, Canvas.port(cell, variable, true, nil), 12 / zoom:peek()) then
+						selected:set(cell.id); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
+					end
+				end
+				for _, variable in cell.refs or {} do
+					if Canvas.near(x, y, pos.x, Canvas.port(cell, variable, false, nil), 12 / zoom:peek()) then selected:set(cell.id); return end
 				end
 			end
-			for _, variable in cell.refs or {} do
-				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, variable, false), 12 / zoom:peek()) then selected:set(cell.id); return end
-			end
-			local height = Canvas.height(cell, base_blocks:peek()[cell.id])
+			local height = Canvas.height(cell, block)
 			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
 				selected:set(cell.id)
 				drag = { kind = "node", id = cell.id, x = x, y = y, nx = pos.x, ny = pos.y }
@@ -620,17 +633,26 @@ local Page = ui.component(function()
 
 	local function on_release(e)
 		if not drag then return end
-		if drag.kind == "node" then save_positions()
+		if drag.kind == "node" then
+			save_positions()
 		elseif drag.kind == "wire" then
 			local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
 			local connected = false
+			local blocks = base_blocks:peek()
 			for _, cell in snapshot:peek().cells or {} do
-				local pos = positions:peek()[cell.id] or { x = 0, y = 0 }
-				for _, ref in cell.refs or {} do
-					if cell.id ~= drag.cell_id and Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, ref, false), 14 / zoom:peek()) then
+				if cell.id == drag.cell_id then continue end
+				local pos, block = positions:peek()[cell.id] or { x = 0, y = 0 }, blocks[cell.id]
+				local targets = {}
+				if block then
+					for _, input in block.inputs or {} do table.insert(targets, { key = input.port_key, name = input.name }) end
+				else
+					for _, ref in cell.refs or {} do table.insert(targets, { key = ref, name = ref }) end
+				end
+				for _, target in targets do
+					if Canvas.near(x, y, pos.x, Canvas.port(cell, target.key, false, block), 14 / zoom:peek()) then
 						connected = true
-						observe("Connect " .. drag.variable .. " to " .. ref, function()
-							return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
+						observe("Connect " .. drag.variable .. " to " .. target.name, function()
+							return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, target.name)
 						end, function()
 							notice:set("Python source updated; marimo owns the new dependency")
 							refresh_graph()
@@ -667,9 +689,10 @@ local Page = ui.component(function()
 	local function open_selected()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
-		zeron.open_url(url:peek())
-		notice:set("Opened the marimo editor for cell " .. cell.id)
-		log("Opened marimo editor for cell " .. cell.id)
+		code_cell_id:set(cell.id)
+		code_text:set(cell.source or "")
+		code_open:set(true)
+		notice:set("Editing cell " .. cell.id .. " inside Zeron")
 	end
 
 	local function delete_selected()
@@ -708,6 +731,35 @@ local Page = ui.component(function()
 			notice:set("Inserted ordinary Python into the marimo notebook")
 			refresh_graph()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
+	end
+
+	local function code_editor_panel()
+		return ui.column {
+			w = 500, h_full = true, min_h = 0, shrink = 0, gap = "$space.2", p = "$space.2",
+			rounded = "$radius.lg", bg = "$zeron.secondary.bg",
+			ui.row { w_full = true, items = "center", gap = "$space.2",
+				Text { function() return "Code · " .. string.sub(code_cell_id:get(), 1, 10) end, style = "label", grow = 1 },
+				Button { "Close", tone = "secondary", size = "sm", on_click = function() code_open:set(false) end },
+			},
+			CodeEditor {
+				value = code_text,
+				language = "python",
+				w_full = true,
+				h_full = true,
+				label = "Graphimo block source",
+				on_save = function(text)
+					local id = code_cell_id:peek()
+					if id == "" then return end
+					observe("Save code " .. id, function()
+						return Bridge.edit(zeron, url:peek(), token:peek(), session_id:peek(), id, text)
+					end, function()
+						code_text:set(text)
+						notice:set("Cell source saved; marimo recomputes the graph")
+						refresh_graph()
+					end, function(err) notice:set("Could not save cell: " .. tostring(err)) end)
+				end,
+			},
+		}
 	end
 
 	local function component_library_panel()
@@ -781,7 +833,7 @@ local Page = ui.component(function()
 				Canvas.draw_grid(c, w, h, zoom:get(), pan_x:get(), pan_y:get(), grid:get())
 			end, pointer_events = "none" },
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c)
-				Canvas.draw_edges(c, positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
+				Canvas.draw_edges(c, positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get(), nil, base_blocks:get())
 			end, pointer_events = "none" },
 			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
 				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
@@ -822,6 +874,7 @@ local Page = ui.component(function()
 			}),
 			},
 			},
+			ui.show(function() return code_open:get() end, code_editor_panel()),
 	}
 end)
 
