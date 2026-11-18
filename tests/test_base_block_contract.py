@@ -138,7 +138,7 @@ def test_unavailable_function_source_falls_back_to_one_object(tmp_path, host, mo
 
 def test_inspect_links_only_exact_generated_component_markers_and_call(tmp_path, host):
     component = tmp_path / "components" / "normalize.py"
-    component.parent.mkdir()
+    component.parent.mkdir(exist_ok=True)
     component.write_text(
         "def normalize(image):\n    return image + 1\n",
         encoding="utf-8",
