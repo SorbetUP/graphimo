@@ -449,7 +449,10 @@ local Page = ui.component(function()
 			left = function() local p = positions:get()[id] or {}; return pan_x:get() + (p.x or 0) * zoom:get() end,
 			top = function() local p = positions:get()[id] or {}; return pan_y:get() + (p.y or 0) * zoom:get() end,
 			w = Canvas.width * zoom:get(),
-			h = function() local value = cell(); return Canvas.height(value or {}) * zoom:get() end,
+			h = function()
+				local value = cell()
+				return Canvas.height(value or {}, base_summary()) * zoom:get()
+			end,
 			rounded = "$radius.lg",
 			pointer_events = "none",
 		}, "island")
@@ -461,21 +464,6 @@ local Page = ui.component(function()
 				Text { function() local value = cell(); return value and value.status or "unknown" end, style = "caption", tone = function() local value = cell(); return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary" end },
 			},
 			Text { function() local value = cell(); return string.match(value and value.source or "", "^[^\n]*") or "Empty cell" end, style = "caption", tone = "secondary", wrap = true },
-			ui.show(function()
-				local summary = base_summary()
-				return summary ~= nil and (#summary.inputs > 0 or #summary.outputs > 0)
-			end, ui.column { w_full = true, gap = "$space.1",
-				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.inputs > 0 end,
-					Text { function()
-						local summary = base_summary()
-						return "In: " .. table.concat(summary and summary.inputs or {}, " · ")
-					end, style = "caption", tone = "secondary", wrap = true }),
-				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.outputs > 0 end,
-					Text { function()
-						local summary = base_summary()
-						return "Out: " .. table.concat(summary and summary.outputs or {}, " · ")
-					end, style = "caption", tone = "secondary", wrap = true }),
-			}),
 			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
 				ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 64, fit = "contain" }),
 			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.mimetype == "text/markdown" end,
@@ -502,6 +490,21 @@ local Page = ui.component(function()
 					Text { function() local value = cell(); return ports(value and value.defs, "", " ●") end, style = "caption", tone = "primary", wrap = true },
 				},
 			},
+			ui.show(function()
+				local summary = base_summary()
+				return summary ~= nil and (#summary.inputs > 0 or #summary.outputs > 0)
+			end, ui.column { w_full = true, gap = "$space.1",
+				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.inputs > 0 end,
+					Text { function()
+						local summary = base_summary()
+						return "In: " .. table.concat(summary and summary.inputs or {}, " · ")
+					end, style = "caption", tone = "secondary", wrap = true }),
+				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.outputs > 0 end,
+					Text { function()
+						local summary = base_summary()
+						return "Out: " .. table.concat(summary and summary.outputs or {}, " · ")
+					end, style = "caption", tone = "secondary", wrap = true }),
+			}),
 		})
 		return ui.div(style)
 	end
@@ -523,7 +526,7 @@ local Page = ui.component(function()
 		for _, cell in snapshot:peek().cells do
 			local p = ps[cell.id] or { x = 0, y = 0 }
 			left = math.min(left, p.x); top = math.min(top, p.y)
-			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell))
+			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell, base_summaries:peek()[cell.id]))
 		end
 		local w, h = canvas.width or 800, canvas.height or 600
 		local scale = math.min((w - 64) / math.max(1, right - left), (h - 64) / math.max(1, bottom - top), 1.3)
@@ -546,7 +549,7 @@ local Page = ui.component(function()
 			for _, variable in cell.refs or {} do
 				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, variable, false), 12 / zoom:peek()) then selected:set(cell.id); return end
 			end
-			local height = Canvas.height(cell)
+			local height = Canvas.height(cell, base_summaries:peek()[cell.id])
 			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
 				selected:set(cell.id)
 				drag = { kind = "node", id = cell.id, x = x, y = y, nx = pos.x, ny = pos.y }

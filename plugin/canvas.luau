@@ -1,9 +1,21 @@
 local Canvas = {}
 Canvas.width = 260
 
-function Canvas.height(cell)
+function Canvas.height(cell, summary)
 	local media = if type(cell.output) == "table" and cell.output.image_data_url then 68 else 0
-	return math.max(146, 120 + (#(cell.refs or {}) + #(cell.defs or {})) * 22 + media)
+	local summary_height = 0
+	if type(summary) == "table" then
+		local function add_row(prefix, values)
+			if #values == 0 then return end
+			local text = prefix .. table.concat(values, " · ")
+			-- Use UTF-8 byte length and a conservative 24-byte wrapped line budget.
+			summary_height += math.max(1, math.ceil(#text / 24)) * 20
+		end
+		add_row("In: ", summary.inputs or {})
+		add_row("Out: ", summary.outputs or {})
+	end
+	local base_height = math.max(146, 120 + (#(cell.refs or {}) + #(cell.defs or {})) * 22 + media)
+	return base_height + summary_height
 end
 
 function Canvas.node(cells, id)
