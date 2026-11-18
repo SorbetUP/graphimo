@@ -100,7 +100,7 @@ def test_production_inspect_projects_only_safe_live_slider_and_dropdown_controls
         "    mixed_dropdown = mo.ui.dropdown({'Null': None, 'Boolean': True, 'Text': 'ready', 'Fraction': 1.5}, value='Boolean', label='Scalars')\n"
         "    toggle = mo.ui.checkbox(value=True, label='Toggle')\n"
         "    unsafe_dropdown = mo.ui.dropdown({'Unsafe': UnsafeValue()}, value='Unsafe', label='Unsafe')\n"
-        "    return a_dropdown, z_slider, toggle, unsafe_dropdown\n\n"
+        "    return a_dropdown, large_dropdown, mixed_dropdown, z_slider, toggle, unsafe_dropdown\n\n"
         "@app.cell\n"
         "def later(mo):\n"
         "    aa_later = mo.ui.slider(-2, 2, value=1, label='Later')\n"
