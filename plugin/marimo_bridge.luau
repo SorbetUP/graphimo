@@ -357,19 +357,23 @@ local function code_for(operation, args)
 			"    module_name = 'components.' + '.'.join(module_parts); callable_name = callable_match.group(1)",
 			"    try: tree = ast.parse(source)",
 			"    except SyntaxError: return None",
-			"    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign): return None",
-			"    assignment = tree.body[0]",
-			"    if len(assignment.targets) != 1 or not isinstance(assignment.value, ast.Call): return None",
-			"    target = assignment.targets[0]",
-			"    if isinstance(target, ast.Name): outputs = [target.id]",
-			"    elif isinstance(target, (ast.Tuple, ast.List)) and all(isinstance(item, ast.Name) for item in target.elts): outputs = [item.id for item in target.elts]",
+			"    if len(tree.body) != 1: return None",
+			"    statement = tree.body[0]",
+			"    if isinstance(statement, ast.Assign):",
+			"        if len(statement.targets) != 1 or not isinstance(statement.value, ast.Call): return None",
+			"        target = statement.targets[0]; call = statement.value",
+			"        if isinstance(target, ast.Name): outputs = [target.id]",
+			"        elif isinstance(target, (ast.Tuple, ast.List)) and all(isinstance(item, ast.Name) for item in target.elts): outputs = [item.id for item in target.elts]",
+			"        else: return None",
+			"    elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):",
+			"        call = statement.value; outputs = []",
 			"    else: return None",
 			"    expected = f\"_out = __import__('importlib').reload(__import__('importlib').import_module({module_name!r})).{callable_name}()\"",
 			"    try: expected_func = ast.parse(expected).body[0].value.func",
 			"    except (SyntaxError, AttributeError): return None",
-			"    if ast.dump(assignment.value.func, include_attributes=False) != ast.dump(expected_func, include_attributes=False): return None",
+			"    if ast.dump(call.func, include_attributes=False) != ast.dump(expected_func, include_attributes=False): return None",
 			"    inputs = {}",
-			"    for keyword_arg in assignment.value.keywords:",
+			"    for keyword_arg in call.keywords:",
 			"        if keyword_arg.arg is None: continue",
 			"        value = keyword_arg.value",
 			"        if isinstance(value, ast.Name): inputs[keyword_arg.arg] = {'kind': 'variable', 'variable': value.id}",
@@ -680,18 +684,36 @@ local function code_for(operation, args)
 			"        target = ctx.cells[" .. ui.json.encode(args.to_cell_id) .. "]",
 			"        source = ctx.cells[" .. ui.json.encode(args.from_cell_id) .. "]",
 			"        target_impl = ctx.graph.cells.get(target.id); source_impl = ctx.graph.cells.get(source.id)",
-			"        if not source_impl or not target_impl or " .. ui.json.encode(args.variable) .. " not in getattr(source_impl, 'defs', set()) or " .. ui.json.encode(args.input_ref) .. " not in getattr(target_impl, 'refs', set()) or " .. ui.json.encode(args.variable) .. " in getattr(target_impl, 'defs', set()): return {'ok': False, 'error': 'unsafe_edit: selected cells or ports are stale'}",
+			"        variable = " .. ui.json.encode(args.variable),
+			"        input_name = " .. ui.json.encode(args.input_ref),
+			"        if not source_impl or variable not in getattr(source_impl, 'defs', set()): return {'ok': False, 'error': 'unsafe_edit: selected source port is stale'}",
 			"        tree = ast.parse(target.code)",
+			"        generated = target.code.startswith('# Graphimo component:')",
+			"        if generated:",
+			"            if len(tree.body) != 1: return {'ok': False, 'error': 'unsafe_edit: generated component body is invalid'}",
+			"            statement = tree.body[0]",
+			"            if isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call): call = statement.value",
+			"            elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call): call = statement.value",
+			"            else: return {'ok': False, 'error': 'unsafe_edit: generated component call is invalid'}",
+			"            replaced = False",
+			"            for keyword_arg in call.keywords:",
+			"                if keyword_arg.arg == input_name:",
+			"                    keyword_arg.value = ast.Name(id=variable, ctx=ast.Load()); replaced = True; break",
+			"            if not replaced: call.keywords.append(ast.keyword(arg=input_name, value=ast.Name(id=variable, ctx=ast.Load())))",
+			"            ast.fix_missing_locations(tree)",
+			"            markers = '\\n'.join(target.code.splitlines()[:3])",
+			"            updated = markers + '\\n' + ast.unparse(statement) + '\\n'",
+			"            compile(updated, '<graphimo-connect>', 'exec')",
+			"            return {'ok': True, 'changed': True, 'source': updated, 'cell_id': target.id}",
+			"        if not target_impl or input_name not in getattr(target_impl, 'refs', set()) or variable in getattr(target_impl, 'defs', set()): return {'ok': False, 'error': 'unsafe_edit: selected target port is stale'}",
 			"        if len(tree.body) != 1 or not isinstance(tree.body[0], (ast.Assign, ast.AnnAssign)): return {'ok': False, 'error': 'unsafe_edit: target must be one assignment'}",
 			"        assignment = tree.body[0]",
-			"        if isinstance(assignment, ast.Assign) and (len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name)): return {'ok': False, 'error': 'unsafe_edit: target assignment is ambiguous'}",
-			"        if isinstance(assignment, ast.AnnAssign) and not isinstance(assignment.target, ast.Name): return {'ok': False, 'error': 'unsafe_edit: target assignment is ambiguous'}",
 			"        call = assignment.value",
 			"        if not isinstance(call, ast.Call) or not isinstance(call.func, (ast.Name, ast.Attribute)) or not call.args or call.keywords or not all(isinstance(arg, ast.Name) for arg in call.args): return {'ok': False, 'error': 'unsafe_edit: target call is ambiguous'}",
-			"        matches = [arg for arg in call.args if arg.id == " .. ui.json.encode(args.input_ref) .. "]",
+			"        matches = [arg for arg in call.args if arg.id == input_name]",
 			"        if len(matches) != 1: return {'ok': False, 'error': 'unsafe_edit: selected reference is not a unique positional argument'}",
 			"        arg = matches[0]; lines = target.code.splitlines(keepends=True); raw = lines[arg.lineno - 1].encode('utf-8')",
-			"        updated = ''.join(lines[:arg.lineno - 1]) + raw[:arg.col_offset].decode('utf-8') + " .. ui.json.encode(args.variable) .. " + raw[arg.end_col_offset:].decode('utf-8') + ''.join(lines[arg.lineno:])",
+			"        updated = ''.join(lines[:arg.lineno - 1]) + raw[:arg.col_offset].decode('utf-8') + variable + raw[arg.end_col_offset:].decode('utf-8') + ''.join(lines[arg.lineno:])",
 			"        compile(updated, '<graphimo-connect>', 'exec')",
 			"        return {'ok': True, 'changed': True, 'source': updated, 'cell_id': target.id}",
 			"    except Exception as exc: return {'ok': False, 'error': 'unsafe_edit: ' + str(exc)}",
@@ -742,14 +764,13 @@ local function valid_identifier(value)
 	return type(value) == "string" and string.match(value, "^[%a_][%w_]*$") ~= nil
 end
 
-function Bridge.component_source(component_id, callable, output_name, bindings, source_hash, parameter_order)
+function Bridge.component_source(component_id, callable, output_name, bindings, source_hash, parameters, contract)
 	if type(component_id) ~= "string" or component_id == "" or string.find(component_id, "..", 1, true) or string.sub(component_id, 1, 1) == "/" or string.find(component_id, "[\r\n]") then
 		return nil, "Choose a component inside the components folder"
 	end
 	if not valid_identifier(callable) or not valid_identifier(output_name) then return nil, "Callable and output must be Python identifiers" end
 	bindings = bindings or {}
 	local bound = {}
-	local all_variables = true
 	for name, binding in bindings do
 		if not valid_identifier(name) or type(binding) ~= "table" then return nil, "Invalid component argument" end
 		if type(binding.variable) == "string" then
@@ -757,44 +778,47 @@ function Bridge.component_source(component_id, callable, output_name, bindings, 
 			bound[name] = { variable = binding.variable }
 		elseif binding.literal ~= nil then
 			bound[name] = { literal = binding.literal }
-			all_variables = false
 		else
 			return nil, "Each component argument needs a variable or literal value"
 		end
 	end
-	local order, ordered = {}, {}
-	for _, name in parameter_order or {} do
-		if bound[name] then table.insert(order, name); ordered[name] = true end
-	end
-	local remaining = {}
-	for name in bound do if not ordered[name] then table.insert(remaining, name) end end
-	table.sort(remaining)
-	for _, name in remaining do table.insert(order, name) end
-	local positional = parameter_order ~= nil and all_variables and #remaining == 0 and #order <= #parameter_order
-	if positional then
-		for index, name in order do
-			if parameter_order[index] ~= name then positional = false; break end
-		end
-	end
 	local args = {}
-	for _, name in order do
+	for _, parameter in parameters or {} do
+		local name = parameter.name
 		local binding = bound[name]
-		if positional then
-			table.insert(args, binding.variable)
-		elseif binding.variable then
+		if binding and binding.variable then
 			table.insert(args, name .. "=" .. binding.variable)
-		else
+		elseif binding and binding.literal ~= nil then
 			table.insert(args, name .. "=__import__('json').loads(" .. ui.json.encode(ui.json.encode(binding.literal)) .. ")")
+		elseif parameter.required then
+			-- An unconnected required input remains an ordinary marimo reference
+			-- until the user wires another output into this port.
+			table.insert(args, name .. "=" .. name)
 		end
 	end
 	local module_rel = string.gsub(component_id, "%.py$", "")
 	module_rel = string.gsub(module_rel, "/", ".")
 	local module_name = "components." .. module_rel
 	local called = "__import__('importlib').reload(__import__('importlib').import_module(" .. ui.json.encode(module_name) .. "))." .. callable
+	local call = called .. "(" .. table.concat(args, ", ") .. ")"
 	local source = "# Graphimo component: " .. component_id .. "\n"
 	source ..= "# Graphimo source sha256: " .. tostring(source_hash or "unknown") .. "\n"
 	source ..= "# Graphimo callable: " .. callable .. "\n"
-	source ..= output_name .. " = " .. called .. "(" .. table.concat(args, ", ") .. ")\n"
+	local outputs = if type(contract) == "table" then (contract.outputs or {}) else {}
+	if #outputs == 0 then
+		source ..= call .. "\n"
+	elseif #outputs == 1 then
+		source ..= output_name .. " = " .. call .. "\n"
+	else
+		local names = {}
+		for index, output in outputs do
+			local suffix = tostring(output.name or ("output_" .. tostring(index)))
+			suffix = string.gsub(suffix, "[^%w_]", "_")
+			if not valid_identifier(suffix) then suffix = "output_" .. tostring(index) end
+			table.insert(names, output_name .. "_" .. suffix)
+		end
+		source ..= table.concat(names, ", ") .. " = " .. call .. "\n"
+	end
 	return source, nil
 end
 
@@ -831,15 +855,18 @@ function Bridge.add_component(zeron, base, token, session_id, component_id, call
 			local selected_component = nil
 			for _, item in result.components or {} do if item.id == component_id then selected_component = item; break end end
 			if not selected_component then return failure("The component changed or disappeared; refresh the library", "component_unavailable") end
-			local parameter_order, callable_found = {}, false
-			for _, item in selected_component.callables do
-				if item.name == callable then
-					callable_found = true
-					for _, parameter in item.parameters or {} do if parameter.positional then table.insert(parameter_order, parameter.name) end end
-				end
-			end
-			if not callable_found then return failure("The callable changed or disappeared; refresh the library", "callable_unavailable") end
-			local source, why = Bridge.component_source(component_id, callable, output_name, bindings, selected_component.source_sha256, parameter_order)
+			local selected_callable = nil
+			for _, item in selected_component.callables do if item.name == callable then selected_callable = item; break end end
+			if not selected_callable then return failure("The callable changed or disappeared; refresh the library", "callable_unavailable") end
+			local source, why = Bridge.component_source(
+				component_id,
+				callable,
+				output_name,
+				bindings,
+				selected_component.source_sha256,
+				selected_callable.parameters or {},
+				selected_callable.base_block
+			)
 			if not source then return failure(why, "invalid_component_arguments") end
 			return Bridge.add_cell(zeron, base, token, session_id, source)
 		end)
