@@ -12,7 +12,7 @@ end
 function Canvas.natural_height(cell, block)
 	if type(block) == "table" then
 		local rows = math.max(#(block.inputs or {}), #(block.outputs or {}), 1)
-		local rich = if block.kind == "display" or block.kind == "annotation" then 96 else 0
+		local rich = if block.kind == "display" or block.kind == "annotation" then 96 elseif block.kind == "control" then math.max(64, #(block.controls or {}) * 56) else 0
 		return math.max(128, Canvas.header_height + rows * Canvas.port_gap + 28 + rich)
 	end
 	local rows = math.max(#(cell.refs or {}), #(cell.defs or {}), 1)
