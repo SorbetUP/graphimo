@@ -144,6 +144,32 @@ zeron.tool({ name = "add_pytorch_meta", run = function(args)
 	return start_tool(function() return Bridge.add_pytorch_meta(zeron, url, token, session, saved.path or "", args.meta_id, args.output_name or "model") end)
 end })
 
+zeron.tool({ name = "set_ports", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return start_tool(function()
+		return Bridge.inspect(zeron, url, token, session):after(function(value)
+			local target = nil
+			for _, cell in value.cells or {} do if cell.id == args.cell_id then target = cell; break end end
+			if not target then return { ok = false, error = { code = "not_found", message = "Cell not found" } } end
+			local source = target.source or ""
+			local first_break = string.find(source, "\n", 1, true)
+			if string.sub(source, 1, 18) == "# Graphimo ports: " then source = if first_break then string.sub(source, first_break + 1) else "" end
+			local marker = "# Graphimo ports: " .. ui.json.encode({ inputs = args.inputs or {}, outputs = args.outputs or {} })
+			return Bridge.edit(zeron, url, token, session, args.cell_id, marker .. "\n" .. source)
+		end)
+	end)
+end })
+
+zeron.tool({ name = "save_component", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function()
+		return Bridge.save_component(zeron, url, token, session, saved.path or "", args.cell_id, args.name, args.category or "general")
+	end)
+end })
+
 zeron.tool({ name = "run", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
@@ -199,6 +225,12 @@ local Page = ui.component(function()
 	local code_open = ui.use_state(false)
 	local code_cell_id = ui.use_state("")
 	local code_text = ui.use_state("")
+	local ports_dialog = ui.use_state(false)
+	local ports_cell_id = ui.use_state("")
+	local ports_text = ui.use_state('{"inputs":[],"outputs":[]}')
+	local component_save_dialog = ui.use_state(false)
+	local component_save_name = ui.use_state("component")
+	local component_save_category = ui.use_state("general")
 	local library_query = ui.use_state("")
 	local expanded_component = ui.use_state("")
 	local positions = ui.use_state({})
@@ -245,6 +277,19 @@ local Page = ui.component(function()
 				blocks[cell.id] = { cell_id = cell.id, callable = "Display", kind = "display", inputs = { { name = "value", port_key = "value", annotation = "Any" } }, outputs = {} }
 			elseif cell.graphimo_kind == "annotation" then
 				blocks[cell.id] = { cell_id = cell.id, callable = "Annotation", kind = "annotation", inputs = {}, outputs = {} }
+			elseif cell.graphimo_kind == "manual" and type(cell.graphimo_ports) == "table" then
+				local inputs, outputs = {}, {}
+				for _, input in cell.graphimo_ports.inputs or {} do
+					if type(input) == "table" and type(input.name) == "string" then
+						table.insert(inputs, { name = input.name, port_key = input.name, annotation = input.type or "Any", binding = { kind = "variable", variable = input.name } })
+					end
+				end
+				for _, output in cell.graphimo_ports.outputs or {} do
+					if type(output) == "table" and type(output.name) == "string" then
+						table.insert(outputs, { name = output.name, port_key = output.name, annotation = output.type or "Any", expression = output.expression or output.name, variable = output.name, runtime = cell.values and cell.values[output.name] or nil })
+					end
+				end
+				blocks[cell.id] = { cell_id = cell.id, callable = cell.name or "Code", kind = "manual", inputs = inputs, outputs = outputs }
 			elseif cell.graphimo_kind == "group" and type(cell.graphimo_group) == "table" then
 				local ref, inputs, outputs = cell.graphimo_group, {}, {}
 				for name, variable in ref.inputs or {} do
@@ -971,6 +1016,52 @@ local Page = ui.component(function()
 		start_notebook(group.path)
 	end
 
+	local function open_ports_editor()
+		local cell = selected_cell()
+		if not cell then notice:set("Select a block first"); return end
+		local contract = cell.graphimo_ports
+		if type(contract) ~= "table" then
+			contract = { inputs = {}, outputs = {} }
+			for _, name in cell.refs or {} do table.insert(contract.inputs, { name = name, type = "Any" }) end
+			for _, name in cell.defs or {} do table.insert(contract.outputs, { name = name, type = (cell.values and cell.values[name] and cell.values[name].type) or "Any", expression = name }) end
+		end
+		ports_cell_id:set(cell.id)
+		ports_text:set(ui.json.encode(contract))
+		ports_dialog:set(true)
+	end
+
+	local function save_ports()
+		local ok, contract = pcall(ui.json.decode, ports_text:peek())
+		if not ok or type(contract) ~= "table" or type(contract.inputs) ~= "table" or type(contract.outputs) ~= "table" then
+			notice:set("Ports must be JSON with inputs[] and outputs[]"); return
+		end
+		local id = ports_cell_id:peek()
+		local cell = nil
+		for _, item in cells_now() do if item.id == id then cell = item; break end end
+		if not cell then notice:set("Block disappeared"); return end
+		local source = cell.source or ""
+		if string.sub(source, 1, 18) == "# Graphimo ports: " then
+			local newline = string.find(source, "\n", 1, true)
+			source = if newline then string.sub(source, newline + 1) else ""
+		end
+		local updated = "# Graphimo ports: " .. ui.json.encode(contract) .. "\n" .. source
+		observe("Save manual ports", function()
+			return Bridge.edit(zeron, url:peek(), token:peek(), session_id:peek(), id, updated)
+		end, function()
+			ports_dialog:set(false); notice:set("Manual input/output contract saved"); refresh_graph()
+		end, function(err) notice:set("Could not save ports: " .. tostring(err)) end)
+	end
+
+	local function save_selected_component()
+		local cell = selected_cell()
+		if not cell then notice:set("Select a block first"); return end
+		observe("Save component", function()
+			return Bridge.save_component(zeron, url:peek(), token:peek(), session_id:peek(), snapshot:peek().notebook.path or "", cell.id, component_save_name:peek(), component_save_category:peek())
+		end, function()
+			component_save_dialog:set(false); notice:set("Saved component into components/"); refresh_graph()
+		end, function(err) notice:set("Could not save component: " .. tostring(err)) end)
+	end
+
 	local function slug(text)
 		local value = string.lower(tostring(text or ""))
 		value = string.gsub(value, "[^%w_-]+", "-")
@@ -1252,6 +1343,10 @@ local Page = ui.component(function()
 		ui.row { w_full = true, gap = "$space.2", items = "center",
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_selected },
+			Button { "Ports", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_ports_editor },
+			Button { "Save component", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function()
+				local cell = selected_cell(); if cell then component_save_name:set(cell.name or "component"); component_save_dialog:set(true) end
+			end },
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
 			Button { "Save group", tone = "secondary", size = "sm", disabled = function() return selected_count() < 2 end, on_click = function() group_dialog:set(true) end },
 			Button { "Edit group", tone = "secondary", size = "sm", disabled = function() local cell = selected_cell(); return not (cell and cell.graphimo_group) end, on_click = edit_group_graphically },
@@ -1326,6 +1421,21 @@ local Page = ui.component(function()
 			},
 			ui.show(function() return meta_editor_open:get() end, meta_editor_panel()),
 			ui.show(function() return code_open:get() end, code_editor_panel()),
+		},
+		Dialog {
+			open = ports_dialog,
+			title = "Block ports",
+			body = "Manual fallback for arbitrary Python. These ports describe the contract only; Python remains authoritative at execution.",
+			confirm = { label = "Save", on_click = save_ports },
+			TextArea { value = ports_text, rows = 12, max_rows = 24, w_full = true, name = "Ports JSON" },
+		},
+		Dialog {
+			open = component_save_dialog,
+			title = "Save as Component",
+			body = "Creates a reusable Python function in components/. Blocks are never added to the library automatically.",
+			confirm = { label = "Save", on_click = save_selected_component, disabled = function() return component_save_name:get() == "" end },
+			TextField { value = component_save_name, label = "Name", w_full = true, autofocus = true },
+			TextField { value = component_save_category, label = "Category", w_full = true },
 		},
 		Dialog {
 			open = meta_create_dialog,
