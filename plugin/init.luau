@@ -280,6 +280,7 @@ local Page = ui.component(function()
 	local marimo_web = ui.web({ profile = "ephemeral" })
 	local drag = nil
 	local control_states = {}
+	local display_webs = {}
 
 	local function cells_now()
 		return snapshot:get().cells or {}
@@ -733,6 +734,37 @@ local Page = ui.component(function()
 		}
 	end
 
+	local function display_web(cell_id)
+		local web = display_webs[cell_id]
+		if not web then
+			web = ui.web({ profile = "ephemeral" })
+			display_webs[cell_id] = web
+		end
+		return web
+	end
+
+	local function display_overlay(cell)
+		local block = base_blocks:get()[cell.id]
+		if not block or block.kind ~= "display" then return nil end
+		local output = cell.output
+		if type(output) ~= "table" then return nil end
+		local src = output.html_data_url or output.media_data_url
+		if type(src) ~= "string" or src == "" then return nil end
+		return ui.webview {
+			web = display_web(cell.id),
+			src = src,
+			absolute = true,
+			left = function() return pan_x:get() + ((positions:get()[cell.id] or {}).x or 0) * zoom:get() + 12 * zoom:get() end,
+			top = function() return pan_y:get() + ((positions:get()[cell.id] or {}).y or 0) * zoom:get() + (Canvas.header_height + 30) * zoom:get() end,
+			w = function() return math.max(120, (Canvas.width_of(positions:get()[cell.id] or {}) - 24) * zoom:get()) end,
+			h = function()
+				local p = positions:get()[cell.id] or {}
+				return math.max(64, (Canvas.height(cell, block, p) - Canvas.header_height - 40) * zoom:get())
+			end,
+			rounded = 6,
+		}
+	end
+
 	local function card(id)
 		local function cell() return Canvas.node(snapshot:get().cells or {}, id) end
 		local function block() return base_blocks:get()[id] end
@@ -833,7 +865,7 @@ local Page = ui.component(function()
 			end, Markdown { text = function() local value = cell(); return value and value.output and value.output.preview or "" end }),
 			ui.show(function()
 				local value, b = cell(), block()
-				return value and type(value.output) == "table" and not value.output.image_data_url and value.output.mimetype ~= "text/markdown" and (b and b.kind == "display")
+				return value and type(value.output) == "table" and not value.output.image_data_url and not value.output.html_data_url and not value.output.media_data_url and value.output.mimetype ~= "text/markdown" and (b and b.kind == "display")
 			end, Text { function() local value = cell(); return truncate(value and value.output and value.output.preview or "", 180) end, style = "caption", tone = "secondary", wrap = true }),
 		})
 		return ui.div(style)
@@ -1561,6 +1593,7 @@ local Page = ui.component(function()
 				},
 			},
 			ui.each(function() return positioned_cells() end, function(cell) return control_overlay(cell) end, { key = function(cell) return cell.id end, absolute = true, left = 0, top = 0, w_full = true, h_full = true, pointer_events = "none" }),
+			ui.each(function() return positioned_cells() end, function(cell) return display_overlay(cell) end, { key = function(cell) return "display:" .. cell.id end, absolute = true, left = 0, top = 0, w_full = true, h_full = true, pointer_events = "none" }),
 			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
 			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
