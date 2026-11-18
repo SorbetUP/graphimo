@@ -54,4 +54,28 @@ function BaseBlock.project(components, cells)
 	return projected
 end
 
+local function label(name, annotation, value)
+	local text = if type(value) == "string" and value ~= "" then value else tostring(name or "")
+	if type(annotation) == "string" and annotation ~= "" then
+		return annotation .. " (" .. text .. ")"
+	end
+	return text
+end
+
+function BaseBlock.summary(projected_block)
+	if type(projected_block) ~= "table" then return nil end
+	local summary = { inputs = {}, outputs = {} }
+	for _, input in projected_block.inputs or {} do
+		if type(input) == "table" then
+			table.insert(summary.inputs, label(input.name, input.annotation, nil))
+		end
+	end
+	for _, output in projected_block.outputs or {} do
+		if type(output) == "table" then
+			table.insert(summary.outputs, label(output.name, output.annotation, output.expression))
+		end
+	end
+	return summary
+end
+
 return BaseBlock

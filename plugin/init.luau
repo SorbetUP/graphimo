@@ -2,6 +2,7 @@ local zeron = require("./zeron")("graphimo")
 local Bridge = require("./marimo_bridge")
 local Layout = require("./layout")
 local Canvas = require("./canvas")
+local BaseBlock = require("./base_block")
 local Library = require("./component_library")
 local Text = require("@ds/text")
 local Button = require("@ds/button")
@@ -134,6 +135,14 @@ local Page = ui.component(function()
 	local function cells_now()
 		return snapshot:get().cells or {}
 	end
+
+	local base_summaries = ui.computed(function()
+		local summaries = {}
+		for _, projected in BaseBlock.project(components:get(), cells_now()) do
+			summaries[projected.cell_id] = BaseBlock.summary(projected)
+		end
+		return summaries
+	end)
 
 	local function log(message, level)
 		level = level or "info"
@@ -429,6 +438,7 @@ local Page = ui.component(function()
 
 	local function card(id)
 		local function cell() return Canvas.node(snapshot:get().cells or {}, id) end
+		local function base_summary() return base_summaries:get()[id] end
 		local function ports(names, prefix, suffix)
 			local labels = {}
 			for _, name in names or {} do table.insert(labels, prefix .. name .. suffix) end
@@ -451,6 +461,21 @@ local Page = ui.component(function()
 				Text { function() local value = cell(); return value and value.status or "unknown" end, style = "caption", tone = function() local value = cell(); return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary" end },
 			},
 			Text { function() local value = cell(); return string.match(value and value.source or "", "^[^\n]*") or "Empty cell" end, style = "caption", tone = "secondary", wrap = true },
+			ui.show(function()
+				local summary = base_summary()
+				return summary ~= nil and (#summary.inputs > 0 or #summary.outputs > 0)
+			end, ui.column { w_full = true, gap = "$space.1",
+				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.inputs > 0 end,
+					Text { function()
+						local summary = base_summary()
+						return "In: " .. table.concat(summary and summary.inputs or {}, " · ")
+					end, style = "caption", tone = "secondary", wrap = true }),
+				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.outputs > 0 end,
+					Text { function()
+						local summary = base_summary()
+						return "Out: " .. table.concat(summary and summary.outputs or {}, " · ")
+					end, style = "caption", tone = "secondary", wrap = true }),
+			}),
 			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
 				ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 64, fit = "contain" }),
 			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.mimetype == "text/markdown" end,
