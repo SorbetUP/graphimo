@@ -113,6 +113,36 @@ zeron.tool({ name = "add_group", run = function(args)
 	end)
 end })
 
+zeron.tool({ name = "create_pytorch_meta", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function()
+		return Bridge.create_pytorch_meta(zeron, url, token, session, saved.path or "", args.meta_id, args.name or "PyTorch model", args.category or "models")
+	end)
+end })
+
+zeron.tool({ name = "get_pytorch_meta", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function() return Bridge.get_pytorch_meta(zeron, url, token, session, saved.path or "", args.meta_id) end)
+end })
+
+zeron.tool({ name = "save_pytorch_meta", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function() return Bridge.save_pytorch_meta(zeron, url, token, session, saved.path or "", args.meta) end)
+end })
+
+zeron.tool({ name = "add_pytorch_meta", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	local saved = active_notebook:get()
+	return start_tool(function() return Bridge.add_pytorch_meta(zeron, url, token, session, saved.path or "", args.meta_id, args.output_name or "model") end)
+end })
+
 zeron.tool({ name = "run", run = function(args)
 	local url, token, session = config_for(args or {})
 	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
