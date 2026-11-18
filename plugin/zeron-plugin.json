@@ -1,7 +1,7 @@
 {
   "id": "graphimo",
   "name": "Graphimo",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A native Zeron block canvas over live marimo notebooks.",
   "entry": "init.luau",
   "icon": "graphimo.svg",
@@ -10,7 +10,10 @@
     "tools",
     "commands",
     "links.open",
-    "files"
+    "files",
+    "web",
+    "messages.send",
+    "navigate"
   ],
   "commands": [
     "curl",
