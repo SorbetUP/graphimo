@@ -16,6 +16,7 @@ local Dialog = require("@ds/dialog").Dialog
 local TextField = require("@ds/text_field")
 local TextArea = require("@ds/text_area")
 local PyTorchMeta = require("./pytorch_meta")
+local PyTorchMetaEditor = require("./pytorch_meta_editor")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -970,6 +971,114 @@ local Page = ui.component(function()
 		start_notebook(group.path)
 	end
 
+	local function slug(text)
+		local value = string.lower(tostring(text or ""))
+		value = string.gsub(value, "[^%w_-]+", "-")
+		value = string.gsub(value, "^-+", "")
+		value = string.gsub(value, "-+$", "")
+		return if value == "" then "item" else value
+	end
+
+	local function meta_by_id(id)
+		for _, meta in metas:peek() do if meta.id == id then return meta end end
+		return nil
+	end
+
+	local function unique_model_output(prefix)
+		local used = {}
+		for _, cell in cells_now() do for _, name in cell.defs or {} do used[name] = true end end
+		local base = string.gsub(prefix or "model", "[^%w_]", "_")
+		if base == "" then base = "model" end
+		if string.match(base, "^%d") then base = "_" .. base end
+		local candidate, index = base, 2
+		while used[candidate] do candidate = base .. "_" .. tostring(index); index += 1 end
+		return candidate
+	end
+
+	local function add_meta_at(meta, x, y)
+		if not meta then return end
+		local output = unique_model_output((string.match(meta.id or "model", "([^/]+)$") or "model") .. "_model")
+		observe("Add PyTorch Meta Block " .. tostring(meta.name or meta.id), function()
+			return Bridge.add_pytorch_meta(zeron, url:peek(), token:peek(), session_id:peek(), snapshot:peek().notebook.path or "", meta.id, output)
+		end, function(value)
+			if type(value) == "table" and value.cell_id then
+				local next = table.clone(positions:peek()); next[value.cell_id] = { x = x, y = y }
+				positions:set(next); save_positions(); selected:set(value.cell_id); selected_many:set({})
+			end
+			ui.after(120, refresh_graph)
+		end, function(err) notice:set("Could not add PyTorch Meta Block: " .. tostring(err)) end)
+	end
+
+	local function create_meta_definition()
+		local category = slug(meta_create_category:peek())
+		local name_slug = slug(meta_create_name:peek())
+		local base = category .. "/" .. name_slug
+		local id, index = base, 2
+		while meta_by_id(id) do id = base .. "-" .. tostring(index); index += 1 end
+		observe("Create PyTorch Meta Block", function()
+			return Bridge.create_pytorch_meta(zeron, url:peek(), token:peek(), session_id:peek(), snapshot:peek().notebook.path or "", id, meta_create_name:peek(), category)
+		end, function(value)
+			meta_create_dialog:set(false)
+			local meta = {
+				id = id,
+				name = meta_create_name:peek(),
+				category = category,
+				kind = "pytorch",
+				path = value and value.path,
+				model_path = value and value.model_path,
+				source_sha256 = value and value.source_sha256,
+			}
+			local next = table.clone(metas:peek()); table.insert(next, meta); metas:set(next)
+			add_meta_at(meta, meta_create_x:peek(), meta_create_y:peek())
+		end, function(err) notice:set("Could not create PyTorch Meta Block: " .. tostring(err)) end)
+	end
+
+	local function open_meta_editor(meta_id)
+		local meta = meta_by_id(meta_id)
+		if not meta then notice:set("PyTorch Meta Block definition is missing"); return end
+		observe("Open PyTorch Meta Block", function()
+			return Bridge.get_pytorch_meta(zeron, url:peek(), token:peek(), session_id:peek(), snapshot:peek().notebook.path or "", meta_id)
+		end, function(value)
+			meta_editor_id:set(meta_id)
+			meta_editor_data:set(value.meta or {})
+			meta_selected:set("")
+			meta_params_text:set("{}")
+			meta_dirty:set(false)
+			meta_pending:set(nil)
+			code_open:set(false)
+			meta_editor_open:set(true)
+		end, function(err) notice:set("Could not open PyTorch Meta Block: " .. tostring(err)) end)
+	end
+
+	local function edit_selected_meta()
+		local cell = selected_cell()
+		if not cell or not cell.graphimo_meta then notice:set("Select a PyTorch Meta Block first"); return end
+		open_meta_editor(cell.graphimo_meta.meta_id)
+	end
+
+	local function save_meta_definition(meta)
+		observe("Save PyTorch Meta Block", function()
+			return Bridge.save_pytorch_meta(zeron, url:peek(), token:peek(), session_id:peek(), snapshot:peek().notebook.path or "", meta)
+		end, function()
+			meta_dirty:set(false)
+			notice:set("PyTorch model.py regenerated from Meta Elements")
+			refresh_graph()
+		end, function(err) notice:set("PyTorch Meta Block is invalid: " .. tostring(err)) end)
+	end
+
+	local function meta_editor_panel()
+		return PyTorchMetaEditor.View {
+			data = meta_editor_data,
+			selected = meta_selected,
+			params_text = meta_params_text,
+			dirty = meta_dirty,
+			pending = meta_pending,
+			on_save = save_meta_definition,
+			on_notice = function(message) notice:set(message) end,
+			on_close = function() meta_editor_open:set(false) end,
+		}
+	end
+
 	local function code_editor_panel()
 		return ui.column {
 			w = 500, h_full = true, min_h = 0, shrink = 0, gap = "$space.2", p = "$space.2",
@@ -1044,6 +1153,16 @@ local Page = ui.component(function()
 			local chosen = group
 			table.insert(group_entries, { label = tostring(group.category or "general") .. " · " .. tostring(group.name or group.id), on_select = function() add_group_at(chosen, x, y) end })
 		end
+		local meta_entries = {
+			{ label = "New PyTorch Model…", on_select = function()
+				meta_create_x:set(x); meta_create_y:set(y); meta_create_dialog:set(true)
+			end },
+		}
+		if #metas:peek() > 0 then table.insert(meta_entries, { separator = true }) end
+		for _, meta in metas:peek() do
+			local chosen = meta
+			table.insert(meta_entries, { label = tostring(meta.category or "models") .. " · " .. tostring(meta.name or meta.id), on_select = function() add_meta_at(chosen, x, y) end })
+		end
 		return {
 			{ label = "Code block", on_select = function() create_block_at("pass", x, y, "Create code block") end },
 			{ label = "Annotation", on_select = function() create_block_at("# Graphimo annotation\\n__import__('marimo').md(\\"Annotation\\")", x, y, "Create annotation") end },
@@ -1051,6 +1170,7 @@ local Page = ui.component(function()
 			{ separator = true },
 			{ label = "Component", disabled = if #component_entries == 0 then "No components found" else false, submenu = component_entries },
 			{ label = "Group Block", disabled = if #group_entries == 0 then "No saved groups" else false, submenu = group_entries },
+			{ label = "Meta Block", submenu = { { label = "PyTorch", submenu = meta_entries } } },
 		}
 	end
 
@@ -1090,6 +1210,24 @@ local Page = ui.component(function()
 					end),
 				}
 			end),
+			ui.show(function() return #groups:get() > 0 end, ui.column {
+				w_full = true, gap = "$space.1",
+				Text { "Group Blocks", style = "caption", tone = "secondary" },
+				ui.each(groups, function(group)
+					return Button { tostring(group.category or "general") .. " · " .. tostring(group.name or group.id), tone = "secondary", size = "sm", w_full = true, on_click = function() add_group_at(group, 120, 120) end }
+				end),
+			}),
+			ui.column {
+				w_full = true, gap = "$space.1",
+				Text { "Meta Blocks", style = "caption", tone = "secondary" },
+				Button { "+ PyTorch Model", tone = "secondary", size = "sm", w_full = true, on_click = function() meta_create_x:set(120); meta_create_y:set(120); meta_create_dialog:set(true) end },
+				ui.each(metas, function(meta)
+					return ui.row { w_full = true, gap = "$space.1",
+						Button { tostring(meta.category or "models") .. " · " .. tostring(meta.name or meta.id), tone = "secondary", size = "sm", grow = 1, on_click = function() add_meta_at(meta, 120, 120) end },
+						Button { "Edit", tone = "ghost", size = "sm", on_click = function() open_meta_editor(meta.id) end },
+					}
+				end),
+			},
 		}
 	end
 
@@ -1117,6 +1255,7 @@ local Page = ui.component(function()
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
 			Button { "Save group", tone = "secondary", size = "sm", disabled = function() return selected_count() < 2 end, on_click = function() group_dialog:set(true) end },
 			Button { "Edit group", tone = "secondary", size = "sm", disabled = function() local cell = selected_cell(); return not (cell and cell.graphimo_group) end, on_click = edit_group_graphically },
+			Button { "Edit meta", tone = "secondary", size = "sm", disabled = function() local cell = selected_cell(); return not (cell and cell.graphimo_meta) end, on_click = edit_selected_meta },
 			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 		},
 		ui.row { grow = 1, min_h = 0, w_full = true, gap = "$space.3",
@@ -1185,7 +1324,16 @@ local Page = ui.component(function()
 			end, style = "caption", tone = "secondary", wrap = true },
 			}),
 			},
+			ui.show(function() return meta_editor_open:get() end, meta_editor_panel()),
 			ui.show(function() return code_open:get() end, code_editor_panel()),
+		},
+		Dialog {
+			open = meta_create_dialog,
+			title = "New PyTorch Meta Block",
+			body = "Creates one reusable model definition. Its internal Elements generate one nn.Module; they are not marimo cells.",
+			confirm = { label = "Create", on_click = create_meta_definition, disabled = function() return meta_create_name:get() == "" end },
+			TextField { value = meta_create_name, label = "Name", placeholder = "Body Part model", w_full = true, autofocus = true },
+			TextField { value = meta_create_category, label = "Category", placeholder = "models", w_full = true },
 		},
 		Dialog {
 			open = group_dialog,
