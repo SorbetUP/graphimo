@@ -179,6 +179,114 @@ function Bridge.sessions(zeron, base, token)
 	end)
 end
 
+-- Find a running no-token marimo editor for this notebook, or ask marimo to
+-- start one on its own default free port. The detached process is only the
+-- bridge needed to own a live marimo session; all notebook work stays there.
+function Bridge.open_notebook(zeron, notebook_path)
+	if type(notebook_path) ~= "string" or notebook_path == "" then
+		return future():after(function() return failure("Choose a notebook first", "selection_required") end)
+	end
+	local script = table.concat({
+		"import glob, json, os, pathlib, shutil, subprocess, sys, time, urllib.request",
+		"notebook = pathlib.Path(sys.argv[1]).expanduser().resolve()",
+		"if notebook.suffix.lower() != '.py' or not notebook.is_file(): raise SystemExit('Choose an existing Python notebook (.py)')",
+		"registry = pathlib.Path.home() / '.local/state/marimo/servers'",
+		"def registered():",
+		"    for name in sorted(glob.glob(str(registry / '*.json'))):",
+		"        try:",
+		"            info = json.loads(pathlib.Path(name).read_text())",
+		"            pid = int(info.get('pid') or 0)",
+		"            if pid: os.kill(pid, 0)",
+		"            url = info.get('base_url') or ('http://%s:%s' % (info.get('host', '127.0.0.1'), info['port']))",
+		"            with urllib.request.urlopen(url.rstrip('/') + '/api/sessions', timeout=1) as response: sessions = json.load(response)",
+		"            for sid, item in sessions.items():",
+		"                path = item.get('path') or item.get('filename') or ''",
+		"                if path and pathlib.Path(path).expanduser().resolve() == notebook: return url.rstrip('/'), sid, info.get('pid')",
+		"        except Exception: pass",
+		"    return None",
+		"def server_for(pid):",
+		"    for name in sorted(glob.glob(str(registry / '*.json'))):",
+		"        try:",
+		"            info = json.loads(pathlib.Path(name).read_text())",
+		"            if int(info.get('pid') or 0) != pid: continue",
+		"            url = info.get('base_url') or ('http://%s:%s' % (info.get('host', '127.0.0.1'), info['port']))",
+		"            with urllib.request.urlopen(url.rstrip('/') + '/', timeout=1): pass",
+		"            return url.rstrip('/')",
+		"        except Exception: pass",
+		"    return None",
+		"found = registered()",
+		"state = pathlib.Path.home() / '.local/state/graphimo'; state.mkdir(parents=True, exist_ok=True)",
+		"import hashlib",
+		"log_path = state / ('marimo-' + hashlib.sha256(str(notebook).encode()).hexdigest()[:16] + '.log')",
+		"if found:",
+		"    url, session_id, pid = found",
+		"    print('GRAPHIMO_LAUNCH:' + json.dumps({'url': url, 'session_id': session_id, 'pid': pid, 'log_path': str(log_path), 'started': False}))",
+		"    raise SystemExit(0)",
+		"marimo = shutil.which('marimo')",
+		"if not marimo:",
+		"    for candidate in (notebook.parent / '.venv/bin/marimo', notebook.parent / 'venv/bin/marimo'):",
+		"        if candidate.is_file(): marimo = str(candidate); break",
+		"command = [marimo, 'edit'] if marimo else [sys.executable, '-m', 'marimo', 'edit']",
+		"with log_path.open('ab') as log:",
+		"    process = subprocess.Popen(command + [str(notebook), '--headless', '--no-token', '--host', '127.0.0.1', '--skip-update-check'], cwd=str(notebook.parent), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)",
+		"deadline = time.monotonic() + 25",
+		"while time.monotonic() < deadline:",
+		"    if process.poll() is not None: break",
+		"    url = server_for(process.pid)",
+		"    if url:",
+		"        print('GRAPHIMO_LAUNCH:' + json.dumps({'url': url, 'session_id': '', 'pid': process.pid, 'log_path': str(log_path), 'started': True}))",
+		"        raise SystemExit(0)",
+		"    time.sleep(.25)",
+		"tail = log_path.read_text(errors='replace')[-6000:] if log_path.exists() else ''",
+		"raise SystemExit('marimo did not start (pid %s). Log: %s\\n%s' % (process.pid, log_path, tail))",
+	}, "\n")
+	local request = zeron.run("python3", { "-c", script, notebook_path }, { timeout = 40 })
+	return from_zeron(request):after(function(response)
+		local stdout = if type(response.stdout) == "string" then response.stdout else ""
+		local marker = string.find(stdout, "GRAPHIMO_LAUNCH:", 1, true)
+		if not marker then
+			local detail = if type(response.stderr) == "string" and response.stderr ~= "" then response.stderr else stdout
+			return failure("Could not start marimo: " .. string.sub(detail, 1, 8000), "marimo_start_failed")
+		end
+		local encoded = string.match(string.sub(stdout, marker + #"GRAPHIMO_LAUNCH:"), "^([^\r\n]+)")
+		local ok, value = pcall(ui.json.decode, encoded or "")
+		if not ok or type(value) ~= "table" or type(value.url) ~= "string" then
+			return failure("Marimo launcher returned an invalid response", "marimo_start_failed")
+		end
+		return value
+	end)
+end
+
+function Bridge.read_marimo_log(zeron, path)
+	if type(path) ~= "string" or path == "" then
+		return future():after(function() return { text = "No marimo log file is active" } end)
+	end
+	local script = "from pathlib import Path; import sys; p=Path(sys.argv[1]); print(p.read_text(errors='replace')[-12000:] if p.exists() else 'Marimo log file has not been created')"
+	return from_zeron(zeron.run("python3", { "-c", script, path }, { timeout = 10 })):after(function(response)
+		if response.status ~= 0 then return failure(response.stderr or "Could not read marimo log", "log_read_failed") end
+		return { text = response.stdout or "" }
+	end)
+end
+
+function Bridge.append_problem(zeron, entry)
+	local script = table.concat({
+		"from pathlib import Path",
+		"import sys",
+		"path = Path.home() / '.local/state/graphimo/problems.log'",
+		"path.parent.mkdir(parents=True, exist_ok=True)",
+		"with path.open('a', encoding='utf-8') as stream: stream.write(sys.argv[1] + '\\n')",
+	}, "\n")
+	return from_zeron(zeron.run("python3", { "-c", script, entry }, { timeout = 10 }))
+end
+
+function Bridge.read_problem_log(zeron)
+	local script = "from pathlib import Path; p=Path.home()/'.local/state/graphimo/problems.log'; print(p.read_text(errors='replace')[-12000:] if p.exists() else 'No saved problems')"
+	return from_zeron(zeron.run("python3", { "-c", script }, { timeout = 10 })):after(function(response)
+		if response.status ~= 0 then return failure(response.stderr or "Could not read problem log", "log_read_failed") end
+		return { text = response.stdout or "" }
+	end)
+end
+
 local function execute(zeron, base, token, session_id, code, timeout)
 	local body = ui.json.encode({ code = code })
 	local args = {
@@ -229,7 +337,27 @@ local function code_for(operation, args)
 			"            for name in sorted(set(names)): edges.append({'source_cell_id': parent, 'target_cell_id': cid, 'variable': name})",
 			"        status = cell.status",
 			"        status = getattr(status, 'value', status)",
-			"        output = None if cell.output is None else repr(cell.output)[:500]",
+			"        output = None",
+			"        if cell.output is not None:",
+			"            rendered = cell.output",
+			"            mime = getattr(rendered, 'mimetype', None) or getattr(rendered, 'mime_type', None) or 'text/plain'",
+			"            raw = getattr(rendered, 'data', rendered)",
+			"            if isinstance(raw, str):",
+			"                preview = raw",
+			"                if mime == 'text/html':",
+			"                    import html, re",
+			"                    preview = html.unescape(re.sub(r'<[^>]*>', ' ', raw))",
+			"                    preview = re.sub(r'\\s+', ' ', preview).strip()",
+			"                size = len(raw.encode('utf-8', errors='replace'))",
+			"            else:",
+			"                preview = str(raw)",
+			"                size = len(preview.encode('utf-8', errors='replace'))",
+			"            if str(mime).startswith('image/'):",
+			"                preview = 'Image output (' + str(mime) + ', ' + str(size) + ' bytes)'",
+			"            elif str(mime).endswith('mimebundle'):",
+			"                preview = 'Rich marimo output (' + str(mime) + ', ' + str(size) + ' bytes)'",
+			"            output = {'mimetype': str(mime), 'preview': preview[:500], 'truncated': len(preview) > 500, 'bytes': size}",
+			"            if str(mime).startswith('image/') and isinstance(raw, str) and raw.startswith('data:image/') and len(raw) <= 524288: output['image_data_url'] = raw",
 			"        errors = [{'kind': err.kind, 'message': err.msg} for err in cell.errors]",
 			"        cells.append({'id': cid, 'name': cell.name or None, 'source': cell.code, 'defs': defs, 'refs': refs, 'parents': [{'cell_id': key, 'variables': sorted(set(value))} for key, value in parents.items()], 'children': [{'cell_id': key, 'variables': sorted(set(value))} for key, value in children.items()], 'status': str(status or 'unknown'), 'output': output, 'errors': errors})",
 			"    result = {'notebook': {'path': " .. ui.json.encode(args.notebook_path or "") .. ", 'session_id': " .. session_id .. "}, 'cells': cells, 'edges': edges}",

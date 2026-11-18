@@ -2,7 +2,8 @@ local Canvas = {}
 Canvas.width = 260
 
 function Canvas.height(cell)
-	return math.max(146, 120 + (#(cell.refs or {}) + #(cell.defs or {})) * 22)
+	local media = if type(cell.output) == "table" and cell.output.image_data_url then 68 else 0
+	return math.max(146, 120 + (#(cell.refs or {}) + #(cell.defs or {})) * 22 + media)
 end
 
 function Canvas.node(cells, id)

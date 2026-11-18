@@ -12,9 +12,17 @@ stores only cell presentation state in `.graphimo.json`.
   current dependency graph, including cells not created by Graphimo.
 - Pan, zoom, fit, drag cards, and persist positions keyed by cell ID.
 - Run or delete a cell through the live marimo session, show its current
-  status/output summary, and open the marimo editor.
-- Inspect the last 40 canvas, marimo, and layout events in the **Logs** panel;
-  token values are never added to those messages.
+  status/output summary, and open the marimo editor. Output summaries preserve
+  marimo's MIME type; HTML is reduced to readable text instead of injected into
+  Zeron's UI.
+- Open an existing `.py` notebook or create a new ordinary marimo notebook
+  from the Graphimo page. Graphimo reuses an already-running local marimo
+  session for that file or starts `marimo edit` on marimo's default free port;
+  the user never enters a URL, port, or token.
+- Inspect saved events and problems in **Logs**. Problems are appended to
+  `~/.local/state/graphimo/problems.log`; managed marimo stdout/stderr is kept
+  under `~/.local/state/graphimo/` and can be read or exported from the panel.
+  The on-screen log state survives page reloads.
 - Discover public callables in `.py` files and packages under the notebook's
   `components/` directory, then insert a readable ordinary Python cell.
 - Drag an output to an input for one deliberately narrow Python edit. Ambiguous
@@ -24,13 +32,14 @@ stores only cell presentation state in `.graphimo.json`.
 
 ## Install and connect
 
-Install Graphimo through Zeron's plugin manager. On the Graphimo page, enter the
-URL of the marimo editor and its access token if enabled, then choose an active
-notebook and press **Connect**. The plugin invokes `curl` to reach marimo's
-local session API and `python3` to read/write the sidecar layout; those are the
-only external commands in the plugin manifest. The Zeron host and marimo server
-must be able to see the same local notebook path for component discovery and
-layout persistence.
+Install Graphimo through Zeron's plugin manager and allow its `files` and
+`commands` permissions. Choose **Open notebook** or **New notebook**. Graphimo
+uses Zeron's native file dialog, starts or reuses a local marimo editor, then
+opens it once so marimo can establish its live session. Marimo chooses its own
+free port. Graphimo invokes `curl` for marimo's local session API and `python3`
+for the minimal detached-process bridge and sidecar layout; it does not own
+cell execution or dependency scheduling. Zeron and marimo must see the same
+local notebook path for component discovery and layout persistence.
 
 Component discovery uses the convention:
 

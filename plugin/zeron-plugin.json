@@ -1,11 +1,11 @@
 {
   "id": "graphimo",
   "name": "Graphimo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A live canvas view over marimo notebooks.",
   "entry": "init.luau",
   "icon": "graphimo.svg",
-  "permissions": ["pages.add", "tools", "commands", "links.open"],
+  "permissions": ["pages.add", "tools", "commands", "links.open", "files"],
   "commands": ["curl", "python3"],
   "tools": [
     {"name":"inspect","description":"Inspect the live cells and dependencies of the selected marimo notebook.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},

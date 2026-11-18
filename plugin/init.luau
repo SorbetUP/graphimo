@@ -4,15 +4,17 @@ local Layout = require("./layout")
 local Canvas = require("./canvas")
 local Text = require("@ds/text")
 local Button = require("@ds/button")
-local TextField = require("@ds/text_field")
 local Select = require("@ds/select")
 local Glass = require("@ds/glass")
+local Markdown = require("@ds/markdown")
 
-local connection = zeron.store("connection-v1", { url = "http://127.0.0.1:2718", token = "", session_id = "" })
+local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
+local saved_logs = zeron.store("logs-v1", {})
+local saved_problems = zeron.store("problems-v1", {})
 
 local function config_for(args)
-	local saved = connection:get()
-	return args.url or saved.url or "http://127.0.0.1:2718", saved.token or "", args.session_id or saved.session_id or ""
+	local saved = active_notebook:get()
+	return args.url or saved.url or "", "", args.session_id or saved.session_id or ""
 end
 
 local function tool_result(promise)
@@ -93,19 +95,23 @@ end })
 zeron.tool({ name = "open_code", run = function(args)
 	local url, _, session = config_for(args or {})
 	if args.session_id then session = args.session_id end
+	if url == "" then return { ok = false, error = { code = "selection_required", message = "Open a notebook in Graphimo first" } } end
 	zeron.open_url(string.gsub(url, "/+$", ""))
 	return { ok = true, opened = true, session_id = session, cell_id = args.cell_id }
 end })
 
 local Page = ui.component(function()
-	local saved = connection:peek()
-	local url = ui.use_state(saved.url or "http://127.0.0.1:2718")
-	local token = ui.use_state(saved.token or "")
+	local saved = active_notebook:peek()
+	local url = ui.use_state(saved.url or "")
+	local token = ui.use_state("")
 	local session_id = ui.use_state(saved.session_id or "")
 	local sessions = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local visible_cell_ids = ui.use_state({})
-	local log_entries = ui.use_state({})
+	local log_entries = ui.use_state(saved_logs:peek() or {})
+	local problem_entries = ui.use_state(saved_problems:peek() or {})
+	local server_log_text = ui.use_state("")
+	local problem_log_text = ui.use_state("")
 	local logs_open = ui.use_state(false)
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
@@ -125,12 +131,28 @@ local Page = ui.component(function()
 		return snapshot:get().cells or {}
 	end
 
-	local function log(message)
+	local function log(message, level)
+		level = level or "info"
+		local entry = tostring(os.time()) .. " [" .. string.upper(level) .. "] " .. tostring(message)
 		local entries = table.clone(log_entries:peek())
-		table.insert(entries, message)
-		while #entries > 40 do table.remove(entries, 1) end
+		table.insert(entries, entry)
+		while #entries > 1200 do table.remove(entries, 1) end
 		log_entries:set(entries)
-		print("[Graphimo] " .. message)
+		saved_logs:set(entries)
+		if level == "error" then
+			local problems = table.clone(problem_entries:peek())
+			table.insert(problems, entry)
+			while #problems > 3000 do table.remove(problems, 1) end
+			problem_entries:set(problems)
+			saved_problems:set(problems)
+			local ok, saved = pcall(Bridge.append_problem, zeron, entry)
+			if ok and saved then
+				saved:after(nil, function(err) print("[Graphimo] Could not append problem log: " .. tostring(err)) end)
+			else
+				print("[Graphimo] Could not start persistent problem-log write: " .. tostring(saved))
+			end
+		end
+		print("[Graphimo] " .. entry)
 	end
 
 	local function observe(label, start, on_success, on_failure)
@@ -138,20 +160,20 @@ local Page = ui.component(function()
 			local detail = err
 			if type(err) == "table" and type(err.error) == "table" then detail = err.error.message or err.error.code or "Marimo operation failed" end
 			local message = label .. " failed: " .. tostring(detail)
-			log(message)
+			log(message, "error")
 			if on_failure then pcall(on_failure, detail) end
 		end
 		local ok, promise = pcall(start)
 		if not ok then
 			local message = label .. " failed to start: " .. tostring(promise)
-			log(message)
+			log(message, "error")
 			if on_failure then on_failure(promise) end
 			return
 		end
 		local valid, after = pcall(function() return promise and promise.after end)
 		if not valid or type(after) ~= "function" then
 			local message = label .. " failed: Zeron returned no request promise; check Graphimo's curl/python3 permissions"
-			log(message)
+			log(message, "error")
 			if on_failure then on_failure(message) end
 			return
 		end
@@ -185,6 +207,10 @@ local Page = ui.component(function()
 
 	local refresh_graph
 	local function refresh_sessions()
+		if url:peek() == "" then
+			notice:set("Open or create a notebook to begin")
+			return
+		end
 		observe("List marimo sessions", function()
 			return Bridge.sessions(zeron, url:peek(), token:peek())
 		end, function(items)
@@ -203,13 +229,6 @@ local Page = ui.component(function()
 			notice:set(if #items == 0 then "No active marimo notebooks found" else "Found " .. tostring(#items) .. " active notebook(s)")
 			if session_id:peek() ~= "" then refresh_graph() end
 		end, function(err) notice:set("Marimo connection failed: " .. tostring(err)) end)
-	end
-
-	local function persist_connection()
-		local value = { url = url:peek(), token = token:peek(), session_id = session_id:peek() }
-		connection:set(value)
-		notice:set("Connection saved")
-		log("Connection settings saved (token omitted)")
 	end
 
 	refresh_graph = function()
@@ -276,10 +295,132 @@ local Page = ui.component(function()
 
 	local function select_session(value)
 		session_id:set(value)
-		local next_saved = table.clone(connection:peek())
+		local next_saved = table.clone(active_notebook:peek())
 		next_saved.session_id = value
-		connection:set(next_saved)
+		active_notebook:set(next_saved)
 		if value ~= "" then refresh_graph() end
+	end
+
+	local function wait_for_notebook(path, base_url, attempt)
+		attempt = attempt or 0
+		if attempt >= 40 then
+			local message = "Marimo editor opened, but its notebook session did not become active. See Logs for the marimo process output."
+			log(message, "error")
+			notice:set(message)
+			return
+		end
+		Bridge.sessions(zeron, base_url, ""):after(function(items)
+			if type(items) == "table" and items.ok == false then
+				if attempt == 39 then log("Could not read marimo sessions: " .. tostring(items.error.message), "error") end
+				ui.after(750, function() wait_for_notebook(path, base_url, attempt + 1) end)
+				return
+			end
+			for _, item in items or {} do
+				local same_path = item.path == path
+				if not same_path and item.path ~= "" then
+					local a = string.gsub(item.path, "\\\\", "/")
+					local b = string.gsub(path, "\\\\", "/")
+					same_path = string.gsub(a, "/+$", "") == string.gsub(b, "/+$", "")
+				end
+				if same_path then
+					sessions:set(items)
+					session_id:set(item.session_id)
+					local current = table.clone(active_notebook:peek())
+					current.url, current.path, current.session_id = base_url, path, item.session_id
+					active_notebook:set(current)
+					log("Notebook session connected: " .. path)
+					refresh_graph()
+					return
+				end
+			end
+			ui.after(750, function() wait_for_notebook(path, base_url, attempt + 1) end)
+		end, function(err)
+			if attempt == 39 then log("Could not connect to marimo sessions: " .. tostring(err), "error") end
+			ui.after(750, function() wait_for_notebook(path, base_url, attempt + 1) end)
+		end)
+	end
+
+	local function start_notebook(path)
+		notice:set("Starting marimo for " .. path .. "…")
+		log("Opening notebook " .. path)
+		observe("Start marimo", function()
+			return Bridge.open_notebook(zeron, path)
+		end, function(started)
+			url:set(started.url)
+			session_id:set(started.session_id or "")
+			local current = { url = started.url, session_id = started.session_id or "", path = path, log_path = started.log_path or "" }
+			active_notebook:set(current)
+			if started.started then log("Started marimo process " .. tostring(started.pid)) else log("Reused existing marimo process") end
+			if started.session_id and started.session_id ~= "" then
+				refresh_graph()
+			else
+				zeron.open_url(started.url)
+				log("Opened marimo editor; waiting for its live notebook session")
+				wait_for_notebook(path, started.url, 0)
+			end
+		end, function(err)
+			local message = "Could not start marimo: " .. tostring(err)
+			notice:set(message)
+			log(message, "error")
+		end)
+	end
+
+	local function choose_notebook()
+		ui.open_files({ title = "Open marimo notebook", filters = { { "Python notebook", { "py" } } } }):after(function(files)
+			local file = files and files[1]
+			if file and type(file.path) == "string" then start_notebook(file.path) end
+		end, function(err)
+			local message = "Could not choose notebook: " .. tostring(err)
+			notice:set(message); log(message, "error")
+		end)
+	end
+
+	local function create_notebook()
+		ui.save_file({ title = "Create marimo notebook", name = "notebook.py", filters = { { "Python notebook", { "py" } } } }):after(function(file)
+			if not file then return end
+			local source = "import marimo\n\n__generated_with = \"0.25.2\"\napp = marimo.App()\n\n\nif __name__ == \"__main__\":\n    app.run()\n"
+			ui.write_file(file, source):after(function()
+				if type(file.path) == "string" then start_notebook(file.path) end
+			end, function(err)
+				local message = "Could not create notebook: " .. tostring(err)
+				notice:set(message); log(message, "error")
+			end)
+		end, function(err)
+			local message = "Could not choose notebook location: " .. tostring(err)
+			notice:set(message); log(message, "error")
+		end)
+	end
+
+	local function refresh_marimo_log()
+		local path = active_notebook:peek().log_path
+		local function read_process_log()
+			if not path or path == "" then server_log_text:set("No managed marimo process log yet."); return end
+			observe("Read marimo process log", function()
+				return Bridge.read_marimo_log(zeron, path)
+			end, function(result)
+				server_log_text:set(result.text or "")
+			end, function(err)
+				server_log_text:set("Could not read marimo log: " .. tostring(err))
+			end)
+		end
+		observe("Read persistent problem log", function()
+			return Bridge.read_problem_log(zeron)
+		end, function(result)
+			problem_log_text:set(result.text or "")
+			read_process_log()
+		end, function(err)
+			problem_log_text:set("Could not read problem log: " .. tostring(err))
+			read_process_log()
+		end)
+	end
+
+	local function export_logs()
+		local body = "Graphimo problems\n\n" .. table.concat(problem_entries:peek(), "\n") .. "\n\nPersistent problem log\n\n" .. problem_log_text:peek() .. "\n\nRecent Graphimo events\n\n" .. table.concat(log_entries:peek(), "\n") .. "\n\nMarimo process output\n\n" .. server_log_text:peek()
+		ui.save_file({ title = "Export Graphimo logs", name = "graphimo-logs.txt", filters = { { "Text log", { "txt" } } } }):after(function(file)
+			if file then
+				ui.write_file(file, body):after(function() log("Exported Graphimo logs") end, function(err) log("Could not export logs: " .. tostring(err), "error") end)
+			end
+		end, function(err) log("Could not choose log export location: " .. tostring(err), "error") end)
 	end
 
 	local function card(id)
@@ -306,10 +447,21 @@ local Page = ui.component(function()
 				Text { function() local value = cell(); return value and value.status or "unknown" end, style = "caption", tone = function() local value = cell(); return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary" end },
 			},
 			Text { function() local value = cell(); return string.match(value and value.source or "", "^[^\n]*") or "Empty cell" end, style = "caption", tone = "secondary", wrap = true },
+			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
+				ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 64, fit = "contain" }),
+			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.mimetype == "text/markdown" end,
+				Markdown { text = function() local value = cell(); return value and value.output and value.output.preview or "" end }),
 			Text { function()
 				local value = cell()
 				if not value then return "" end
-				if value.output and value.output ~= "None" then return value.output end
+				if type(value.output) == "table" then
+					local mime = value.output.mimetype or "text/plain"
+					if value.output.image_data_url or mime == "text/markdown" then return "" end
+					local preview = value.output.preview or ""
+					if preview == "" then return tostring(mime) end
+					return tostring(mime) .. " · " .. tostring(preview)
+				end
+				if value.output and value.output ~= "None" then return tostring(value.output) end
 				return value.errors and value.errors[1] and value.errors[1].message or ""
 			end, style = "caption", tone = "secondary", wrap = true },
 			ui.row { w_full = true, grow = 1, items = "stretch", gap = "$space.2",
@@ -496,23 +648,20 @@ local Page = ui.component(function()
 
 	return ui.column { w_full = true, h_full = true, min_h = 0, gap = "$space.3", p = "$space.4",
 		ui.row { w_full = true, items = "center", gap = "$space.2",
+			ui.canvas { w = 30, h = 30, draw = function(c)
+				local path = ui.path():move(7, 15):cubic(10, 5, 20, 5, 23, 15):cubic(20, 25, 10, 25, 7, 15)
+				c:stroke(path, "$accent", 2, { cap = "round" })
+				c:circle(7, 15, 3, "$accent"); c:circle(23, 15, 3, "$accent"); c:circle(15, 8, 3, "$accent"); c:circle(15, 22, 3, "$accent")
+			end, pointer_events = "none" },
 			Text { "Graphimo", style = "heading" },
-			Text { function() return snapshot:get().notebook.path or "Live marimo canvas" end, style = "caption", tone = "secondary", grow = 1 },
-			Button { "Refresh", tone = "secondary", size = "sm", on_click = refresh_graph },
+			Text { function() return snapshot:get().notebook.path or "Visual view of your marimo notebook" end, style = "caption", tone = "secondary", grow = 1 },
+			Button { "Open notebook", size = "sm", on_click = choose_notebook },
+			Button { "New notebook", tone = "secondary", size = "sm", on_click = create_notebook },
+			Button { "Refresh", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
 			Button { "Fit", tone = "secondary", size = "sm", on_click = fit },
 			Button { "−", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { "+", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			Button { function() return if logs_open:get() then "Hide logs" else "Logs (" .. tostring(#log_entries:get()) .. ")" end, tone = "secondary", size = "sm", on_click = function() logs_open:set(not logs_open:peek()) end },
-		},
-		ui.row { w_full = true, gap = "$space.2", items = "center",
-			TextField { value = url, label = "Marimo URL", w = 270 },
-			TextField { value = token, label = "Token", type = "password", w = 190 },
-			Select { value = session_id, options = function()
-				local result = { { value = "", label = "Select notebook" } }
-				for _, item in sessions:get() do table.insert(result, { value = item.session_id, label = (item.path ~= "" and item.path or item.session_id) }) end
-				return result
-			end, label = "Active notebook", w = 280, on_change = select_session },
-			Button { "Connect", size = "sm", on_click = function() persist_connection(); refresh_sessions() end },
+			Button { function() return if logs_open:get() then "Hide logs" else "Logs (" .. tostring(#problem_entries:get()) .. ")" end, tone = "secondary", size = "sm", on_click = function() logs_open:set(not logs_open:peek()) end },
 		},
 		ui.row { w_full = true, gap = "$space.2", items = "center",
 			Select { value = component_id, options = component_options, label = "Component", w = 220, on_change = function(value)
@@ -537,7 +686,12 @@ local Page = ui.component(function()
 				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
 			},
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
-				on_mount = function() ui.after(150, refresh_sessions) end,
+				on_mount = function()
+					ui.after(150, function()
+						if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
+						else notice:set("Open or create a notebook to begin") end
+					end)
+				end,
 				on_press = on_press, on_pointer_move = on_move, on_release = on_release,
 				on_wheel = function(e)
 					if e.dy ~= 0 then zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), e.local_x or (canvas.width or 0) / 2, e.local_y or (canvas.height or 0) / 2) end
@@ -546,9 +700,24 @@ local Page = ui.component(function()
 			},
 		},
 		Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
-		ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 150, gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
-			Text { "Recent Graphimo logs (last 40 events; token values are not logged)", style = "caption", tone = "secondary", wrap = true },
-			Text { function() return if #log_entries:get() == 0 then "No log events yet" else table.concat(log_entries:get(), "\n") end, style = "caption", tone = "secondary", wrap = true },
+		ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+			ui.row { w_full = true, items = "center", gap = "$space.2",
+				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
+				Button { "Read marimo log", tone = "secondary", size = "sm", on_click = refresh_marimo_log },
+				Button { "Export logs", tone = "secondary", size = "sm", on_click = export_logs },
+			},
+			Text { function()
+				local recent = log_entries:get()
+				local problems = problem_entries:get()
+				local first = math.max(1, #recent - 30)
+				local view = {}
+				for index = first, #recent do table.insert(view, recent[index]) end
+				if #problems > 0 then table.insert(view, "--- Saved problems ---") end
+				for index = math.max(1, #problems - 20), #problems do table.insert(view, problems[index]) end
+				if problem_log_text:get() ~= "" then table.insert(view, "--- Persistent problem log file ---"); table.insert(view, problem_log_text:get()) end
+				if server_log_text:get() ~= "" then table.insert(view, "--- Marimo process log ---"); table.insert(view, server_log_text:get()) end
+				return if #view == 0 then "No log events yet" else table.concat(view, "\n")
+			end, style = "caption", tone = "secondary", wrap = true },
 		}),
 	}
 end)

@@ -211,6 +211,25 @@ elseif mode == "tool_adapter" then
 	assert(answer and answer.ok and answer.value.result == "resolved", "host must receive resolved tool output")
 	print("GRAPHIMO_TOOL_AWAITED:resolved")
 	result = true
+	elseif mode == "launcher_script" then
+	getfenv(Bridge.open_notebook).ui = ui
+	local launcher = {}
+	function launcher.run(_program, args)
+		assert(args[1] == "-c", "marimo launcher must use python -c")
+		print("GRAPHIMO_LAUNCH_SCRIPT_BEGIN\n" .. args[2] .. "\nGRAPHIMO_LAUNCH_SCRIPT_END")
+		local launch_result = { url = "http://127.0.0.1:2718", session_id = "", pid = 1, log_path = "/tmp/graphimo.log", started = true }
+		local encoded = json_encode(launch_result)
+		json_values[encoded] = launch_result
+		return setmetatable({ value = { status = 0, stdout = "GRAPHIMO_LAUNCH:" .. encoded } }, Promise)
+	end
+	result = Bridge.open_notebook(launcher, notebook_path)
+	elseif mode == "problem_log_script" then
+	local logger = {}
+	function logger.run(_program, args)
+		print("GRAPHIMO_PROBLEM_LOG_SCRIPT_BEGIN\n" .. args[2] .. "\nGRAPHIMO_PROBLEM_LOG_SCRIPT_END")
+		return setmetatable({ value = { status = 0, stdout = "" } }, Promise)
+	end
+	result = Bridge.append_problem(logger, "test problem")
 elseif mode == "connect" then
 	result = Bridge.connect(zeron, "http://127.0.0.1:2718", "", "s_live", from_cell_id or "source-cell", variable or "data", to_cell_id or "target-cell", input_ref or "processed")
 else

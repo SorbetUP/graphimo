@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import shutil
 import socket
 import subprocess
@@ -72,6 +73,121 @@ def _bridge_code(mode: str, *args: str) -> list[str]:
     blocks = re.findall(r"GRAPHIMO_CODE_BEGIN\n(.*?)\nGRAPHIMO_CODE_END", result.stdout, re.S)
     assert blocks, result.stdout
     return blocks
+
+
+@pytest.mark.skipif(
+    not LUAU or not MARIMO_PYTHON,
+    reason="set GRAPHIMO_MARIMO_PYTHON and install the Luau CLI to run live bridge tests",
+)
+def test_managed_launcher_starts_local_marimo_without_a_user_selected_port(tmp_path: Path):
+    notebook = tmp_path / "managed_notebook.py"
+    notebook.write_text(
+        "import marimo\n__generated_with = '0.25.2'\napp = marimo.App()\n"
+        "if __name__ == '__main__': app.run()\n",
+        encoding="utf-8",
+    )
+    generated = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "launcher_script", str(notebook)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert generated.returncode == 0, generated.stderr
+    scripts = re.findall(
+        r"GRAPHIMO_LAUNCH_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_LAUNCH_SCRIPT_END",
+        generated.stdout,
+        re.S,
+    )
+    assert len(scripts) == 1
+    launched = subprocess.run(
+        [MARIMO_PYTHON, "-c", scripts[0], str(notebook)],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=40,
+    )
+    assert launched.returncode == 0, launched.stderr or launched.stdout
+    marker = "GRAPHIMO_LAUNCH:"
+    payload = next(line[len(marker) :] for line in launched.stdout.splitlines() if line.startswith(marker))
+    result = json.loads(payload)
+    assert result["started"] is True
+    assert result["session_id"] == ""
+    assert result["url"].startswith("http://")
+    assert ":2718" in result["url"] or ":" in result["url"]
+    assert result["log_path"].endswith(".log")
+    try:
+        os.kill(int(result["pid"]), 0)
+        _request(result["url"] + "/api/sessions")
+        from websockets.sync.client import connect
+
+        websocket_url = result["url"].replace("http://", "ws://").replace("https://", "wss://")
+        with connect(f"{websocket_url}/ws?session_id=graphimo-managed-test") as websocket:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                event = json.loads(websocket.recv(timeout=max(0.1, deadline - time.monotonic())))
+                if event.get("op") == "kernel-ready":
+                    break
+            else:
+                raise AssertionError("managed marimo notebook did not reach kernel-ready")
+        reused = subprocess.run(
+            [MARIMO_PYTHON, "-c", scripts[0], str(notebook)],
+            cwd=tmp_path,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+        assert reused.returncode == 0, reused.stderr or reused.stdout
+        reused_payload = next(
+            line[len(marker) :] for line in reused.stdout.splitlines() if line.startswith(marker)
+        )
+        reused_result = json.loads(reused_payload)
+        assert reused_result["started"] is False
+        assert reused_result["url"] == result["url"]
+        assert reused_result["session_id"] == "graphimo-managed-test"
+    finally:
+        try:
+            os.killpg(int(result["pid"]), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to test production bridge helpers")
+def test_problems_are_appended_to_a_persistent_user_log(tmp_path: Path):
+    generated = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "problem_log_script"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert generated.returncode == 0, generated.stderr
+    scripts = re.findall(
+        r"GRAPHIMO_PROBLEM_LOG_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_PROBLEM_LOG_SCRIPT_END",
+        generated.stdout,
+        re.S,
+    )
+    assert len(scripts) == 1
+    log_path = tmp_path / ".local/state/graphimo/problems.log"
+    env = {**os.environ, "HOME": str(tmp_path)}
+    for problem in ("cell execution failed", "marimo connection failed"):
+        written = subprocess.run(
+            [MARIMO_PYTHON or "python3", "-c", scripts[0], problem],
+            env=env,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+        assert written.returncode == 0, written.stderr
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
+        "cell execution failed",
+        "marimo connection failed",
+    ]
 
 
 @pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
@@ -247,6 +363,11 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
         "def predict(processed, transform):\n"
         "    prediction = transform(processed)\n"
         "    return (prediction,)\n\n"
+        "@app.cell\n"
+        "def show_preview():\n"
+        "    preview = 'Graphimo output preview'\n"
+        "    preview\n"
+        "    return (preview,)\n\n"
         "if __name__ == \"__main__\":\n"
         "    app.run()\n",
         encoding="utf-8",
@@ -334,8 +455,11 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         cells = snapshot["cells"]
         source = next(cell for cell in cells if "data = 3" in cell["source"])
         target = next(cell for cell in cells if "prediction = transform(processed)" in cell["source"])
+        display = next(cell for cell in cells if "Graphimo output preview" in cell["source"])
         assert "data" in source["defs"] and "transform" in source["defs"], source
         assert "processed" in target["refs"] and "transform" in target["refs"], target
+        assert isinstance(display["output"], dict)
+        assert "Graphimo output preview" in display["output"]["preview"]
         assert any(edge["variable"] == "processed" for edge in snapshot["edges"])
 
         component_code = _bridge_code("list_components", notebook_path)[0]
