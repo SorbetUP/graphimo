@@ -11,12 +11,15 @@ import importlib.util
 import inspect
 import json
 import keyword
+import math
 import os
 import sys
 import tempfile
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal, get_args
+
+_LITERAL_ALIAS_TYPE = type(Literal[0])
 
 
 class _RequestError(Exception):
@@ -112,21 +115,114 @@ def _load_module(path: Path) -> ModuleType:
     return module
 
 
-def _callables(path: Path) -> list[dict[str, str]]:
+class _SafeAnnotation:
+    """An annotation token whose repr is controlled by Graphimo."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def __repr__(self) -> str:
+        return self.text
+
+
+class _OmittedDefault:
+    def __repr__(self) -> str:
+        return "..."
+
+
+def _safe_annotation_text(annotation: Any) -> str | None:
+    if annotation is inspect.Parameter.empty:
+        return None
+    if type(annotation) is str:
+        return annotation
+    if annotation is None:
+        return "None"
+    if type(annotation) is type:
+        try:
+            return type.__getattribute__(annotation, "__name__")
+        except (AttributeError, TypeError):
+            return None
+    return None
+
+
+def _literal_choices(annotation: Any) -> tuple[Any, ...] | None:
+    if type(annotation) is not _LITERAL_ALIAS_TYPE or annotation.__origin__ is not Literal:
+        return None
+    return get_args(annotation)
+
+
+def _scalar_default(value: Any) -> bool:
+    if value is None or type(value) in (bool, int, str):
+        return True
+    return type(value) is float and math.isfinite(value)
+
+
+def _parameter_metadata(parameter: inspect.Parameter) -> dict[str, Any]:
+    has_default = parameter.default is not inspect.Parameter.empty
+    result: dict[str, Any] = {
+        "name": parameter.name,
+        "required": not has_default,
+        "positional": parameter.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        "has_default": has_default,
+    }
+    if has_default and _scalar_default(parameter.default):
+        result["default"] = parameter.default
+    annotation = _safe_annotation_text(parameter.annotation)
+    if annotation is not None:
+        result["annotation"] = annotation
+    choices = _literal_choices(parameter.annotation)
+    if choices is not None and all(_scalar_default(choice) for choice in choices):
+        result["choices"] = list(choices)
+    return result
+
+
+def _safe_signature(signature: inspect.Signature) -> str:
+    parameters = []
+    for parameter in signature.parameters.values():
+        text = _safe_annotation_text(parameter.annotation)
+        choices = _literal_choices(parameter.annotation)
+        if text is None and choices is not None and all(_scalar_default(choice) for choice in choices):
+            text = "Literal[" + ", ".join(json.dumps(choice, ensure_ascii=False) for choice in choices) + "]"
+        default = (
+            parameter.default
+            if parameter.default is inspect.Parameter.empty or _scalar_default(parameter.default)
+            else _OmittedDefault()
+        )
+        safe = parameter.replace(
+            annotation=_SafeAnnotation(text) if text is not None else inspect.Parameter.empty,
+            default=default,
+        )
+        parameters.append(safe)
+    return_annotation = _safe_annotation_text(signature.return_annotation)
+    safe_signature = signature.replace(
+        parameters=parameters,
+        return_annotation=_SafeAnnotation(return_annotation) if return_annotation is not None else inspect.Signature.empty,
+    )
+    return str(safe_signature)
+
+
+def _callables(path: Path) -> list[dict[str, Any]]:
     module = _load_module(path)
     exports = getattr(module, "__all__", None)
     names = exports if isinstance(exports, (list, tuple)) else [name for name in vars(module) if not name.startswith("_")]
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     for name in names:
         value = getattr(module, name, None)
         if not isinstance(name, str) or not callable(value) or inspect.isclass(value) or inspect.isbuiltin(value):
             continue
         try:
-            signature = str(inspect.signature(value))
+            parsed_signature = inspect.signature(value)
+            signature = _safe_signature(parsed_signature)
+            parameters = [
+                _parameter_metadata(parameter)
+                for parameter in parsed_signature.parameters.values()
+                if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            ]
         except (TypeError, ValueError):
             signature = "(...)"
+            parameters = []
         doc = inspect.getdoc(value) or inspect.getdoc(module) or ""
-        result.append({"name": name, "signature": signature, "description": doc.splitlines()[0] if doc else ""})
+        result.append({"name": name, "signature": signature, "description": doc.splitlines()[0] if doc else "", "parameters": parameters})
     return result
 
 
