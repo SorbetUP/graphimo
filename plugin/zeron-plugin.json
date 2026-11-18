@@ -1,7 +1,7 @@
 {
   "id": "graphimo",
   "name": "Graphimo",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A native Zeron block canvas over live marimo notebooks.",
   "entry": "init.luau",
   "icon": "graphimo.svg",
@@ -344,6 +344,59 @@
         },
         "required": [
           "meta_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_ports",
+      "description": "Declare manual input/output ports for an arbitrary Python block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "cell_id": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "cell_id",
+          "inputs",
+          "outputs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_component",
+      "description": "Save one current block as an opt-in reusable Python component.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "cell_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_id",
+          "name"
         ],
         "additionalProperties": false
       }
