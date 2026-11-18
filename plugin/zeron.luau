@@ -141,6 +141,7 @@ type Tool = { name: string, run: (args: any, call: { chat: string? }) -> any }
 type Item = { kind: string, id: string, label: string, run: (context: any) -> () }
 
 local made: { [string]: any } = {}
+local ToolAdapter = require("./tool_adapter")
 
 return function(id: string): any
 	-- In the plugin's service (service.luau, run headless by the engine on
@@ -964,8 +965,9 @@ return function(id: string): any
 		end
 		-- A task, so a tool can await (a fetch) before it answers.
 		ui.task(function()
-			local ok, value = pcall(tool.run, call.args or {}, { chat = call.chat })
-			answer(call, ok, value)
+			ToolAdapter.dispatch(tool.run, call.args or {}, { chat = call.chat }, function(ok, value)
+				answer(call, ok, value)
+			end)
 		end)
 	end
 

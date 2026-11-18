@@ -197,6 +197,20 @@ elseif mode == "run" or mode == "execute_empty" then
 	result = Bridge.run(zeron, "http://127.0.0.1:2718", "", "s_live", cell_id or "target-cell")
 elseif mode == "components_connection" then
 	result = Bridge.list_components_for_active(zeron, "http://127.0.0.1:2718", "", "")
+elseif mode == "tool_adapter" then
+	local ToolAdapter = require("../plugin/tool_adapter")
+	local delayed = {}
+	function delayed:after(success, failure)
+		self.success, self.failure = success, failure
+		return nil
+	end
+	local answer = nil
+	ToolAdapter.dispatch(function() return delayed end, {}, {}, function(ok, value) answer = { ok = ok, value = value } end)
+	assert(answer == nil, "async tool must wait for its after callback")
+	delayed.success({ ok = true, result = "resolved" })
+	assert(answer and answer.ok and answer.value.result == "resolved", "host must receive resolved tool output")
+	print("GRAPHIMO_TOOL_AWAITED:resolved")
+	result = true
 elseif mode == "connect" then
 	result = Bridge.connect(zeron, "http://127.0.0.1:2718", "", "s_live", from_cell_id or "source-cell", variable or "data", to_cell_id or "target-cell", input_ref or "processed")
 else

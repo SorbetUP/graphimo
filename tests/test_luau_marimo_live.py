@@ -209,6 +209,20 @@ def test_list_components_propagates_an_inspect_connection_failure():
     assert "GRAPHIMO_OPERATION_ERROR:Could not read marimo /api/sessions" in result.stdout
 
 
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_zeron_tool_adapter_answers_only_after_async_result_resolves():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "tool_adapter"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GRAPHIMO_TOOL_AWAITED:resolved" in result.stdout
+
+
 @pytest.mark.skipif(
     not LUAU or not MARIMO_PYTHON,
     reason="set GRAPHIMO_MARIMO_PYTHON and install the Luau CLI to run live bridge tests",
