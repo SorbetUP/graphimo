@@ -667,6 +667,17 @@ local function code_for(operation, args)
 			"    cell_id = ctx.create_cell(" .. ui.json.encode(args.source) .. ", hide_code=False)",
 			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'cell_id': str(cell_id), 'source': " .. ui.json.encode(args.source) .. "}))",
 		}, "\n")
+	elseif operation == "edit" then
+		return table.concat({
+			"import json",
+			"import marimo._code_mode as cm",
+			"async with cm.get_context() as ctx:",
+			"    cell_id = " .. ui.json.encode(args.cell_id),
+			"    current = ctx.cells[cell_id]",
+			"    _ = current.code",
+			"    ctx.edit_cell(cell_id, code=" .. ui.json.encode(args.source) .. ")",
+			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'cell_id': cell_id}))",
+		}, "\n")
 	elseif operation == "delete" then
 		return table.concat({
 			"import json",
@@ -879,6 +890,10 @@ end
 
 function Bridge.add_cell(zeron, base, token, session_id, source)
 	return execute(zeron, base, token, session_id, code_for("add_cell", { source = source }), 60)
+end
+
+function Bridge.edit(zeron, base, token, session_id, cell_id, source)
+	return execute(zeron, base, token, session_id, code_for("edit", { cell_id = cell_id, source = source }), 60)
 end
 
 function Bridge.delete(zeron, base, token, session_id, cell_id)
