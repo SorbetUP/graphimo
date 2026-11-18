@@ -180,8 +180,13 @@ def test_inspect_links_only_exact_generated_component_markers_and_call(tmp_path,
             "callable": "normalize",
             "source_sha256": source_hash,
         }
-    for cell_id in ("legacy", "wrong-call", "stale"):
+    for cell_id in ("legacy", "wrong-call"):
         assert "graphimo_component" not in cells[cell_id]
+    assert cells["stale"]["graphimo_component"] == {
+        "component_id": "normalize.py",
+        "callable": "normalize",
+        "source_sha256": "0" * 64,
+    }
 
 
 @pytest.mark.skipif(not LUAU, reason="install the Luau CLI to exercise the production projection")
