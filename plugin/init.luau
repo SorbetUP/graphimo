@@ -153,6 +153,7 @@ local Page = ui.component(function()
 	local component_id = ui.use_state("")
 	local callable_name = ui.use_state("")
 	local selected = ui.use_state("")
+	local selected_many = ui.use_state({})
 	local zoom = ui.use_state(0.85)
 	local pan_x = ui.use_state(24)
 	local pan_y = ui.use_state(24)
@@ -247,6 +248,7 @@ local Page = ui.component(function()
 			local view = table.clone(cell)
 			local position = saved_positions[cell.id] or { x = 0, y = 0 }
 			view.x, view.y = position.x, position.y
+			view.width, view.height = position.width, position.height
 			table.insert(positioned, view)
 		end
 		return positioned
@@ -483,15 +485,21 @@ local Page = ui.component(function()
 			absolute = true,
 			left = function() local p = positions:get()[id] or {}; return pan_x:get() + (p.x or 0) * zoom:get() end,
 			top = function() local p = positions:get()[id] or {}; return pan_y:get() + (p.y or 0) * zoom:get() end,
-			w = Canvas.width * zoom:get(),
+			w = function()
+				local p = positions:get()[id] or {}
+				return Canvas.width_of(p) * zoom:get()
+			end,
 			h = function()
-				local value = cell()
-				return Canvas.height(value or {}, block()) * zoom:get()
+				local value, p = cell(), positions:get()[id] or {}
+				return Canvas.height(value or {}, block(), p) * zoom:get()
 			end,
 			rounded = "$radius.lg",
 			pointer_events = "none",
 		}, "island")
-		style.border_color = function() return if selected:get() == id then "$accent" else "$border.strong" end
+		style.border_color = function()
+			local many = selected_many:get()
+			return if selected:get() == id or many[id] then "$accent" else "$border.strong"
+		end
 		style.bg = "$zeron.secondary.bg"
 		table.insert(style, ui.column { w_full = true, h_full = true, gap = "$space.2", p = "$space.3",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
@@ -593,12 +601,30 @@ local Page = ui.component(function()
 		for _, cell in snapshot:peek().cells do
 			local p = ps[cell.id] or { x = 0, y = 0 }
 			left = math.min(left, p.x); top = math.min(top, p.y)
-			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell, base_blocks:peek()[cell.id]))
+			right = math.max(right, p.x + Canvas.width_of(p)); bottom = math.max(bottom, p.y + Canvas.height(cell, base_blocks:peek()[cell.id], p))
 		end
 		local w, h = canvas.width or 800, canvas.height or 600
 		local scale = math.min((w - 64) / math.max(1, right - left), (h - 64) / math.max(1, bottom - top), 1.3)
 		scale = math.clamp(scale, 0.35, 1.3)
 		zoom:set(scale); pan_x:set((w - (right - left) * scale) / 2 - left * scale); pan_y:set((h - (bottom - top) * scale) / 2 - top * scale)
+	end
+
+	local function selected_set()
+		local many = table.clone(selected_many:peek())
+		if selected:peek() ~= "" then many[selected:peek()] = true end
+		return many
+	end
+
+	local function select_one(id, additive)
+		if additive then
+			local many = table.clone(selected_many:peek())
+			many[id] = if many[id] then nil else true
+			selected_many:set(many)
+			selected:set(id)
+		else
+			selected_many:set({})
+			selected:set(id)
+		end
 	end
 
 	local function on_press(e)
@@ -608,34 +634,55 @@ local Page = ui.component(function()
 		for index = #current_cells, 1, -1 do
 			local cell = current_cells[index]
 			local pos, block = ps[cell.id] or { x = 0, y = 0 }, blocks[cell.id]
+			local width, height = Canvas.width_of(pos), Canvas.height(cell, block, pos)
+
+			-- Bottom-right resize handle. It is deliberately part of the canvas
+			-- hit-testing layer so cards remain visually passive.
+			if Canvas.near(x, y, pos.x + width, pos.y + height, 16 / zoom:peek()) then
+				select_one(cell.id, e.shift == true)
+				drag = { kind = "resize", id = cell.id, x = x, y = y, width = width, height = height }
+				return
+			end
+
 			if block then
 				for _, output in block.outputs or {} do
-					if output.variable and Canvas.near(x, y, pos.x + Canvas.width, Canvas.port(cell, output.port_key, true, block), 12 / zoom:peek()) then
-						selected:set(cell.id)
+					if output.variable and Canvas.near(x, y, pos.x + width, Canvas.port(cell, output.port_key, true, block), 12 / zoom:peek()) then
+						select_one(cell.id, e.shift == true)
 						drag = { kind = "wire", cell_id = cell.id, variable = output.variable, port_key = output.port_key }
 						return
 					end
 				end
 				for _, input in block.inputs or {} do
-					if Canvas.near(x, y, pos.x, Canvas.port(cell, input.port_key, false, block), 12 / zoom:peek()) then selected:set(cell.id); return end
+					if Canvas.near(x, y, pos.x, Canvas.port(cell, input.port_key, false, block), 12 / zoom:peek()) then
+						select_one(cell.id, e.shift == true); return
+					end
 				end
 			else
 				for _, variable in cell.defs or {} do
-					if Canvas.near(x, y, pos.x + Canvas.width, Canvas.port(cell, variable, true, nil), 12 / zoom:peek()) then
-						selected:set(cell.id); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
+					if Canvas.near(x, y, pos.x + width, Canvas.port(cell, variable, true, nil), 12 / zoom:peek()) then
+						select_one(cell.id, e.shift == true); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
 					end
 				end
 				for _, variable in cell.refs or {} do
-					if Canvas.near(x, y, pos.x, Canvas.port(cell, variable, false, nil), 12 / zoom:peek()) then selected:set(cell.id); return end
+					if Canvas.near(x, y, pos.x, Canvas.port(cell, variable, false, nil), 12 / zoom:peek()) then select_one(cell.id, e.shift == true); return end
 				end
 			end
-			local height = Canvas.height(cell, block)
-			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
-				selected:set(cell.id)
-				drag = { kind = "node", id = cell.id, x = x, y = y, nx = pos.x, ny = pos.y }
+
+			if x >= pos.x and x <= pos.x + width and y >= pos.y and y <= pos.y + height then
+				local additive = e.shift == true
+				select_one(cell.id, additive)
+				local moving = selected_set()
+				moving[cell.id] = true
+				local origins = {}
+				for move_id in moving do
+					local origin = ps[move_id]
+					if origin then origins[move_id] = { x = origin.x, y = origin.y, width = origin.width, height = origin.height } end
+				end
+				drag = { kind = "node", id = cell.id, x = x, y = y, origins = origins }
 				return
 			end
 		end
+		if not e.shift then selected:set(""); selected_many:set({}) end
 		drag = { kind = "pan", x = e.local_x or 0, y = e.local_y or 0, px = pan_x:peek(), py = pan_y:peek() }
 	end
 
@@ -645,13 +692,29 @@ local Page = ui.component(function()
 			pan_x:set(drag.px + (e.local_x or 0) - drag.x); pan_y:set(drag.py + (e.local_y or 0) - drag.y)
 		elseif drag.kind == "node" then
 			local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
-			local next = table.clone(positions:peek()); next[drag.id] = { x = drag.nx + x - drag.x, y = drag.ny + y - drag.y }; positions:set(next)
+			local dx, dy = x - drag.x, y - drag.y
+			local next = table.clone(positions:peek())
+			for id, origin in drag.origins do
+				local current = table.clone(next[id] or {})
+				current.x, current.y = origin.x + dx, origin.y + dy
+				current.width, current.height = origin.width, origin.height
+				next[id] = current
+			end
+			positions:set(next)
+		elseif drag.kind == "resize" then
+			local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
+			local next = table.clone(positions:peek())
+			local current = table.clone(next[drag.id] or {})
+			current.width = math.clamp(drag.width + x - drag.x, Canvas.min_width, Canvas.max_width)
+			current.height = math.max(96, drag.height + y - drag.y)
+			next[drag.id] = current
+			positions:set(next)
 		end
 	end
 
 	local function on_release(e)
 		if not drag then return end
-		if drag.kind == "node" then
+		if drag.kind == "node" or drag.kind == "resize" then
 			save_positions()
 		elseif drag.kind == "wire" then
 			local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
@@ -827,11 +890,11 @@ local Page = ui.component(function()
 		local x, y = Canvas.point({ local_x = at.local_x, local_y = at.local_y }, zoom:peek(), pan_x:peek(), pan_y:peek())
 		local component_entries = component_context_entries(x, y)
 		return {
-			{ label = "Code block", icon = "code", on_select = function() create_block_at("pass", x, y, "Create code block") end },
-			{ label = "Annotation", icon = "text", on_select = function() create_block_at("# Graphimo annotation\\n__import__('marimo').md(\\"Annotation\\")", x, y, "Create annotation") end },
-			{ label = "Display", icon = "eye", on_select = function() create_block_at("# Graphimo display\\nNone", x, y, "Create display block") end },
+			{ label = "Code block", on_select = function() create_block_at("pass", x, y, "Create code block") end },
+			{ label = "Annotation", on_select = function() create_block_at("# Graphimo annotation\\n__import__('marimo').md(\\"Annotation\\")", x, y, "Create annotation") end },
+			{ label = "Display", on_select = function() create_block_at("# Graphimo display\\nNone", x, y, "Create display block") end },
 			{ separator = true },
-			{ label = "Component", icon = "blocks", disabled = if #component_entries == 0 then "No components found" else false, submenu = component_entries },
+			{ label = "Component", disabled = if #component_entries == 0 then "No components found" else false, submenu = component_entries },
 		}
 	end
 
@@ -928,7 +991,8 @@ local Page = ui.component(function()
 					return true
 				end,
 				},
-			},			},
+			},
+			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
 			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
