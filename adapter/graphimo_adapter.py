@@ -13,13 +13,18 @@ import json
 import keyword
 import math
 import os
+import re
 import sys
 import tempfile
+import textwrap
+import typing
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal, get_args
+from typing import Any, Literal, get_args, get_origin
 
 _LITERAL_ALIAS_TYPE = type(Literal[0])
+_TUPLE_ALIAS_TYPES = {type(tuple[int, ...]), type(typing.Tuple[int, ...])}  # noqa: UP006 - support the typing.Tuple spelling
+_SAFE_SCALAR_ANNOTATIONS = {"bool", "float", "int", "str"}
 
 
 class _RequestError(Exception):
@@ -59,6 +64,50 @@ def _session(context: Any, requested: Any = None) -> tuple[str, dict[str, Any]]:
     return selected["session_id"], selected
 
 
+def _generated_component_ref(source: Any) -> dict[str, str] | None:
+    if type(source) is not str:
+        return None
+    lines = source.splitlines()
+    if len(lines) != 4:
+        return None
+    component_match = re.fullmatch(r"# Graphimo component: ([^\r\n]+)", lines[0])
+    hash_match = re.fullmatch(r"# Graphimo source sha256: ([0-9a-f]{64})", lines[1])
+    callable_match = re.fullmatch(r"# Graphimo callable: ([A-Za-z_][A-Za-z0-9_]*)", lines[2])
+    if not component_match or not hash_match or not callable_match:
+        return None
+    component_id = component_match.group(1)
+    parts = component_id.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or "\\" in component_id:
+        return None
+    module_parts = parts.copy()
+    module_parts[-1] = module_parts[-1].removesuffix(".py")
+    if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", part) for part in module_parts):
+        return None
+    module_name = "components." + ".".join(module_parts)
+    callable_name = callable_match.group(1)
+    try:
+        parsed = ast.parse(source)
+    except SyntaxError:
+        return None
+    if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.Assign):
+        return None
+    assignment = parsed.body[0]
+    if len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name) or not isinstance(assignment.value, ast.Call):
+        return None
+    expected = f"_out = __import__('importlib').reload(__import__('importlib').import_module({module_name!r})).{callable_name}()"
+    try:
+        expected_call = ast.parse(expected).body[0].value
+    except (SyntaxError, AttributeError):
+        return None
+    if ast.dump(assignment.value.func, include_attributes=False) != ast.dump(expected_call.func, include_attributes=False):
+        return None
+    return {
+        "component_id": component_id,
+        "callable": callable_name,
+        "source_sha256": hash_match.group(1),
+    }
+
+
 def _snapshot(context: Any, session_id: str) -> dict[str, Any]:
     try:
         snapshot = context.marimo.inspect(session_id)
@@ -66,7 +115,19 @@ def _snapshot(context: Any, session_id: str) -> dict[str, Any]:
         raise _RequestError("session_not_found", f"Active marimo session '{session_id}' was not found") from exc
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("cells"), list):
         raise _RequestError("marimo_unavailable", "Marimo returned an invalid notebook snapshot")
-    return snapshot
+    projected = dict(snapshot)
+    cells = []
+    for cell in snapshot["cells"]:
+        if not isinstance(cell, dict):
+            cells.append(cell)
+            continue
+        item = dict(cell)
+        reference = _generated_component_ref(item.get("source"))
+        if reference is not None:
+            item["graphimo_component"] = reference
+        cells.append(item)
+    projected["cells"] = cells
+    return projected
 
 
 def _cell(snapshot: dict[str, Any], cell_id: str) -> dict[str, Any]:
@@ -204,6 +265,138 @@ def _safe_signature(signature: inspect.Signature) -> str:
     return str(safe_signature)
 
 
+def _tuple_annotation_items(annotation: Any) -> list[str | None] | None:
+    if type(annotation) is str:
+        try:
+            expression = ast.parse(annotation, mode="eval").body
+        except SyntaxError:
+            return None
+        if not isinstance(expression, ast.Subscript):
+            return None
+        value = expression.value
+        if not (
+            isinstance(value, ast.Name) and value.id in {"tuple", "Tuple"}
+            or isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "typing"
+            and value.attr == "Tuple"
+        ):
+            return None
+        items = expression.slice.elts if isinstance(expression.slice, ast.Tuple) else [expression.slice]
+        if not items or any(isinstance(item, ast.Constant) and item.value is Ellipsis for item in items):
+            return None
+        return [ast.unparse(item) for item in items]
+
+    if type(annotation) not in _TUPLE_ALIAS_TYPES or get_origin(annotation) is not tuple:
+        return None
+    args = get_args(annotation)
+    if not args or any(item is Ellipsis for item in args):
+        return None
+    return [_safe_annotation_text(item) for item in args]
+
+
+class _ReturnVisitor(ast.NodeVisitor):
+    def __init__(self, root: ast.FunctionDef | ast.AsyncFunctionDef):
+        self.root = root
+        self.returns: list[ast.Return] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Return(self, node: ast.Return) -> None:
+        self.returns.append(node)
+
+
+def _callable_function(value: Any) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    try:
+        source = textwrap.dedent(inspect.getsource(value))
+        tree = ast.parse(source)
+        name = getattr(value, "__name__", None)
+    except (OSError, TypeError, ValueError, SyntaxError, AttributeError):
+        return None
+    return next(
+        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name),
+        None,
+    )
+
+
+def _object_base_block() -> dict[str, Any]:
+    return {"outputs": [{"index": 1, "name": "result", "annotation": "object"}], "output_mode": "object"}
+
+
+def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, Any]:
+    inputs = [
+        _parameter_metadata(parameter)
+        for parameter in parsed_signature.parameters.values()
+        if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    ]
+    annotation = parsed_signature.return_annotation
+    annotation_text = _safe_annotation_text(annotation)
+    if annotation is None or annotation_text == "None":
+        return {"inputs": inputs, "outputs": [], "output_mode": "none"}
+
+    function = _callable_function(value)
+    if function is None:
+        return {"inputs": inputs, **_object_base_block()}
+    visitor = _ReturnVisitor(function)
+    visitor.visit(function)
+    if not visitor.returns or all(node.value is None for node in visitor.returns):
+        return {"inputs": inputs, "outputs": [], "output_mode": "none"}
+    if any(node.value is None for node in visitor.returns):
+        return {"inputs": inputs, **_object_base_block()}
+
+    values = [node.value for node in visitor.returns if node.value is not None]
+    tuple_items = _tuple_annotation_items(annotation)
+    if tuple_items is not None:
+        if not all(isinstance(node, ast.Tuple) and len(node.elts) == len(tuple_items) for node in values):
+            return {"inputs": inputs, **_object_base_block()}
+        outputs = []
+        for position, item_annotation in enumerate(tuple_items, 1):
+            expressions = [ast.unparse(node.elts[position - 1]) for node in values]
+            unique_expression = expressions[0] if all(item == expressions[0] for item in expressions) else None
+            names = [node.elts[position - 1].id if isinstance(node.elts[position - 1], ast.Name) else None for node in values]
+            unique_name = names[0] if names[0] and all(item == names[0] for item in names) else None
+            descriptor: dict[str, Any] = {
+                "index": position,
+                "name": unique_name or f"output_{position}",
+            }
+            if unique_expression is not None:
+                descriptor["expression"] = unique_expression
+            if item_annotation is not None:
+                descriptor["annotation"] = item_annotation
+            outputs.append(descriptor)
+        return {"inputs": inputs, "outputs": outputs, "output_mode": "tuple"}
+
+    if any(isinstance(node, (ast.Tuple, ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp, ast.GeneratorExp)) for node in values):
+        return {"inputs": inputs, **_object_base_block()}
+
+    expressions = [ast.unparse(node) for node in values]
+    unique_expression = expressions[0] if all(item == expressions[0] for item in expressions) else None
+    names = [node.id if isinstance(node, ast.Name) else None for node in values]
+    unique_name = names[0] if names[0] and all(item == names[0] for item in names) else None
+    scalar_annotation = annotation_text in _SAFE_SCALAR_ANNOTATIONS
+    scalar_constants = all(
+        isinstance(node, ast.Constant) and type(node.value) in (bool, int, float, str)
+        for node in values
+    )
+    if not scalar_annotation and not scalar_constants:
+        return {"inputs": inputs, **_object_base_block()}
+    descriptor = {"index": 1, "name": unique_name or "output_1"}
+    if unique_expression is not None:
+        descriptor["expression"] = unique_expression
+    if annotation_text is not None:
+        descriptor["annotation"] = annotation_text
+    return {"inputs": inputs, "outputs": [descriptor], "output_mode": "single"}
+
+
 def _callables(path: Path) -> list[dict[str, Any]]:
     module = _load_module(path)
     exports = getattr(module, "__all__", None)
@@ -222,10 +415,12 @@ def _callables(path: Path) -> list[dict[str, Any]]:
                 if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
             ]
         except (TypeError, ValueError):
+            parsed_signature = None
             signature = "(...)"
             parameters = []
         doc = inspect.getdoc(value) or inspect.getdoc(module) or ""
-        result.append({"name": name, "signature": signature, "description": doc.splitlines()[0] if doc else "", "parameters": parameters})
+        base_block = _base_block(parsed_signature, value) if parsed_signature is not None else {"inputs": [], **_object_base_block()}
+        result.append({"name": name, "signature": signature, "description": doc.splitlines()[0] if doc else "", "parameters": parameters, "base_block": base_block})
     return result
 
 
