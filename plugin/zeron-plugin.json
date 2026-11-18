@@ -226,6 +226,54 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "save_group",
+      "description": "Save selected marimo blocks as one reusable referenced Group Block.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "cell_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "positions": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cell_ids",
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_group",
+      "description": "Insert a saved Group Block reference into the active Graphimo notebook.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "group_id": {
+            "type": "string"
+          },
+          "output_prefix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "group_id"
+        ],
+        "additionalProperties": false
+      }
     }
   ]
 }
