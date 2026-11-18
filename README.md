@@ -36,10 +36,19 @@ Install Graphimo through Zeron's plugin manager and allow its `files` and
 `commands` permissions. Choose **Open notebook** or **New notebook**. Graphimo
 uses Zeron's native file dialog, starts or reuses a local marimo editor, then
 opens it once so marimo can establish its live session. Marimo chooses its own
-free port. Graphimo invokes `curl` for marimo's local session API and `python3`
-for the minimal detached-process bridge and sidecar layout; it does not own
-cell execution or dependency scheduling. Zeron and marimo must see the same
-local notebook path for component discovery and layout persistence.
+free port. Graphimo uses an existing environment with the pinned marimo version
+when available; otherwise it creates a private environment under
+`~/.local/share/graphimo/` and installs `marimo==0.25.2`. The global Python
+installation is not modified. This first setup needs access to the package
+index. Graphimo invokes `curl` for marimo's local session API and `python3` for
+the minimal detached-process bridge and sidecar layout; it does not own cell
+execution or dependency scheduling. Zeron and marimo must see the same local
+notebook path for component discovery and layout persistence.
+
+If startup fails, open **Logs** and choose **Read marimo log**. The full
+environment setup and marimo output are stored under
+`~/.local/state/graphimo/`. See [the marimo runtime guide](docs/marimo-runtime.md)
+for interpreter selection and recovery details.
 
 Component discovery uses the convention:
 

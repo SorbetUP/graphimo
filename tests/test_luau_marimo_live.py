@@ -8,6 +8,7 @@ import signal
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -148,6 +149,75 @@ def test_managed_launcher_starts_local_marimo_without_a_user_selected_port(tmp_p
         assert reused_result["started"] is False
         assert reused_result["url"] == result["url"]
         assert reused_result["session_id"] == "graphimo-managed-test"
+    finally:
+        try:
+            os.killpg(int(result["pid"]), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.skipif(
+    not LUAU or os.environ.get("GRAPHIMO_TEST_BOOTSTRAP") != "1",
+    reason="set GRAPHIMO_TEST_BOOTSTRAP=1 to test the network-backed private marimo install",
+)
+def test_managed_launcher_bootstraps_pinned_marimo_when_python_has_no_marimo(tmp_path: Path):
+    available = subprocess.run(
+        [sys.executable, "-c", "import importlib.util; print(bool(importlib.util.find_spec('marimo')))"] ,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    if available == "True":
+        pytest.skip("the test interpreter already has marimo; use a clean Python to verify bootstrap")
+
+    notebook = tmp_path / "bootstrap_notebook.py"
+    notebook.write_text(
+        "import marimo\n__generated_with = '0.25.2'\napp = marimo.App()\n"
+        "if __name__ == '__main__': app.run()\n",
+        encoding="utf-8",
+    )
+    generated = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "launcher_script", str(notebook)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert generated.returncode == 0, generated.stderr
+    scripts = re.findall(
+        r"GRAPHIMO_LAUNCH_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_LAUNCH_SCRIPT_END",
+        generated.stdout,
+        re.S,
+    )
+    assert len(scripts) == 1
+    env = {**os.environ, "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    launched = subprocess.run(
+        [sys.executable, "-c", scripts[0], str(notebook)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=280,
+    )
+    assert launched.returncode == 0, launched.stderr or launched.stdout
+    marker = "GRAPHIMO_LAUNCH:"
+    payload = next(line[len(marker) :] for line in launched.stdout.splitlines() if line.startswith(marker))
+    result = json.loads(payload)
+    assert result["started"] is True
+    managed_python = tmp_path / ".local/share/graphimo/marimo-0.25.2/bin/python"
+    assert managed_python.is_file()
+    version = subprocess.run(
+        [str(managed_python), "-c", "import importlib.metadata as m; print(m.version('marimo'))"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    assert version == "0.25.2"
+    try:
+        os.kill(int(result["pid"]), 0)
+        _request(result["url"] + "/api/sessions")
     finally:
         try:
             os.killpg(int(result["pid"]), signal.SIGTERM)
