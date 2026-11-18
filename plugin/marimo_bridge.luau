@@ -3,6 +3,87 @@
 -- /api/kernel/execute endpoint. marimo remains the runtime and graph owner.
 local Bridge = {}
 
+local function failure(message, code)
+	return { ok = false, error = { code = code or "marimo_error", message = tostring(message) } }
+end
+
+local function is_failure(value)
+	return type(value) == "table" and value.ok == false
+end
+
+-- Zeron's native Promise:after registers callbacks but returns nil. Keep the
+-- tiny chain adapter here, at the Zeron/marimo boundary, so bridge operations
+-- can sequence HTTP requests without relying on host-specific return values.
+local Future = {}
+Future.__index = Future
+
+local function future()
+	return setmetatable({ state = "pending", handlers = {} }, Future)
+end
+
+local function settle(target, state, value)
+	if target.state ~= "pending" then return end
+	target.state, target.value = state, value
+	local handlers = target.handlers
+	target.handlers = {}
+	for _, handler in handlers do
+		local callback = if state == "resolved" then handler.success else handler.failure
+		if not callback then
+			settle(handler.next, state, value)
+		else
+			local ok, result = pcall(callback, value)
+			if not ok then
+				settle(handler.next, "rejected", result)
+			elseif getmetatable(result) == Future then
+				result:after(function(next_value) settle(handler.next, "resolved", next_value) end, function(err) settle(handler.next, "rejected", err) end)
+			else
+				settle(handler.next, "resolved", result)
+			end
+		end
+	end
+end
+
+function Future:after(success, failure_callback)
+	local next_future = future()
+	local handler = { success = success, failure = failure_callback, next = next_future }
+	if self.state == "pending" then
+		table.insert(self.handlers, handler)
+	else
+		local callback = if self.state == "resolved" then success else failure_callback
+		if not callback then
+			settle(next_future, self.state, self.value)
+		else
+			local ok, result = pcall(callback, self.value)
+			if not ok then
+				settle(next_future, "rejected", result)
+			elseif getmetatable(result) == Future then
+				result:after(function(value) settle(next_future, "resolved", value) end, function(err) settle(next_future, "rejected", err) end)
+			else
+				settle(next_future, "resolved", result)
+			end
+		end
+	end
+	return next_future
+end
+
+local function from_zeron(native)
+	local wrapped = future()
+	if native == nil then
+		settle(wrapped, "rejected", "Zeron did not start the command; check Graphimo's commands permission")
+		return wrapped
+	end
+	local ok, after = pcall(function() return native.after end)
+	if not ok or type(after) ~= "function" then
+		settle(wrapped, "rejected", "Zeron returned a request without an after callback")
+		return wrapped
+	end
+	local registered, why = pcall(function()
+		after(native, function(value) settle(wrapped, "resolved", value) end, function(err) settle(wrapped, "rejected", err) end)
+	end)
+	if not registered then settle(wrapped, "rejected", why) end
+	return wrapped
+end
+
 local function quote_config(value)
 	local result = string.gsub(tostring(value), "\\", "\\\\")
 	return string.gsub(result, '"', '\\"')
@@ -45,8 +126,7 @@ end
 
 local function curl(zeron, args, stdin, timeout)
 	local request = zeron.run("curl", args, { stdin = stdin, timeout = timeout or 15 })
-	if request == nil then error("Zeron did not start curl. Check Graphimo's commands permission in Settings → Plugins.") end
-	return request
+	return from_zeron(request)
 end
 
 local function auth_config(token)
@@ -82,7 +162,7 @@ function Bridge.sessions(zeron, base, token)
 		local ok, data = pcall(ui.json.decode, body)
 		if not ok or type(data) ~= "table" then
 			local body_kind = if string.match(body, "^%s*$") then "empty" elseif string.match(body, "^%s*<") then "HTML or markup" elseif string.match(body, "^%s*null%s*$") then "JSON null" else "non-object JSON or malformed text"
-			error("Could not parse marimo /api/sessions: " .. body_kind .. "; HTTP " .. http_status .. "; Content-Type " .. content_type .. "; body " .. tostring(#body) .. " bytes")
+			return failure("Could not read marimo /api/sessions: " .. body_kind .. "; HTTP " .. http_status .. "; Content-Type " .. content_type .. "; body " .. tostring(#body) .. " bytes", "sessions_unavailable")
 		end
 		local source = if type(data.sessions) == "table" then data.sessions else data
 		local sessions = {}
@@ -110,10 +190,10 @@ local function execute(zeron, base, token, session_id, code, timeout)
 	}
 	return curl(zeron, args, auth_config(token), timeout or 60):after(function(response)
 		local value, why = result_from_sse(response.stdout or "")
-		if not value then error(why) end
+		if not value then return failure(why, "execute_failed") end
 		if value.ok == false then
 			local detail = if type(value.error) == "table" then value.error.message else value.error
-			error(detail or "Marimo operation failed")
+			return failure(detail or "Marimo operation failed", "marimo_operation_failed")
 		end
 		return value
 	end)
@@ -261,18 +341,20 @@ end
 
 function Bridge.inspect(zeron, base, token, session_id)
 	return Bridge.sessions(zeron, base, token):after(function(sessions)
+		if is_failure(sessions) then return sessions end
 		local chosen = nil
 		for _, session in sessions do
 			if session.session_id == session_id then chosen = session; break end
 		end
 		if not chosen and (session_id == nil or session_id == "") and #sessions == 1 then chosen = sessions[1] end
 		if not chosen then
-			if #sessions == 0 then error("No active marimo notebook session was found") end
-			error("Choose one of the " .. tostring(#sessions) .. " active marimo sessions")
+			if #sessions == 0 then return failure("No active marimo notebook session was found", "no_active_session") end
+			return failure("Choose one of the " .. tostring(#sessions) .. " active marimo sessions", "selection_required")
 		end
 		local args = { session_id = chosen.session_id, notebook_path = chosen.path }
 		local code = code_for("inspect", args)
 		return execute(zeron, base, token, chosen.session_id, code, 45):after(function(snapshot)
+			if is_failure(snapshot) then return snapshot end
 			snapshot.notebook.path = chosen.path
 			return snapshot
 		end)
@@ -282,6 +364,13 @@ end
 function Bridge.list_components(zeron, base, token, session_id, notebook_path)
 	local root = string.gsub(notebook_path, "[^/]+$", "") .. "components"
 	return execute(zeron, base, token, session_id, code_for("list_components", { components_root = root }), 60)
+end
+
+function Bridge.list_components_for_active(zeron, base, token, session_id)
+	return Bridge.inspect(zeron, base, token, session_id):after(function(snapshot)
+		if is_failure(snapshot) then return snapshot end
+		return Bridge.list_components(zeron, base, token, snapshot.notebook.session_id, snapshot.notebook.path)
+	end)
 end
 
 local function valid_identifier(value)
@@ -365,15 +454,17 @@ end
 
 function Bridge.add_component(zeron, base, token, session_id, component_id, callable, output_name, bindings)
 	local safe = type(component_id) == "string" and not string.find(component_id, "..", 1, true) and string.sub(component_id, 1, 1) ~= "/"
-	if not safe then error("Choose a component inside the components folder") end
+	if not safe then return failure("Choose a component inside the components folder", "invalid_component") end
 	return Bridge.sessions(zeron, base, token):after(function(sessions)
+		if is_failure(sessions) then return sessions end
 		local current = nil
 		for _, session in sessions do if session.session_id == session_id then current = session; break end end
-		if not current then error("The selected marimo session is no longer active") end
+		if not current then return failure("The selected marimo session is no longer active", "no_active_session") end
 		return Bridge.list_components(zeron, base, token, session_id, current.path):after(function(result)
+			if is_failure(result) then return result end
 			local selected_component = nil
 			for _, item in result.components or {} do if item.id == component_id then selected_component = item; break end end
-			if not selected_component then error("The component changed or disappeared; refresh the library") end
+			if not selected_component then return failure("The component changed or disappeared; refresh the library", "component_unavailable") end
 			local parameter_order, callable_found = {}, false
 			for _, item in selected_component.callables do
 				if item.name == callable then
@@ -381,9 +472,9 @@ function Bridge.add_component(zeron, base, token, session_id, component_id, call
 					for _, parameter in item.parameters or {} do if parameter.positional then table.insert(parameter_order, parameter.name) end end
 				end
 			end
-			if not callable_found then error("The callable changed or disappeared; refresh the library") end
+			if not callable_found then return failure("The callable changed or disappeared; refresh the library", "callable_unavailable") end
 			local source, why = Bridge.component_source(component_id, callable, output_name, bindings, selected_component.source_sha256, parameter_order)
-			if not source then error(why) end
+			if not source then return failure(why, "invalid_component_arguments") end
 			return Bridge.add_cell(zeron, base, token, session_id, source)
 		end)
 	end)

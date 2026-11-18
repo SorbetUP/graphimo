@@ -69,9 +69,7 @@ end })
 
 zeron.tool({ name = "list_components", run = function(args)
 	local url, token, session = config_for(args or {})
-	return start_tool(function() return Bridge.inspect(zeron, url, token, session):after(function(snapshot)
-		return Bridge.list_components(zeron, url, token, snapshot.notebook.session_id, snapshot.notebook.path)
-	end) end)
+	return start_tool(function() return Bridge.list_components_for_active(zeron, url, token, session) end)
 end })
 
 zeron.tool({ name = "add_component", run = function(args)
@@ -136,6 +134,13 @@ local Page = ui.component(function()
 	end
 
 	local function observe(label, start, on_success, on_failure)
+		local function report_failure(err)
+			local detail = err
+			if type(err) == "table" and type(err.error) == "table" then detail = err.error.message or err.error.code or "Marimo operation failed" end
+			local message = label .. " failed: " .. tostring(detail)
+			log(message)
+			if on_failure then pcall(on_failure, detail) end
+		end
 		local ok, promise = pcall(start)
 		if not ok then
 			local message = label .. " failed to start: " .. tostring(promise)
@@ -152,12 +157,17 @@ local Page = ui.component(function()
 		end
 		log(label .. " started")
 		promise:after(function(value)
+			if type(value) == "table" and value.ok == false then
+				report_failure(value)
+				return
+			end
 			log(label .. " completed")
-			if on_success then on_success(value) end
+			if on_success then
+				local success, err = pcall(on_success, value)
+				if not success then report_failure(err) end
+			end
 		end, function(err)
-			local message = label .. " failed: " .. tostring(err)
-			log(message)
-			if on_failure then on_failure(err) end
+			report_failure(err)
 		end)
 	end
 

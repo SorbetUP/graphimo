@@ -100,15 +100,24 @@ local Promise = {}
 Promise.__index = Promise
 function Promise:after(success, failure)
 	if self.error then
-		if not failure then return setmetatable({ error = self.error }, Promise) end
-		local ok, value = pcall(failure, self.error)
-		return setmetatable(if ok then { value = value } else { error = value }, Promise)
+		if failure then failure(self.error) end
+		return nil
 	end
-	if not success then return self end
-	local ok, value = pcall(success, self.value)
-	if not ok then return setmetatable({ error = value }, Promise) end
-	if getmetatable(value) == Promise then return value end
-	return setmetatable({ value = value }, Promise)
+	if success then success(self.value) end
+	return nil
+end
+
+local function collect(future)
+	local result = { pending = true }
+	future:after(function(value)
+		result.pending = false
+		result.value = value
+	end, function(err)
+		result.pending = false
+		result.error = err
+	end)
+	assert(not result.pending, "test fixture request unexpectedly stayed asynchronous")
+	return result
 end
 
 local zeron = {}
@@ -122,13 +131,16 @@ function zeron.run(_program, args)
 		elseif mode == "sessions_empty" then body = ""
 		elseif mode == "sessions_null" then body = "null" end
 		if mode == "sessions_url" then print("GRAPHIMO_REQUEST_URL:" .. destination) end
+		if mode == "sessions_connection" or mode == "components_connection" then
+			return setmetatable({ value = { status = 7, stdout = "\nGRAPHIMO_HTTP_META:000:" } }, Promise)
+		end
 		return setmetatable({ value = { status = 0, stdout = body .. "\nGRAPHIMO_HTTP_META:200:" .. content_type } }, Promise)
 	end
 	-- The actual JSON encoder is intentionally opaque to this host shim. The
 	-- generated request body is the final argument after "-d"; code is captured
 	-- separately by Bridge's request encoder below through the registry wrapper.
 	if captured_codes[capture] then print("GRAPHIMO_CODE_BEGIN\n" .. captured_codes[capture] .. "\nGRAPHIMO_CODE_END") end
-	local events = "event: stdout\ndata: STDOUT_RESPONSE\n\nevent: done\ndata: DONE_RESPONSE\n\n"
+	local events = if mode == "execute_empty" then "" else "event: stdout\ndata: STDOUT_RESPONSE\n\nevent: done\ndata: DONE_RESPONSE\n\n"
 	return setmetatable({ value = { stdout = events } }, Promise)
 end
 
@@ -167,10 +179,9 @@ if mode == "source_safety" then
 	result = true
 	elseif mode == "command_denied" then
 	local unavailable = { run = function() return nil end }
-	local ok, reason = pcall(function()
-		return Bridge.sessions(unavailable, "http://127.0.0.1:2718", "")
-	end)
-	assert(not ok and string.find(tostring(reason), "commands permission", 1, true), tostring(reason))
+	local request = Bridge.sessions(unavailable, "http://127.0.0.1:2718", "")
+	local result = collect(request)
+	assert(result.error and string.find(tostring(result.error), "commands permission", 1, true), tostring(result.error))
 	print("GRAPHIMO_COMMAND_DENIAL_HANDLED")
 	result = true
 elseif string.sub(mode, 1, 9) == "sessions_" then
@@ -182,17 +193,34 @@ elseif mode == "list_components" then
 	result = Bridge.list_components(zeron, "http://127.0.0.1:2718", "", "s_live", notebook_path)
 elseif mode == "add_component" then
 	result = Bridge.add_component(zeron, "http://127.0.0.1:2718", "", "s_live", "normalize.py", "normalize", "normalized", { image = { variable = "data" } })
-elseif mode == "run" then
+elseif mode == "run" or mode == "execute_empty" then
 	result = Bridge.run(zeron, "http://127.0.0.1:2718", "", "s_live", cell_id or "target-cell")
+elseif mode == "components_connection" then
+	result = Bridge.list_components_for_active(zeron, "http://127.0.0.1:2718", "", "")
 elseif mode == "connect" then
 	result = Bridge.connect(zeron, "http://127.0.0.1:2718", "", "s_live", from_cell_id or "source-cell", variable or "data", to_cell_id or "target-cell", input_ref or "processed")
 else
 	error("unknown test mode: " .. tostring(mode))
 end
 
-if type(result) == "table" and result.error then
-	if string.sub(mode, 1, 9) == "sessions_" then print("GRAPHIMO_SESSION_ERROR:" .. tostring(result.error))
-	else error(tostring(result.error)) end
+if type(result) == "table" and type(result.after) == "function" then result = collect(result) end
+local operation_result = if type(result) == "table" and result.value ~= nil then result.value else result
+if type(operation_result) == "table" and operation_result.error then
+	local message = if type(operation_result.error) == "table" then tostring(operation_result.error.message) else tostring(operation_result.error)
+	if mode == "sessions_connection" then
+		assert(result.error == nil and operation_result.ok == false, "session failure should resolve as a structured value")
+		assert(operation_result.error.code == "sessions_unavailable", "missing session error code")
+		print("GRAPHIMO_SESSION_ERROR:" .. message)
+	elseif mode == "execute_empty" then
+		assert(result.error == nil and operation_result.ok == false, "execute failure should resolve as a structured value")
+		assert(operation_result.error.code == "execute_failed", "missing execute error code")
+		print("GRAPHIMO_EXECUTE_ERROR:" .. message)
+	elseif mode == "components_connection" then
+		assert(result.error == nil and operation_result.ok == false, "component-list failure should be propagated as a structured value")
+		assert(operation_result.error.code == "sessions_unavailable", "missing propagated component-list error code")
+		print("GRAPHIMO_OPERATION_ERROR:" .. message)
+	elseif string.sub(mode, 1, 9) == "sessions_" then print("GRAPHIMO_SESSION_ERROR:" .. message)
+	else error(tostring(operation_result.error)) end
 elseif string.sub(mode, 1, 9) == "sessions_" then
-	print("GRAPHIMO_SESSIONS:" .. json_encode(result.value))
+	print("GRAPHIMO_SESSIONS:" .. json_encode(operation_result))
 end

@@ -163,6 +163,52 @@ def test_sessions_error_includes_safe_http_diagnostics(mode: str, diagnostic: st
     assert "secret" not in message.lower()
 
 
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_sessions_connection_failure_is_a_structured_result_not_a_callback_exception():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "sessions_connection"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    marker = "GRAPHIMO_SESSION_ERROR:"
+    message = next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker))
+    assert "Could not read marimo /api/sessions: empty" in message
+    assert "HTTP 000" in message
+    assert "body 0 bytes" in message
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_execute_failure_is_a_structured_result_not_a_callback_exception():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "execute_empty"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GRAPHIMO_EXECUTE_ERROR:Marimo did not complete the request" in result.stdout
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to run production bridge tests")
+def test_list_components_propagates_an_inspect_connection_failure():
+    result = subprocess.run(
+        [LUAU, str(DRIVER), "-a", "components_connection"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GRAPHIMO_OPERATION_ERROR:Could not read marimo /api/sessions" in result.stdout
+
+
 @pytest.mark.skipif(
     not LUAU or not MARIMO_PYTHON,
     reason="set GRAPHIMO_MARIMO_PYTHON and install the Luau CLI to run live bridge tests",
