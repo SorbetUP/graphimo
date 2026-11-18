@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -15,7 +15,6 @@ import urllib.request
 from pathlib import Path
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "tests" / "luau_bridge_driver.luau"
@@ -71,7 +70,7 @@ def _bridge_code(mode: str, *args: str) -> list[str]:
     )
     if result.returncode:
         raise AssertionError(f"Luau bridge shim failed:\n{result.stdout}\n{result.stderr}")
-    blocks = re.findall(r"GRAPHIMO_CODE_BEGIN\n(.*?)\nGRAPHIMO_CODE_END", result.stdout, re.S)
+    blocks = re.findall(r"GRAPHIMO_CODE_BEGIN\n(.*?)\nGRAPHIMO_CODE_END", result.stdout, re.DOTALL)
     assert blocks, result.stdout
     return blocks
 
@@ -99,7 +98,7 @@ def test_managed_launcher_starts_local_marimo_without_a_user_selected_port(tmp_p
     scripts = re.findall(
         r"GRAPHIMO_LAUNCH_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_LAUNCH_SCRIPT_END",
         generated.stdout,
-        re.S,
+        re.DOTALL,
     )
     assert len(scripts) == 1
     launched = subprocess.run(
@@ -188,7 +187,7 @@ def test_managed_launcher_bootstraps_pinned_marimo_when_python_has_no_marimo(tmp
     scripts = re.findall(
         r"GRAPHIMO_LAUNCH_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_LAUNCH_SCRIPT_END",
         generated.stdout,
-        re.S,
+        re.DOTALL,
     )
     assert len(scripts) == 1
     env = {**os.environ, "HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
@@ -239,7 +238,7 @@ def test_problems_are_appended_to_a_persistent_user_log(tmp_path: Path):
     scripts = re.findall(
         r"GRAPHIMO_PROBLEM_LOG_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_PROBLEM_LOG_SCRIPT_END",
         generated.stdout,
-        re.S,
+        re.DOTALL,
     )
     assert len(scripts) == 1
     log_path = tmp_path / ".local/state/graphimo/problems.log"
@@ -447,6 +446,16 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
     (component_dir / "normalize.py").write_text(
         "def normalize(image):\n    return image + 1\n", encoding="utf-8"
     )
+    (component_dir / "base_contracts.py").write_text(
+        "def obtenir_infos(prix: float, quantite: int, stock: int) -> tuple[float, int, int]:\n"
+        "    flower = 3 + stock\n"
+        "    return prix + 0.2, quantite + stock, flower\n"
+        "def scalar(value: int) -> int:\n"
+        "    return value * 2\n"
+        "def no_return(value):\n"
+        "    value + 1\n",
+        encoding="utf-8",
+    )
     (component_dir / "parameter_metadata.py").write_text(
         "from typing import Literal\n"
         "def inspect_values(required, implicit, none_value=None, flag: bool = True, "
@@ -559,6 +568,12 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         component_result = json.loads(_execute(base, session, component_code))
         normalize = next(item for item in component_result["components"] if item["id"] == "normalize.py")
         assert [item["name"] for item in normalize["callables"]] == ["normalize"]
+        base_contracts = next(item for item in component_result["components"] if item["id"] == "base_contracts.py")
+        contract_callables = {item["name"]: item for item in base_contracts["callables"]}
+        assert contract_callables["obtenir_infos"]["base_block"]["output_mode"] == "tuple"
+        assert [output["annotation"] for output in contract_callables["obtenir_infos"]["base_block"]["outputs"]] == ["float", "int", "int"]
+        assert contract_callables["scalar"]["base_block"]["output_mode"] == "single"
+        assert contract_callables["no_return"]["base_block"]["output_mode"] == "none"
         metadata = next(item for item in component_result["components"] if item["id"] == "parameter_metadata.py")["callables"]
         metadata = {callable_item["name"]: callable_item for callable_item in metadata}
         values = metadata["inspect_values"]
@@ -602,6 +617,14 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         added = json.loads(_execute(base, session, add_codes[1]))
         assert added["ok"] is True
         assert "normalize(data)" in added["source"]
+        assert "# Graphimo callable: normalize" in added["source"]
+        linked_snapshot = json.loads(_execute(base, session, inspect_code))
+        linked_cell = next(cell for cell in linked_snapshot["cells"] if cell["id"] == added["cell_id"])
+        assert linked_cell["graphimo_component"] == {
+            "component_id": "normalize.py",
+            "callable": "normalize",
+            "source_sha256": real_normalize["source_sha256"],
+        }
 
         connect_code = _bridge_code(
             "connect", notebook_path, source["id"], "data", target["id"], "processed"
