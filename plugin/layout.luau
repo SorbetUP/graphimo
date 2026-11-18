@@ -50,7 +50,7 @@ function Layout.save(zeron, notebook_path, cells, done)
 		" data = json.loads(path.read_text(encoding='utf-8'))",
 		" if data.get('version') != 1 or not isinstance(data.get('notebooks'), dict): data = {'version': 1, 'notebooks': {}}",
 		"except (OSError, ValueError): data = {'version': 1, 'notebooks': {}}",
-		"data['notebooks'][notebook] = {'cells': cells}",
+		"data['notebooks'][str(notebook)] = {'cells': cells}",
 		"path.parent.mkdir(parents=True, exist_ok=True)",
 		"fd, temp = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent, text=True)",
 		"with os.fdopen(fd, 'w', encoding='utf-8') as stream: json.dump(data, stream, indent=2, sort_keys=True); stream.write('\\n')",
