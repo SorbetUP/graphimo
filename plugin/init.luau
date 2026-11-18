@@ -9,6 +9,9 @@ local Button = require("@ds/button")
 local Glass = require("@ds/glass")
 local Markdown = require("@ds/markdown")
 local SearchField = require("@ds/search_field")
+local Tooltip = require("@ds/tooltip")
+local CodeEditor = require("@ds/code_editor")
+local ContextMenu = require("@ds/context_menu")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -94,12 +97,35 @@ zeron.tool({ name = "run", run = function(args)
 	return start_tool(function() return Bridge.run(zeron, url, token, session, args.cell_id) end)
 end })
 
+zeron.tool({ name = "create_block", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return start_tool(function() return Bridge.add_cell(zeron, url, token, session, args.source or "pass") end)
+end })
+
+zeron.tool({ name = "edit_block", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return start_tool(function() return Bridge.edit(zeron, url, token, session, args.cell_id, args.source) end)
+end })
+
+zeron.tool({ name = "delete_block", run = function(args)
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return start_tool(function() return Bridge.delete(zeron, url, token, session, args.cell_id) end)
+end })
+
 zeron.tool({ name = "open_code", run = function(args)
-	local url, _, session = config_for(args or {})
-	if args.session_id then session = args.session_id end
-	if url == "" then return { ok = false, error = { code = "selection_required", message = "Open a notebook in Graphimo first" } } end
-	zeron.open_url(string.gsub(url, "/+$", ""))
-	return { ok = true, opened = true, session_id = session, cell_id = args.cell_id }
+	local url, token, session = config_for(args or {})
+	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
+	return start_tool(function()
+		return Bridge.inspect(zeron, url, token, session):after(function(value)
+			for _, cell in value.cells or {} do
+				if cell.id == args.cell_id then return { ok = true, cell_id = cell.id, source = cell.source } end
+			end
+			return { ok = false, error = { code = "not_found", message = "Cell not found" } }
+		end)
+	end)
 end })
 
 local Page = ui.component(function()
@@ -115,7 +141,11 @@ local Page = ui.component(function()
 	local server_log_text = ui.use_state("")
 	local problem_log_text = ui.use_state("")
 	local logs_open = ui.use_state(false)
+	local terminal_mode = ui.use_state("terminal")
 	local components_open = ui.use_state(true)
+	local code_open = ui.use_state(false)
+	local code_cell_id = ui.use_state("")
+	local code_text = ui.use_state("")
 	local library_query = ui.use_state("")
 	local expanded_component = ui.use_state("")
 	local positions = ui.use_state({})
@@ -136,12 +166,8 @@ local Page = ui.component(function()
 		return snapshot:get().cells or {}
 	end
 
-	local base_summaries = ui.computed(function()
-		local summaries = {}
-		for _, projected in BaseBlock.project(components:get(), cells_now()) do
-			summaries[projected.cell_id] = BaseBlock.summary(projected)
-		end
-		return summaries
+	local base_blocks = ui.computed(function()
+		return BaseBlock.by_cell(components:get(), cells_now())
 	end)
 
 	local function log(message, level)
@@ -436,14 +462,15 @@ local Page = ui.component(function()
 		end, function(err) log("Could not choose log export location: " .. tostring(err), "error") end)
 	end
 
+	local function truncate(text, limit)
+		text = tostring(text or "")
+		if #text <= limit then return text end
+		return string.sub(text, 1, math.max(1, limit - 1)) .. "…"
+	end
+
 	local function card(id)
 		local function cell() return Canvas.node(snapshot:get().cells or {}, id) end
-		local function base_summary() return base_summaries:get()[id] end
-		local function ports(names, prefix, suffix)
-			local labels = {}
-			for _, name in names or {} do table.insert(labels, prefix .. name .. suffix) end
-			return table.concat(labels, "\n")
-		end
+		local function block() return base_blocks:get()[id] end
 		local style = Glass.style({
 			absolute = true,
 			left = function() local p = positions:get()[id] or {}; return pan_x:get() + (p.x or 0) * zoom:get() end,
@@ -451,60 +478,82 @@ local Page = ui.component(function()
 			w = Canvas.width * zoom:get(),
 			h = function()
 				local value = cell()
-				return Canvas.height(value or {}, base_summary()) * zoom:get()
+				return Canvas.height(value or {}, block()) * zoom:get()
 			end,
 			rounded = "$radius.lg",
 			pointer_events = "none",
 		}, "island")
 		style.border_color = function() return if selected:get() == id then "$accent" else "$border.strong" end
 		style.bg = "$zeron.secondary.bg"
-		table.insert(style, ui.column { w_full = true, h_full = true, gap = "$space.1", p = "$space.3",
+		table.insert(style, ui.column { w_full = true, h_full = true, gap = "$space.2", p = "$space.3",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
-				Text { function() local value = cell(); return if value and value.name then value.name else "Cell " .. string.sub(id, 1, 7) end, style = "label", grow = 1 },
-				Text { function() local value = cell(); return value and value.status or "unknown" end, style = "caption", tone = function() local value = cell(); return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary" end },
+				Text { function()
+					local b, value = block(), cell()
+					if b and b.callable then return b.callable end
+					return if value and value.name then value.name else "Cell " .. string.sub(id, 1, 7)
+				end, style = "label", grow = 1 },
+				Text { function() local value = cell(); return value and value.status or "unknown" end, style = "caption",
+					tone = function() local value = cell(); return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary" end },
 			},
-			Text { function() local value = cell(); return string.match(value and value.source or "", "^[^\n]*") or "Empty cell" end, style = "caption", tone = "secondary", wrap = true },
-			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
+			ui.show(function() return block() == nil end,
+				Text { function() local value = cell(); return truncate(string.match(value and value.source or "", "^[^\n]*") or "Empty cell", 52) end, style = "caption", tone = "secondary" }),
+			ui.row { w_full = true, grow = 1, items = "start", gap = "$space.2",
+				ui.column { grow = 1, basis = 0, gap = "$space.2",
+					ui.each(function()
+						local b, value = block(), cell()
+						if b then return b.inputs or {} end
+						local generic = {}
+						for _, name in value and value.refs or {} do table.insert(generic, { name = name, port_key = name }) end
+						return generic
+					end, function(input)
+						return ui.row {
+							w_full = true, h = 23, items = "center", gap = "$space.1",
+							tooltip = Tooltip { function()
+								local b = block()
+								return if b then BaseBlock.input_text(input).full else tostring(input.name)
+							end },
+							Text { "●", style = "caption", tone = "secondary" },
+							Text { function()
+								local b = block()
+								return truncate(if b then BaseBlock.input_text(input).short else tostring(input.name), 25)
+							end, style = "caption", tone = "secondary" },
+						}
+					end, { key = function(input) return tostring(input.port_key or input.name) end }),
+				},
+				ui.column { grow = 1, basis = 0, gap = "$space.2", items = "end",
+					ui.each(function()
+						local b, value = block(), cell()
+						if b then return b.outputs or {} end
+						local generic = {}
+						for _, name in value and value.defs or {} do
+							local runtime = value.values and value.values[name] or nil
+							table.insert(generic, { name = name, port_key = name, variable = name, runtime = runtime })
+						end
+						return generic
+					end, function(output)
+						return ui.row {
+							w_full = true, h = 23, items = "center", justify = "end", gap = "$space.1",
+							tooltip = Tooltip { function()
+								local b = block()
+								if b then return BaseBlock.output_text(output).full end
+								local runtime = output.runtime
+								return tostring((runtime and runtime.type) or "Any") .. " (" .. tostring(output.name) .. ")"
+							end },
+							Text { function()
+								local b = block()
+								if b then return truncate(BaseBlock.output_text(output).short, 25) end
+								local runtime = output.runtime
+								return truncate(tostring((runtime and runtime.type) or "Any") .. " (" .. tostring(output.name) .. ")", 25)
+							end, style = "caption", tone = "primary" },
+							Text { "●", style = "caption", tone = "primary" },
+						}
+					end, { key = function(output) return tostring(output.port_key or output.variable or output.name) end }),
+				},
+			},
+			-- Rich marimo output is only shown for ordinary/display cells. Function
+			-- blocks expose their values through output ports instead.
+			ui.show(function() local value = cell(); return block() == nil and value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
 				ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 64, fit = "contain" }),
-			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.mimetype == "text/markdown" end,
-				Markdown { text = function() local value = cell(); return value and value.output and value.output.preview or "" end }),
-			Text { function()
-				local value = cell()
-				if not value then return "" end
-				if type(value.output) == "table" then
-					local mime = value.output.mimetype or "text/plain"
-					if value.output.image_data_url or mime == "text/markdown" then return "" end
-					local preview = value.output.preview or ""
-					if preview == "" then return tostring(mime) end
-					return tostring(mime) .. " · " .. tostring(preview)
-				end
-				if value.output and value.output ~= "None" then return tostring(value.output) end
-				return value.errors and value.errors[1] and value.errors[1].message or ""
-			end, style = "caption", tone = "secondary", wrap = true },
-			ui.row { w_full = true, grow = 1, items = "stretch", gap = "$space.2",
-				ui.column { w = 82, gap = "$space.1", justify = "start",
-					Text { function() local value = cell(); return ports(value and value.refs, "● ", "") end, style = "caption", tone = "secondary", wrap = true },
-				},
-				ui.div { grow = 1 },
-				ui.column { w = 82, gap = "$space.1", items = "end",
-					Text { function() local value = cell(); return ports(value and value.defs, "", " ●") end, style = "caption", tone = "primary", wrap = true },
-				},
-			},
-			ui.show(function()
-				local summary = base_summary()
-				return summary ~= nil and (#summary.inputs > 0 or #summary.outputs > 0)
-			end, ui.column { w_full = true, gap = "$space.1",
-				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.inputs > 0 end,
-					Text { function()
-						local summary = base_summary()
-						return "In: " .. table.concat(summary and summary.inputs or {}, " · ")
-					end, style = "caption", tone = "secondary", wrap = true }),
-				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.outputs > 0 end,
-					Text { function()
-						local summary = base_summary()
-						return "Out: " .. table.concat(summary and summary.outputs or {}, " · ")
-					end, style = "caption", tone = "secondary", wrap = true }),
-			}),
 		})
 		return ui.div(style)
 	end
@@ -526,7 +575,7 @@ local Page = ui.component(function()
 		for _, cell in snapshot:peek().cells do
 			local p = ps[cell.id] or { x = 0, y = 0 }
 			left = math.min(left, p.x); top = math.min(top, p.y)
-			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell, base_summaries:peek()[cell.id]))
+			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell, base_blocks:peek()[cell.id]))
 		end
 		local w, h = canvas.width or 800, canvas.height or 600
 		local scale = math.min((w - 64) / math.max(1, right - left), (h - 64) / math.max(1, bottom - top), 1.3)
@@ -549,7 +598,7 @@ local Page = ui.component(function()
 			for _, variable in cell.refs or {} do
 				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, variable, false), 12 / zoom:peek()) then selected:set(cell.id); return end
 			end
-			local height = Canvas.height(cell, base_summaries:peek()[cell.id])
+			local height = Canvas.height(cell, base_blocks:peek()[cell.id])
 			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
 				selected:set(cell.id)
 				drag = { kind = "node", id = cell.id, x = x, y = y, nx = pos.x, ny = pos.y }
