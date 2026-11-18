@@ -23,6 +23,8 @@ local PyTorchMetaEditor = require("./pytorch_meta_editor")
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
 local saved_problems = zeron.store("problems-v1", {})
+local recent_projects = zeron.store("recent-projects-v1", {})
+local project_names = zeron.store("project-names-v1", {})
 
 local function config_for(args)
 	local saved = active_notebook:get()
@@ -220,6 +222,9 @@ local Page = ui.component(function()
 	local url = ui.use_state(saved.url or "")
 	local token = ui.use_state("")
 	local session_id = ui.use_state(saved.session_id or "")
+	local project_choice = ui.use_state(saved.path or "")
+	local rename_project_dialog = ui.use_state(false)
+	local rename_project_value = ui.use_state("")
 	local sessions = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local visible_cell_ids = ui.use_state({})
@@ -477,6 +482,9 @@ local Page = ui.component(function()
 						x = saved_cell.x or (80 + ((index - 1) % 4) * 320),
 						y = saved_cell.y or (80 + math.floor((index - 1) / 4) * 230),
 						collapsed = saved_cell.collapsed or false,
+						width = saved_cell.width,
+						height = saved_cell.height,
+						group = saved_cell.group,
 					}
 				end
 				positions:set(merged)
@@ -530,10 +538,73 @@ local Page = ui.component(function()
 		if value ~= "" then refresh_graph() end
 	end
 
+	local function file_name(path)
+		local normalized = string.gsub(tostring(path or ""), "\\\\", "/")
+		return string.match(normalized, "([^/]+)$") or normalized
+	end
+
+	local function default_project_name(path)
+		local name = file_name(path)
+		return string.gsub(name, "%.py$", "")
+	end
+
+	local function project_name(path)
+		local names = project_names:get() or {}
+		return names[path] or default_project_name(path)
+	end
+
+	local function record_project(path)
+		if type(path) ~= "string" or path == "" then return end
+		local list = {}
+		table.insert(list, path)
+		for _, existing in recent_projects:peek() or {} do
+			if existing ~= path then
+				table.insert(list, existing)
+				if #list >= 12 then break end
+			end
+		end
+		recent_projects:set(list)
+		project_choice:set(path)
+	end
+
+	local function project_options()
+		local list = recent_projects:get() or {}
+		local current = active_notebook:get().path or ""
+		local seen, options = {}, {}
+		if current ~= "" then
+			seen[current] = true
+			table.insert(options, { value = current, label = project_name(current) })
+		end
+		for _, path in list do
+			if type(path) == "string" and path ~= "" and not seen[path] then
+				seen[path] = true
+				table.insert(options, { value = path, label = project_name(path) })
+			end
+		end
+		return options
+	end
+
+	local function open_rename_project()
+		local path = active_notebook:peek().path or ""
+		if path == "" then notice:set("Open a project first"); return end
+		rename_project_value:set(project_name(path))
+		rename_project_dialog:set(true)
+	end
+
+	local function rename_project()
+		local path = active_notebook:peek().path or ""
+		local name = rename_project_value:peek()
+		if path == "" or name == "" then return end
+		local names = table.clone(project_names:peek() or {})
+		names[path] = name
+		project_names:set(names)
+		rename_project_dialog:set(false)
+	end
+
 	local function wait_for_notebook(path, base_url, attempt)
 		attempt = attempt or 0
 		if attempt >= 40 then
-			local message = "Marimo editor opened, but its notebook session did not become active. See Logs for the marimo process output."
+			local message = "Marimo runtime started, but its notebook session did not become active. See All logs for the marimo process output."
 			log(message, "error")
 			notice:set(message)
 			return
@@ -557,6 +628,7 @@ local Page = ui.component(function()
 					local current = table.clone(active_notebook:peek())
 					current.url, current.path, current.session_id = base_url, path, item.session_id
 					active_notebook:set(current)
+					record_project(path)
 					log("Notebook session connected: " .. path)
 					refresh_graph()
 					return
@@ -579,6 +651,7 @@ local Page = ui.component(function()
 			session_id:set(started.session_id or "")
 			local current = { url = started.url, session_id = started.session_id or "", path = path, log_path = started.log_path or "" }
 			active_notebook:set(current)
+			record_project(path)
 			if started.started then log("Started marimo process " .. tostring(started.pid)) else log("Reused existing marimo process") end
 			if started.session_id and started.session_id ~= "" then
 				refresh_graph()
@@ -1524,7 +1597,22 @@ local Page = ui.component(function()
 				c:circle(7, 15, 3, "$accent"); c:circle(23, 15, 3, "$accent"); c:circle(15, 8, 3, "$accent"); c:circle(15, 22, 3, "$accent")
 			end, pointer_events = "none" },
 			Text { "Graphimo", style = "heading" },
-			Text { function() return snapshot:get().notebook.path or "Visual view of your marimo notebook" end, style = "caption", tone = "secondary", grow = 1 },
+			Select {
+				value = project_choice,
+				name = "Project",
+				placeholder = "Project",
+				w = 170,
+				size = "sm",
+				options = project_options,
+				on_change = function(path)
+					if type(path) == "string" and path ~= "" and path ~= active_notebook:peek().path then start_notebook(path) end
+				end,
+			},
+			Button { "Rename", tone = "ghost", size = "sm", disabled = function() return (active_notebook:get().path or "") == "" end, on_click = open_rename_project },
+			Text { function()
+				local path = snapshot:get().notebook.path or active_notebook:get().path or ""
+				return if path == "" then "Visual view of your marimo notebook" else path
+			end, style = "caption", tone = "secondary", grow = 1 },
 			Select {
 				value = execution_environment,
 				name = "Execution environment",
@@ -1538,7 +1626,7 @@ local Page = ui.component(function()
 					{ value = "managed", label = "Graphimo managed" },
 				},
 			},
-			Button { "Open notebook", size = "sm", on_click = choose_notebook },
+			Button { "Import / Open", size = "sm", on_click = choose_notebook },
 			Button { "New notebook", tone = "secondary", size = "sm", on_click = create_notebook },
 			Button { "Refresh", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
 			Button { "Fit", tone = "secondary", size = "sm", on_click = fit },
@@ -1642,6 +1730,13 @@ local Page = ui.component(function()
 			h = 2,
 			pointer_events = "none",
 		}),
+		Dialog {
+			open = rename_project_dialog,
+			title = "Rename Graphimo project",
+			body = "This changes only Graphimo's display name. The notebook file path is unchanged.",
+			confirm = { label = "Rename", on_click = rename_project, disabled = function() return rename_project_value:get() == "" end },
+			TextField { value = rename_project_value, label = "Project name", w_full = true, autofocus = true },
+		},
 		Dialog {
 			open = agent_dialog,
 			title = function() return if agent_mode:get() == "create" then "Create block with agent" else "Edit with agent" end,
