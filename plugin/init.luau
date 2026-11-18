@@ -265,6 +265,7 @@ local Page = ui.component(function()
 	local callable_name = ui.use_state("")
 	local selected = ui.use_state("")
 	local selected_many = ui.use_state({})
+	local execution_environment = ui.use_state("auto")
 	local zoom = ui.use_state(0.85)
 	local pan_x = ui.use_state(24)
 	local pan_y = ui.use_state(24)
@@ -272,6 +273,7 @@ local Page = ui.component(function()
 	local output_counter = ui.use_state(1)
 	local notice = ui.use_state("")
 	local canvas = ui.ref()
+	local marimo_web = ui.web({ profile = "ephemeral" })
 	local drag = nil
 	local control_states = {}
 
@@ -566,7 +568,7 @@ local Page = ui.component(function()
 		notice:set("Starting marimo for " .. path .. "…")
 		log("Opening notebook " .. path)
 		observe("Start marimo", function()
-			return Bridge.open_notebook(zeron, path)
+			return Bridge.open_notebook(zeron, path, execution_environment:peek())
 		end, function(started)
 			url:set(started.url)
 			session_id:set(started.session_id or "")
@@ -576,8 +578,9 @@ local Page = ui.component(function()
 			if started.session_id and started.session_id ~= "" then
 				refresh_graph()
 			else
-				zeron.open_url(started.url)
-				log("Opened marimo editor; waiting for its live notebook session")
+				-- The hidden ZGX webview below owns marimo's websocket/session. We
+				-- deliberately never open the marimo editor as a visible page.
+				log("Bootstrapping marimo session invisibly inside Graphimo")
 				wait_for_notebook(path, started.url, 0)
 			end
 		end, function(err)
@@ -1371,16 +1374,16 @@ local Page = ui.component(function()
 	end
 
 	local function component_library_panel()
-		local groups = ui.computed(function()
+		local component_groups = ui.computed(function()
 			return Library.project(components:get(), library_query:get())
 		end)
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			Text { "Components", style = "heading" },
 			SearchField { value = library_query, placeholder = "Search components", name = "Search components", size = "sm", quiet = true, w_full = true },
-			ui.show(function() return #groups:get() == 0 end, Text { function()
+			ui.show(function() return #component_groups:get() == 0 end, Text { function()
 				return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"
 			end, style = "caption", tone = "secondary", wrap = true }),
-			ui.each(groups, function(group)
+			ui.each(component_groups, function(group)
 				return ui.column { w_full = true, gap = "$space.1",
 					Text { group.category, style = "caption", tone = "secondary" },
 					ui.each(group.components, function(item)
@@ -1436,6 +1439,19 @@ local Page = ui.component(function()
 			end, pointer_events = "none" },
 			Text { "Graphimo", style = "heading" },
 			Text { function() return snapshot:get().notebook.path or "Visual view of your marimo notebook" end, style = "caption", tone = "secondary", grow = 1 },
+			Select {
+				value = execution_environment,
+				name = "Execution environment",
+				w = 155,
+				size = "sm",
+				options = {
+					{ value = "auto", label = "Environment · Auto" },
+					{ value = "project-.venv", label = "Project .venv" },
+					{ value = "project-venv", label = "Project venv" },
+					{ value = "system", label = "System Python" },
+					{ value = "managed", label = "Graphimo managed" },
+				},
+			},
 			Button { "Open notebook", size = "sm", on_click = choose_notebook },
 			Button { "New notebook", tone = "secondary", size = "sm", on_click = create_notebook },
 			Button { "Refresh", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
@@ -1528,6 +1544,16 @@ local Page = ui.component(function()
 			ui.show(function() return meta_editor_open:get() end, meta_editor_panel()),
 			ui.show(function() return code_open:get() end, code_editor_panel()),
 		},
+		ui.show(function() return url:get() ~= "" end, ui.webview {
+			web = marimo_web,
+			src = function() return url:get() end,
+			absolute = true,
+			left = -10000,
+			top = -10000,
+			w = 2,
+			h = 2,
+			pointer_events = "none",
+		}),
 		Dialog {
 			open = ports_dialog,
 			title = "Block ports",
