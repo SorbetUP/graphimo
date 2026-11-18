@@ -393,13 +393,12 @@ local function code_for(operation, args)
 		}, "\n")
 	elseif operation == "list_components" then
 		return table.concat({
-			"import hashlib, importlib, inspect, json, math, pathlib, sys",
+			"import hashlib, importlib, inspect, json, math, pathlib, sys, typing",
+			"LITERAL_ALIAS_TYPE = type(typing.Literal[0])",
 			"def scalar(value): return value is None or type(value) in (bool, int, str) or (type(value) is float and math.isfinite(value))",
 			"def literal_choices(annotation):",
-			"    if type(annotation).__module__ != 'typing' or type(annotation).__name__ != '_LiteralGenericAlias': return None",
-			"    origin = annotation.__origin__; origin_type = type(origin)",
-			"    if origin_type.__module__ != 'typing' or origin_type.__name__ != '_LiteralSpecialForm' or getattr(origin, '_name', None) != 'Literal': return None",
-			"    return annotation.__args__",
+			"    if type(annotation) is not LITERAL_ALIAS_TYPE or annotation.__origin__ is not typing.Literal: return None",
+			"    return typing.get_args(annotation)",
 			"def annotation_text(annotation):",
 			"    if annotation is inspect.Parameter.empty: return None",
 			"    if type(annotation) is str: return annotation",
