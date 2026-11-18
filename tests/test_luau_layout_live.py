@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "tests" / "luau_layout_driver.luau"
 LUAU = shutil.which("luau")
@@ -29,7 +28,7 @@ def _luau(mode: str, notebook: Path, decoded_json: str = "") -> subprocess.Compl
 
 
 def _script(output: str) -> str:
-    scripts = re.findall(r"GRAPHIMO_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_SCRIPT_END", output, re.S)
+    scripts = re.findall(r"GRAPHIMO_SCRIPT_BEGIN\n(.*?)\nGRAPHIMO_SCRIPT_END", output, re.DOTALL)
     assert len(scripts) == 1, output
     return scripts[0]
 
