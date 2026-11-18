@@ -405,6 +405,8 @@ local function code_for(operation, args)
 			"    if type(annotation) is str: return annotation",
 			"    if annotation is None: return 'None'",
 			"    if type(annotation) is type: return type.__getattribute__(annotation, '__name__')",
+			"    choices = literal_choices(annotation)",
+			"    if choices is not None and all(scalar(choice) for choice in choices): return 'Literal[' + ', '.join(json.dumps(choice, ensure_ascii=False) for choice in choices) + ']'",
 			"    return None",
 			"class SafeAnnotation:",
 			"    def __init__(self, text): self.text = text",

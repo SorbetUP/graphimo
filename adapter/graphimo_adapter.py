@@ -142,6 +142,9 @@ def _safe_annotation_text(annotation: Any) -> str | None:
             return type.__getattribute__(annotation, "__name__")
         except (AttributeError, TypeError):
             return None
+    choices = _literal_choices(annotation)
+    if choices is not None and all(_scalar_default(choice) for choice in choices):
+        return "Literal[" + ", ".join(json.dumps(choice, ensure_ascii=False) for choice in choices) + "]"
     return None
 
 
