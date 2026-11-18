@@ -54,7 +54,9 @@ def _execute(base: str, session: str, code: str) -> str:
     marker = "GRAPHIMO_RESULT:"
     start = joined.find(marker)
     if start < 0:
-        raise AssertionError(f"marimo response had no Graphimo result: {joined!r}")
+        raise AssertionError(
+            f"marimo response had no Graphimo result: stdout={joined!r}; SSE={response[:12000]!r}"
+        )
     return joined[start + len(marker) :].splitlines()[0]
 
 
@@ -212,32 +214,21 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         assert "toggle" not in {item["name"] for item in controls}
         assert json.loads(json.dumps(snapshot, allow_nan=False)) == snapshot
 
-        wrong_version = '''import importlib.metadata as graphimo_metadata
-import marimo as graphimo_marimo
-graphimo_old_version = graphimo_metadata.version
-graphimo_old_marimo_version = graphimo_marimo.__version__
-graphimo_metadata.version = lambda name: "99.0.0" if name == "marimo" else graphimo_old_version(name)
-graphimo_marimo.__version__ = "99.0.0"
-'''
-        restore_version = '''graphimo_metadata.version = graphimo_old_version
-graphimo_marimo.__version__ = graphimo_old_marimo_version
-'''
-        unsupported_version = json.loads(
-            _execute(base, session, wrong_version + inspect_code + restore_version)
+        version_guard = "metadata.version('marimo') == '0.25.2'"
+        assert inspect_code.count(version_guard) == 1
+        unsupported_version_code = inspect_code.replace(
+            version_guard, "metadata.version('marimo') == '99.0.0'"
         )
+        unsupported_version = json.loads(_execute(base, session, unsupported_version_code))
         assert "controls" not in unsupported_version
         assert unsupported_version["cells"]
 
-        block_api = '''import builtins as graphimo_builtins
-graphimo_old_import = graphimo_builtins.__import__
-def graphimo_block_private_ui(name, globals=None, locals=None, fromlist=(), level=0):
-    if name.startswith("marimo._plugins.ui._"):
-        raise ImportError("simulated unsupported marimo UI API")
-    return graphimo_old_import(name, globals, locals, fromlist, level)
-graphimo_builtins.__import__ = graphimo_block_private_ui
-'''
-        restore_api = "graphimo_builtins.__import__ = graphimo_old_import\n"
-        unsupported_api = json.loads(_execute(base, session, block_api + inspect_code + restore_api))
+        widget_import = "            from marimo._plugins.ui._core.ui_element import UIElement"
+        assert inspect_code.count(widget_import) == 1
+        unsupported_api_code = inspect_code.replace(
+            widget_import, "            raise ImportError('simulated unsupported marimo UI API')"
+        )
+        unsupported_api = json.loads(_execute(base, session, unsupported_api_code))
         assert "controls" not in unsupported_api
         assert unsupported_api["cells"]
     finally:
