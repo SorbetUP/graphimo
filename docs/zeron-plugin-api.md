@@ -65,9 +65,22 @@ Les permissions sont des capacités, pas des déclarations décoratives : Zeron 
 
 Déclare uniquement ce que le plugin utilise. Le runtime et les écrans de consentement de la version installée déterminent les permissions réellement disponibles.
 
+### Règles de manifeste à vérifier
+
+- `id` est l’identifiant stable du plugin et doit être exactement celui passé à `require("./zeron")(id)`.
+- `entry` doit désigner un fichier présent dans le paquet. Les chemins de `icon`, `service`, les locales et les autres ressources doivent eux aussi être présents et respecter la casse.
+- Chaque outil doit être déclaré une seule fois dans `tools`, avec un schéma JSON cohérent, puis enregistré par `zeron.tool` avec le même nom.
+- Pour une commande, déclare `commands` dans les permissions et le binaire dans le tableau `commands`. Passe le binaire et ses arguments séparément à `zeron.run`; ne compose jamais une ligne shell.
+- `settings` est une déclaration de schéma et de valeurs par défaut. Le plugin lit les valeurs avec `zeron.settings()` / `zeron.setting(id)`; l’utilisateur les modifie dans Zeron.
+- La version du manifeste, les sources, les ressources et la copie de `zeron.luau` doivent être celles que tu veux signer. Toute modification après signature impose une nouvelle signature.
+
+Le manifeste exact accepté peut évoluer. Pour une capacité ou un champ incertain, inspecte le squelette généré par la version de Zeron installée plutôt que d’inventer un champ.
+
 ## API `zeron.*`
 
 Les méthodes asynchrones retournent généralement une promesse avec `:after(success, failure)`. Les états UI ont typiquement `:get()`, `:peek()` et `:set(value)`. Les données visibles dépendent des permissions : un champ auquel le plugin n’a pas accès peut simplement être absent.
+
+L’inventaire des noms publics ci-dessous a été comparé aux deux copies locales de `zeron.luau` : `plugin/zeron.luau` de Graphimo et `zeron.luau` d’Orchestrator Builder. Les deux copies exposent la même famille de méthodes `zeron.*` documentée ici, mais leurs implémentations ne sont pas identiques. Les helpers internes et le runtime UI peuvent donc différer. Cette référence décrit la surface observée, pas une promesse de compatibilité entre versions.
 
 ### Pages, contexte et extension de l’interface
 
@@ -153,6 +166,8 @@ L’authentification reste détenue par Zeron. Les capacités d’écriture sont
 
 Un service est un second fichier Luau, par exemple `service.luau`, déclaré dans le manifeste avec permission `service`. Il s’exécute sans UI sur les appareils où le plugin est activé. Il n’est pas la même chose qu’un outil appelé par un agent.
 
+Le service a aussi un environnement d’exécution distinct de la page. Les commentaires du SDK énumèrent pour cette entrée des helpers de runtime comme `zeron.serve`, `zeron.tool`, `zeron.every`, `zeron.on_stop`, `zeron.emit`, `zeron.run`, `zeron.fetch`, `zeron.notify`, `zeron.sleep`, `zeron.task`, `zeron.store`, `zeron.json` et `zeron.device`. La copie UI de `zeron.luau` ne spécifie pas leurs signatures. Pour les employer, pars du `service.luau` ou de l’exemple généré par la version cible; ne transpose pas les contrats de la page et ne déduis pas une signature depuis les noms.
+
 ### Composer, brouillons, réglages et traduction
 
 | Méthode | Fonction |
@@ -185,6 +200,8 @@ Le manifeste du Builder déclare l’outil agent `submit_report` avec `nonce` et
 
 Le Builder utilise le SDK pour les sessions, modèles, créations/envois de chats, événements, comptes, navigation, Git/GitHub, composer et journal SQLite. La logique métier principale est dans `graph.luau` (modèle et validation), `runner.luau` (runs/journal/routage), `changes.luau` (sources Git/PR, checks, citations) et `init.luau` (interface). Son README contient les limites opérationnelles détaillées.
 
+Le runner est un exemple avancé, pas un squelette à recopier pour tout plugin : il associe les rapports d’outils à un nonce d’étape, au chat appelant, aux événements de tour et aux reçus de livraison, puis bloque quand le résultat est incertain. Les runs distants ne sont pas pris en charge dans son README; l’arrêt n’annule ni un tour déjà parti ni un message mis en file. Réutilise les principes de corrélation, de journal et de non-renvoi après timeout seulement si ton plugin orchestre réellement des effets asynchrones comparables.
+
 ### Graphimo
 
 Le manifeste Graphimo déclare `pages.add`, `tools`, `commands`, `links.open`, `files`, et autorise `curl` et `python3`. Ses six outils agent sont :
@@ -213,6 +230,167 @@ Graphimo parle à une session marimo locale avec `curl` et démarre/inspecte le 
 - `zeron.luau` expose la surface publique de plugin de la copie embarquée. Il ne liste pas toutes les API internes Rust/RPC.
 - Les méthodes `ui.*` et composants `@ds/*` évoluent avec Zeron/ZGX et ne sont pas un catalogue stable exhaustif dans ces dépôts.
 
+## Démarrage rapide reproductible
+
+Commence dans un dossier de développement séparé du dépôt source, avec Zeron installé et lancé :
+
+```sh
+zeron plugin new
+```
+
+Garde le manifeste et `zeron.luau` générés comme base. Remplace les fichiers d’entrée et ajoute seulement les ressources dont le plugin a besoin. Le squelette de la version installée est la référence pour les champs encore absents ou différents de cet exemple minimal :
+
+```json
+{
+  "id": "hello-zeron",
+  "name": "Hello Zeron",
+  "version": "0.1.0",
+  "description": "Une page de démonstration.",
+  "entry": "init.luau",
+  "permissions": ["pages.add"],
+  "tools": []
+}
+```
+
+```lua
+local zeron = require("./zeron")("hello-zeron")
+local Button = require("@ds/button")
+
+zeron.page {
+    id = "home",
+    title = "Hello Zeron",
+    build = function()
+        return ui.column {
+            ui.text { "Plugin chargé." },
+            Button {
+                "Vérifier",
+                on_click = function()
+                    zeron.toast("La page répond.")
+                end,
+            },
+        }
+    end,
+}
+```
+
+Le but du premier passage est de vérifier le chargement de la page et la cohérence de l’identifiant. Ajoute ensuite une fonctionnalité à la fois, en ne demandant sa permission qu’au moment où elle est utilisée. Pour un outil agent, vérifie le schéma et l’implémentation ensemble :
+
+```json
+{
+  "permissions": ["pages.add", "tools"],
+  "tools": [{
+    "name": "echo_text",
+    "description": "Retourne le texte reçu.",
+    "input": {
+      "type": "object",
+      "properties": { "text": { "type": "string", "maxLength": 2000 } },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  }]
+}
+```
+
+```lua
+zeron.tool {
+    name = "echo_text",
+    run = function(args, call)
+        if type(args) ~= "table" or type(args.text) ~= "string" then
+            error("text doit être une chaîne")
+        end
+        if #args.text > 2000 then
+            error("text dépasse 2000 caractères")
+        end
+        return { text = args.text, caller = call and call.chat or nil }
+    end,
+}
+```
+
+La limite est validée dans le code même si elle figure dans le schéma : les agents, fichiers et réponses d’outils restent des entrées non fiables. Si l’outil appelle une API asynchrone, ajoute le chemin de succès et le chemin d’échec avec `:after(success, failure)` et renvoie un résultat ou une erreur compréhensible.
+
+## Cycle de développement et de distribution
+
+1. **Générer** avec `zeron plugin new`; ne pars pas d’un manifeste supposé être universel.
+2. **Décrire le contrat** avant le code : données d’entrée, sortie, effets de bord, permissions, traitement des erreurs, limites de taille et comportement en cas de timeout.
+3. **Implémenter par couches** : validation métier, adaptation Zeron, puis UI. Garde les opérations longues hors des callbacks UI et borne les données conservées.
+4. **Comparer manifeste et code** : identifiant du SDK, fichiers présents, outils enregistrés, permissions utilisées, commandes autorisées et ressources référencées.
+5. **Vérifier dans Zeron** : installer ou ouvrir le plugin, approuver uniquement les capacités nécessaires, ouvrir chaque page, essayer les chemins valides et invalides, désactiver une permission pour confirmer que le refus est propre, puis recharger le plugin.
+6. **Signer après les changements** avec Zeron lancé :
+
+   ```sh
+   zeron plugin sign hello-zeron
+   ```
+
+7. **Réinstaller et vérifier le paquet signé** après la signature. Toute modification de source, SDK, manifeste ou ressource ensuite rend cette signature périmée; signe de nouveau. Le paquet publié doit inclure le SDK et toutes ses ressources, mais pas le clone de travail, les journaux, caches ou secrets.
+
+La CLI et l’écran d’installation peuvent changer. Si la version courante diffère du workflow ci-dessus, suis le retour de la CLI et de l’installateur plutôt que d’utiliser une option non documentée.
+
+## Contrôles avant de livrer
+
+Utilise cette liste à chaque modification du plugin :
+
+- [ ] Le squelette et `zeron.luau` viennent de la même version de Zeron que celle visée.
+- [ ] Le `id` du manifeste correspond à l’appel `require("./zeron")(id)`.
+- [ ] Chaque outil déclaré a une implémentation de même nom; les arguments sont validés à l’exécution et la sortie suit un format stable.
+- [ ] Chaque permission correspond à un appel concret. Les commandes autorisées sont listées explicitement et n’acceptent pas de chaîne shell.
+- [ ] Les chemins, URLs, IDs, nombres et tailles sont bornés; les données agent, fichiers, GitHub et appareils sont traitées comme non fiables.
+- [ ] Les erreurs asynchrones sont montrées à l’utilisateur ou au caller. Les callbacks/listeners peuvent être désinscrits et ne mettent pas à jour un composant détruit.
+- [ ] Les opérations non idempotentes ne sont pas renvoyées automatiquement après timeout. Les effets de bord ambigus sont présentés comme incertains, avec une action de vérification.
+- [ ] Les imports/export et le stockage n’incluent aucun secret; les dumps/logs sont bornés et expurgent les données sensibles.
+- [ ] Le plugin fonctionne lorsque les permissions facultatives sont refusées, lorsque la donnée de contexte manque et lorsque le service distant/appareil est hors ligne.
+- [ ] La version signée a été installée et parcourue dans Zeron. La signature a été refaite après le dernier changement.
+
+## Diagnostic des erreurs fréquentes
+
+| Symptôme | Vérifications rapides |
+| --- | --- |
+| Le plugin ou sa page n’apparaît pas | JSON du manifeste valide, `entry` présent, identifiant passé au SDK identique, permission `pages.add`, plugin activé et rechargé. |
+| « not allowed » ou refus de capacité | Repérer l’appel qui échoue; déclarer la permission précise, resigner, réinstaller et demander le consentement de l’utilisateur. Ne pas élargir les permissions sans identifier la capacité requise. |
+| Un outil d’agent n’est pas proposé | Permission `tools`, outil du manifeste et `zeron.tool` du même nom, schéma JSON valide, description et champs `required` cohérents. Vérifier aussi le harness/modèle utilisé. |
+| Une commande échoue | Binaire autorisé dans `commands`, arguments séparés, chemin courant valide, programme installé sur l’appareil d’exécution et timeout adapté. `zeron.run` n’est pas un shell. |
+| Le callback asynchrone ne semble jamais finir | Vérifier que les deux callbacks `:after` sont installés, afficher les refus `zeron.reason(err)`, vérifier device/network/permission, et ne pas bloquer l’UI. |
+| Un événement est manqué ou traité deux fois | Attendre la promesse d’inscription retournée par `zeron.on`; filtrer sur IDs de chat/run; gérer l’ordre et dédupliquer les IDs reçus; conserver la fonction de désinscription. |
+| Une modification du plugin ne semble pas prise en compte | Vérifier que la copie de développement est celle qui est activée, recharger/réinstaller puis signer après la dernière modification. |
+| Une erreur apparaît après timeout | Ne pas supposer que l’effet n’a pas eu lieu. Lire l’état distant ou le journal, marquer le résultat comme inconnu puis laisser l’utilisateur décider d’une reprise. |
+
+## Modèles d’implémentation sûrs
+
+### Appel asynchrone avec résultat borné
+
+L’API varie selon l’action, mais le contrôle doit garder la même forme : valider avant l’appel, traiter les deux branches, contrôler la taille avant l’affichage ou la persistance.
+
+```lua
+local function load_summary(id)
+    if type(id) ~= "string" or #id == 0 or #id > 128 then
+        return nil, "Identifiant invalide"
+    end
+
+    local result, failure
+    -- Dans une UI, conserve un état loading/error/result et mets-le à jour
+    -- dans success/failure; l'exemple omet ce composant d'état.
+    some_async_operation(id):after(function(value)
+        result = value
+    end, function(err)
+        failure = zeron.reason(err)
+    end)
+    return result, failure
+end
+```
+
+Ce pseudocode montre seulement la séparation validation/succès/échec : il n’attend pas la fin de la promesse. Le code UI réel doit appliquer le résultat dans un état réactif et ne pas retourner prématurément une valeur que le callback n’a pas encore reçue.
+
+### Opération agent à corréler
+
+Orchestrator Builder montre un modèle utile lorsque des événements, appels d’outils et envois de messages peuvent arriver dans des ordres différents : crée un identifiant de run et un nonce d’étape, lie le tool call au chat appelant, persiste le reçu avant l’avancement, tolère les doublons identiques et bloque en cas de rapport contradictoire ou de livraison inconnue. Un `turn.finished` seul ne prouve pas que l’outil attendu a répondu. Le texte final de l’agent ne remplace pas le reçu corrélé.
+
+Pour les workflows qui déclenchent chats ou effets externes, ne copie pas l’orchestration complète de Builder par défaut : le pattern est destiné aux tâches réellement distribuées et durables.
+
+### Service et UI
+
+Une UI et un service ont des cycles de vie différents. Le service convient au travail sans fenêtre, aux événements inter-appareils et aux tâches périodiques; la page convient à la présentation et aux interactions directes. Si une tâche doit survivre à la fermeture de la fenêtre, place-la dans un service et déclare les capacités exigées par le manifeste et le runtime. Dans les deux cas, ajoute un arrêt explicite pour les timers/listeners, borne les messages et gère `offline`, `not_installed`, `version_mismatch` et `timeout`.
+
+`zeron.every` a un minimum de 30 secondes; ce n’est pas une minuterie temps réel. Les messages inter-appareils doivent tenir dans la limite de 64 Ko et leurs champs doivent être validés comme une entrée réseau.
+
 ## Documentation et sources
 
 - [DeepWiki — zeronsh/zeron](https://deepwiki.com/zeronsh/zeron) : architecture du produit (UI, moteur, RPC, agents, sessions, synchronisation), pas un index exhaustif des API plugin.
@@ -220,6 +398,7 @@ Graphimo parle à une session marimo locale avec `curl` et démarre/inspecte le 
 - [DeepWiki — journaux et orchestration des sessions](https://deepwiki.com/zeronsh/zeron/3.3-session-orchestration-and-run-journals) : fonctionnement interne des sessions.
 - [DeepWiki — Agent Harnesses](https://deepwiki.com/zeronsh/zeron/4-desktop-ui-%28zeron-ui%29) : abstraction interne des runtimes agents.
 - [Architecture Zeron sur GitHub](https://github.com/zeronsh/zeron/blob/main/ARCHITECTURE.md).
+- [Guide de création du Builder](https://github.com/Master0fFate/zeron-orchestration-builder/blob/initial-release/docs/creer-un-plugin-zeron.md) : procédure complète et référence annotée de son SDK.
 - Sources locales : [SDK plugin](../plugin/zeron.luau), [manifeste Graphimo](../plugin/zeron-plugin.json), [bridge marimo](../plugin/marimo_bridge.luau), [Builder README](https://github.com/Master0fFate/zeron-orchestration-builder/blob/initial-release/README.md), et ses modules `graph.luau`, `runner.luau`, `changes.luau`.
 
 La DeepWiki est générée et peut être en retard sur une release. Pour une signature plugin précise, compare le SDK créé par `zeron plugin new`, le manifeste et les permissions de la version de Zeron effectivement installée.
