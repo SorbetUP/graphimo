@@ -103,6 +103,8 @@ or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
 
 ## Development
 
+For the Zeron plugin API reference and examples from Graphimo and Orchestrator Builder, see [the plugin development guide](docs/zeron-plugin-api.md).
+
 Install the pinned notebook runtime and development tools, then run the
 independent contract suite:
 
