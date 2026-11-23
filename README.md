@@ -120,6 +120,15 @@ port. It does not replace an end-to-end run inside Zeron with a live marimo
 server. Example notebooks are ordinary marimo `.py` files and use marimo's
 `cache_cells = true` setting.
 
+An isolated architecture spike now lives in `core/graphimo_core/`. It proves a
+small persistent workspace ledger, content-addressed file/directory artifacts,
+a local Python worker, a three-head PyTorch model, run events, checkpoints,
+process restart, and a weight-migration report. It is not yet wired into the
+Zeron canvas or marimo bridge; see [the vertical-slice validation report](docs/core-vertical-slice.md).
+Run it with `PYTHONPATH=core python -m graphimo_core.vertical_demo /path/to/workspace`
+after installing `.[prototype]`. Install `.[prototype,inspection]` to enable the
+optional TorchLens model-inspection helper.
+
 For a live marimo integration check of the production Luau bridge's generated
 requests (inspect, component discovery/insertion, connect, and Run dispatch), install
 the pinned marimo extra and the Luau CLI, then run:

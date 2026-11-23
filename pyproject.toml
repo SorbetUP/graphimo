@@ -14,15 +14,18 @@ dependencies = []
 [project.optional-dependencies]
 notebook = ["marimo==0.25.2"]
 dev = ["pytest>=8,<9", "ruff>=0.8"]
+prototype = ["numpy", "torch"]
+inspection = ["torchlens"]
 
 [tool.setuptools]
-packages = ["adapter"]
+packages = ["adapter", "graphimo_core"]
+package-dir = { graphimo_core = "core/graphimo_core" }
 
 [tool.marimo.runtime]
 cache_cells = true
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "core"]
 
 [tool.ruff]
 line-length = 100
