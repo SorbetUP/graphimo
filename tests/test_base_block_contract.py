@@ -27,7 +27,8 @@ def _component_callables(result):
 def test_component_discovery_projects_conservative_static_return_contract(tmp_path, host):
     root = tmp_path / "base_block_components"
     root.mkdir()
-    (root / "contracts.py").write_text(
+    contract_source = (
+        "from graphimo import node\n"
         "from typing import Literal, NamedTuple\n"
         "def obtenir_infos(prix: float, quantite: int, stock: int) -> tuple[float, int, int]:\n"
         "    flower = 3 + stock\n"
@@ -62,9 +63,9 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
         "calls = []\n"
         "def must_not_run(value: int) -> int:\n"
         "    calls.append(value)\n"
-        "    return value\n",
-        encoding="utf-8",
-    )
+        "    return value\n"
+    ).replace("def ", "@node\ndef ")
+    (root / "contracts.py").write_text(contract_source, encoding="utf-8")
 
     callables = _component_callables(
         dispatch({"op": "list_components", "root": str(root)}, host.context)
@@ -73,49 +74,52 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
     info = callables["obtenir_infos"]
     assert info["base_block"]["inputs"] == info["parameters"]
     assert info["base_block"]["output_mode"] == "tuple"
-    assert info["base_block"]["outputs"] == [
-        {"index": 1, "name": "output_1", "expression": "prix + 0.2", "annotation": "float"},
-        {"index": 2, "name": "output_2", "expression": "quantite + stock", "annotation": "int"},
-        {"index": 3, "name": "flower", "expression": "flower", "annotation": "int"},
+    assert info["outputs"] == [
+        {"index": 0, "declared_type": "float", "expressions": ["prix + 0.2"]},
+        {"index": 1, "declared_type": "int", "expressions": ["quantite + stock"]},
+        {"index": 2, "declared_type": "int", "expressions": ["flower"]},
     ]
 
     scalar = callables["scalar"]["base_block"]
     assert scalar["output_mode"] == "single"
     assert scalar["outputs"] == [
-        {"index": 1, "name": "answer", "expression": "answer", "annotation": "int"}
+        {"index": 1, "name": "output_1", "expressions": ["answer"], "expression": "answer", "annotation": "int"}
     ]
     scalar_expression = callables["scalar_expression"]["base_block"]
     assert scalar_expression["outputs"] == [
-        {"index": 1, "name": "output_1", "expression": "value * 2", "annotation": "int"}
+        {"index": 1, "name": "output_1", "expressions": ["value * 2"], "expression": "value * 2", "annotation": "int"}
     ]
     scalar_literal = callables["scalar_literal"]["base_block"]
     assert scalar_literal["output_mode"] == "single"
     assert scalar_literal["outputs"] == [
-        {"index": 1, "name": "output_1", "expression": "1", "annotation": "Literal[1, 2.0]"}
+        {"index": 1, "name": "output_1", "expressions": ["1"], "expression": "1"}
     ]
     nonfinite = callables["nonfinite_scalar"]["base_block"]
-    assert nonfinite["output_mode"] == "object"
-    assert nonfinite["outputs"] == [{"index": 1, "name": "result", "annotation": "object"}]
+    assert nonfinite["output_mode"] == "single"
+    assert nonfinite["outputs"] == [
+        {"index": 1, "name": "output_1", "expressions": ["1e309"], "expression": "1e309"}
+    ]
 
     assert callables["no_return"]["base_block"] == {
         "inputs": callables["no_return"]["parameters"],
         "outputs": [],
         "output_mode": "none",
     }
-    assert callables["explicit_none"]["base_block"]["output_mode"] == "none"
-    assert callables["explicit_none"]["base_block"]["outputs"] == []
+    assert callables["explicit_none"]["outputs"] == [
+        {"index": 0, "declared_type": "None", "expressions": ["None"]}
+    ]
 
     branches = callables["coherent_branches"]["base_block"]
     assert branches["output_mode"] == "tuple"
     assert branches["outputs"] == [
-        {"index": 1, "name": "value", "expression": "value", "annotation": "int"},
-        {"index": 2, "name": "output_2", "annotation": "int"},
+        {"index": 1, "name": "output_1", "expressions": ["value"], "expression": "value", "annotation": "int"},
+        {"index": 2, "name": "output_2", "expressions": ["value + 1", "value + 2"], "annotation": "int"},
     ]
-    for name in ("mismatched_branches", "dynamic_tuple", "dictionary_output", "named_tuple_output"):
+    assert callables["mismatched_branches"]["diagnostic"] == "node_output_arity_inconsistent"
+    for name in ("dynamic_tuple", "dictionary_output", "named_tuple_output"):
         contract = callables[name]["base_block"]
-        assert contract["output_mode"] == "object", name
+        assert contract["output_mode"] == "single", name
         assert len(contract["outputs"]) == 1, name
-        assert contract["outputs"][0]["name"] == "result", name
 
     # The functions were inspected statically; discovery did not call them.
     imported_contracts = adapter._load_module(root / "contracts.py")
@@ -127,6 +131,8 @@ def test_unavailable_function_source_falls_back_to_one_object(tmp_path, host, mo
     root = tmp_path / "source_unavailable_components"
     root.mkdir()
     (root / "unavailable.py").write_text(
+        "from graphimo import node\n"
+        "@node\n"
         "def compute(value: int) -> tuple[int, int]:\n"
         "    return value, value + 1\n",
         encoding="utf-8",
@@ -142,10 +148,9 @@ def test_unavailable_function_source_falls_back_to_one_object(tmp_path, host, mo
     callables = _component_callables(
         dispatch({"op": "list_components", "root": str(root)}, host.context)
     )
-    assert callables["compute"]["base_block"]["output_mode"] == "object"
-    assert callables["compute"]["base_block"]["outputs"] == [
-        {"index": 1, "name": "result", "annotation": "object"}
-    ]
+    assert callables["compute"]["graphimo_node"] is True
+    assert callables["compute"]["diagnostic"] == "node_source_unavailable"
+    assert callables["compute"]["outputs"] == []
 
 
 def test_inspect_links_only_exact_generated_component_markers_and_call(tmp_path, host):

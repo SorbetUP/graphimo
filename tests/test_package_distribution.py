@@ -14,6 +14,7 @@ PROJECT_ENTRIES = (
     "README.md",
     "LICENSE",
     "adapter",
+    "graphimo",
     "core",
     "plugin",
     "components",
@@ -67,6 +68,9 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
 
     assert "adapter/__init__.py" in names
     assert "adapter/graphimo_adapter.py" in names
+    assert "graphimo/__init__.py" in names
+    assert "graphimo/node.py" in names
+    assert "graphimo/instance.py" in names
     assert "graphimo_core/artifacts.py" in names
     assert "graphimo_core/vertical_demo.py" in names
     for excluded in ("plugin/", "components/", "examples/", "tests/", "core/"):

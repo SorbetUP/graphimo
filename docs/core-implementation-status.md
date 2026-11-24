@@ -1,0 +1,40 @@
+# Graphimo core implementation status
+
+This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files remain unchanged and normative.
+
+## Completed milestones
+
+### M1 — transparent node API
+
+- Added `graphimo.node`, `is_node`, `inspect_node`, `preview_value`, and `describe_result`.
+- `@node` marks the original function and does not wrap or execute it.
+- Signature inputs and statically discovered output expressions are exposed as frozen dataclasses.
+- Runtime previews bound strings and container samples, avoid arbitrary serializers, and catch failing `repr` implementations.
+- The package is included in the Python distribution.
+
+### M2 — canonical marimo instances
+
+- Added random eight-hex instance IDs and `g_<node>_<id>` result variables.
+- Generated cell bodies contain the exact node and instance markers plus a keyword-call assignment.
+- Parsing accepts only owned single-assignment cells; reconnecting regenerates only the selected binding.
+- Output wiring uses the bare result global for one output and tuple indices for multiple outputs.
+
+### M3 — existing Python adapter integration
+
+- Component discovery marks `@node` functions as executable and uses `graphimo.inspect_node` for outputs. Other callables remain visible as non-executable library information.
+- Insertion requires bindings for required inputs and generates cells through `build_instance_source`.
+- Connections require owned instances and use `output_expression` / `reconnect_instance_source`.
+- Added `inspect_node_instance`; the host `MarimoPort` must expose `get_variable(session_id, name)` for live values. The adapter returns `runtime_value_unavailable` if the host does not provide it.
+- Migrated the simple example to one `scale` definition and two independently executable instance cells.
+
+## Contract conflict to resolve
+
+`Graphimo_CODEX_IMPLEMENTATION.md` §5.2 says `active_expression` remains `null` until a separately specified runtime hook exists. §18's expected runtime-inspection response shows `active_expression: "normalized"`. No such hook is defined in the contract. M1's core rule is followed for now: `describe_result` and the adapter return `null`. The runtime output still carries every statically known expression in `expressions`.
+
+## Explicitly blocked feature
+
+`Graphimo_CODEX_IMPLEMENTATION.md` M7 (§29) labels the generic Group Blocks backend `HUMAN DECISION REQUIRED`. Group execution is therefore not implemented. This does not block the independent Core, Workbench, ArtifactStore, or addon milestones.
+
+## Host integration seam
+
+The current repository has no host implementation of `MarimoPort.get_variable`. The adapter behavior is covered with a fake host port, and the example is executed by marimo itself. A standalone Workbench must implement this operation through its application/controller port before live output inspection is available there. No runtime scheduler was added.

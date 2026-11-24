@@ -43,6 +43,7 @@ class FakeMarimoPort:
         self.replaced: list[tuple[str, str, str]] = []
         self.runs: list[tuple[str, str]] = []
         self.deleted: list[tuple[str, str]] = []
+        self.values: dict[str, object] = {}
 
     def list_active_notebooks(self):
         return deepcopy(self.sessions)
@@ -54,7 +55,7 @@ class FakeMarimoPort:
 
     def add_cell(self, session_id: str, source: str):
         self.added.append((session_id, source))
-        return "inserted-cell"
+        return f"inserted-cell-{len(self.added)}"
 
     def replace_cell_source(self, session_id: str, cell_id: str, source: str):
         self.replaced.append((session_id, cell_id, source))
@@ -63,6 +64,9 @@ class FakeMarimoPort:
     def run_cell(self, session_id: str, cell_id: str):
         self.runs.append((session_id, cell_id))
         return {"status": "queued", "request_id": "run-1"}
+
+    def get_variable(self, session_id: str, variable_name: str):
+        return self.values[variable_name]
 
     def delete_cell(self, session_id: str, cell_id: str):
         self.deleted.append((session_id, cell_id))
@@ -76,6 +80,8 @@ def project(tmp_path: Path):
     category.mkdir(parents=True)
     (category / "normalize.py").write_text(
         '"""Scale an image."""\n'
+        "from graphimo import node\n"
+        "@node\n"
         "def normalize(image, mean=0.5, std=0.5):\n"
         "    return (image - mean) / std\n",
         encoding="utf-8",
@@ -83,8 +89,11 @@ def project(tmp_path: Path):
     package = components / "models" / "bodypart"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text(
+        "from graphimo import node\n"
         "__all__ = ['encode', 'decode']\n"
+        "@node\n"
         "def encode(value):\n    return value\n"
+        "@node\n"
         "def decode(value):\n    return value\n"
         "def _private(value):\n    return value\n",
         encoding="utf-8",

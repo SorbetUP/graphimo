@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import ast
-
+import adapter.graphimo_adapter as adapter
 from adapter.graphimo_adapter import dispatch
 
 
@@ -118,21 +117,15 @@ def test_add_component_inserts_readable_python_with_requested_bindings(project, 
     )
 
     assert result["ok"] is True
-    assert result["cell_id"] == "inserted-cell"
+    assert result["cell_id"] == "inserted-cell-1"
     assert result["source"] == host.marimo.added[0][1]
-    tree = ast.parse(result["source"])
-    assignment = next(node for node in tree.body if isinstance(node, ast.Assign))
-    assert [target.id for target in assignment.targets if isinstance(target, ast.Name)] == ["normalized"]
-    assert isinstance(assignment.value, ast.Call)
-    called_name = (
-        assignment.value.func.id
-        if isinstance(assignment.value.func, ast.Name)
-        else assignment.value.func.attr
-    )
-    assert called_name == "normalize"
-    names = {node.id for node in ast.walk(assignment.value) if isinstance(node, ast.Name)}
-    assert "data" in names
-    assert any(isinstance(node, ast.Constant) and node.value == 0.25 for node in ast.walk(assignment.value))
+    parsed = adapter.parse_instance_source(result["source"])
+    assert parsed is not None
+    assert parsed.node_name == "normalize"
+    assert parsed.result_var.startswith("g_normalize_")
+    assert [(binding.input_name, binding.expression) for binding in parsed.bindings] == [
+        ("image", "data"), ("mean", "0.25")
+    ]
     compile(result["source"], "<inserted-cell>", "exec")
 
 
@@ -150,14 +143,9 @@ def test_add_component_can_select_one_callable_from_a_multi_export_package(proje
     )
 
     assert result["ok"] is True
-    assert result["cell_id"] == "inserted-cell"
-    expression = next(
-        node.value for node in ast.parse(result["source"]).body
-        if isinstance(node, ast.Assign)
-    )
-    assert isinstance(expression, ast.Call)
-    called_name = expression.func.id if isinstance(expression.func, ast.Name) else expression.func.attr
-    assert called_name == "encode"
+    assert result["cell_id"] == "inserted-cell-1"
+    parsed = adapter.parse_instance_source(result["source"])
+    assert parsed is not None and parsed.node_name == "encode"
     assert host.marimo.added == [("fixture", result["source"])]
 
 
@@ -184,7 +172,7 @@ def test_unknown_component_and_callable_return_defined_errors(project, host):
     assert host.marimo.added == []
 
 
-def test_connect_replaces_one_simple_positional_reference_in_real_source(host):
+def test_connect_rejects_arbitrary_python_as_graphimo_instance(host):
     host.marimo.snapshot["cells"][2]["source"] = "prediction = model(input_data)"
     host.marimo.snapshot["cells"][2]["refs"] = ["model", "input_data"]
 
@@ -196,10 +184,9 @@ def test_connect_replaces_one_simple_positional_reference_in_real_source(host):
         host.context,
     )
 
-    assert result["ok"] is True
-    assert result["changed"] is True
-    assert result["source"] == "prediction = model(processed)"
-    assert host.marimo.replaced == [("fixture", "arbitrary", result["source"])]
+    assert result["ok"] is False
+    assert result["error"]["code"] == "unsafe_edit"
+    assert host.marimo.replaced == []
 
 
 def test_connect_refuses_ambiguous_or_unsupported_source_without_editing(host):
