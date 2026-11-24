@@ -22,7 +22,13 @@ workbench = ["marimo==0.25.2", "websockets>=15"]
 graphimo-workbench = "graphimo.workbench.server:main"
 
 [tool.setuptools]
-packages = ["adapter", "graphimo", "graphimo.artifacts", "graphimo.workbench", "graphimo_core"]
+packages = [
+    "adapter",
+    "graphimo",
+    "graphimo.artifacts",
+    "graphimo.workbench",
+    "graphimo_core",
+]
 package-dir = { graphimo_core = "core/graphimo_core" }
 
 [tool.setuptools.package-data]

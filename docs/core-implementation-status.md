@@ -65,7 +65,14 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 
 ## Explicitly blocked feature
 
-`Graphimo_CODEX_IMPLEMENTATION.md` M7 (§29) labels the generic Group Blocks backend `HUMAN DECISION REQUIRED`. Group execution is therefore not implemented. This does not block the independent Core, Workbench, ArtifactStore, or addon milestones.
+`Graphimo_CODEX_IMPLEMENTATION.md` §28 labels the generic Group Blocks backend `HUMAN DECISION REQUIRED`. The needed decision is which supported marimo mechanism executes a nested workflow: `app.run(defs=...)`, a generated callable wrapper, or another minimal marimo-supported path. Group execution is not implemented, and no custom scheduler was added. This does not block independent Core or Workbench work.
+
+## MetaBlock seam — independent subset
+
+- Added generic recursive `GraphScope`, `GraphElement`, `GraphEdge`, and `MetaBlock` records. Addon-owned state remains opaque JSON and round-trips without interpreting element kinds.
+- Added `MetaDialectRegistration` and entry-point discovery from `graphimo.metablocks`. Discovery returns metadata entries without importing or invoking optional addons.
+- Core source has a conformance test forbidding direct `torch`/`torchlens` imports.
+- The stable addon host/handler API remains explicitly unfrozen in Core §31. Core does not instantiate factories, create addon elements, or claim Workbench missing-addon placeholders yet. Those dependent operations remain deferred until the contract is fixed; no handler methods were invented.
 
 ## Host integration seam
 
