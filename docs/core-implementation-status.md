@@ -27,6 +27,14 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 - Added `inspect_node_instance`; the host `MarimoPort` must expose `get_variable(session_id, name)` for live values. The adapter returns `runtime_value_unavailable` if the host does not provide it.
 - Migrated the simple example to one `scale` definition and two independently executable instance cells.
 
+### M4 — host-independent application/controller layer
+
+- Added `GraphimoApplication` with injected marimo and project/library ports.
+- Added structured view models for blocks, ports, edges, scoped palettes, navigation, run state and diagnostics.
+- Implemented project selection/refresh, node palette discovery, repeated node insertion, connect/reconnect, run, output inspection, delete, selection and layout movement/persistence.
+- The Workbench and any later host adapter can invoke the same application methods; layout state remains in `.graphimo.json` and execution state remains in marimo.
+- Current palette discovery reads project component files. Discovering node definitions that exist only inside an already-running notebook still needs a host-safe live-definition discovery seam before Workbench W1 is complete.
+
 ## Contract conflict to resolve
 
 `Graphimo_CODEX_IMPLEMENTATION.md` §5.2 says `active_expression` remains `null` until a separately specified runtime hook exists. §18's expected runtime-inspection response shows `active_expression: "normalized"`. No such hook is defined in the contract. M1's core rule is followed for now: `describe_result` and the adapter return `null`. The runtime output still carries every statically known expression in `expressions`.
