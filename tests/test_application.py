@@ -3,6 +3,7 @@ import pytest
 from graphimo.application import ApplicationError, GraphimoApplication
 from graphimo.instance import build_instance_source, parse_instance_source
 from graphimo.instance import disable_instance_source
+from graphimo.controls import parse_control_source
 
 
 def _write_nodes(root):
@@ -66,6 +67,48 @@ def test_application_inspects_native_artifact_store_without_loading_payload(proj
     assert usage.physical_stored_bytes == len(b"persisted")
     assert usage.artifacts == 1
     assert store.get(ref.id) == ref
+
+
+def test_application_adds_marimo_slider_and_connects_its_value(project, host):
+    _write_nodes(project.components)
+    source, target = build_instance_source(
+        "scale", {"x": "2.0", "factor": "1.0"}, instance_id="aabbccdd"
+    )
+    host.marimo.snapshot["cells"] = [
+        {"id": "scale-cell", "source": source, "defs": [target.result_var], "refs": [], "status": "idle"}
+    ]
+    app = _application(project, host)
+    state = app.open_project(project.notebook)
+    assert {item.title for item in state.palette.items if item.kind == "control"} >= {"Slider", "Select", "Switch"}
+
+    created = app.add_control("slider", {"label": "threshold"}, position=(120, 140))
+    helper_source = host.marimo.added[0][1]
+    control_source = host.marimo.added[1][1]
+    assert "import marimo as mo" in helper_source
+    assert host.marimo.runs == [(app.session_id, "inserted-cell-1"), (app.session_id, "inserted-cell-2")]
+    assert parse_control_source(control_source).result_var == created["result_var"]
+
+    host.marimo.snapshot["cells"].append(
+        {"id": created["cell_id"], "source": control_source, "defs": [created["result_var"]], "refs": ["mo"]}
+    )
+    app.connect(created["cell_id"], "scale-cell", input_name="factor")
+    assert host.marimo.replaced[-1][2].find(f"factor={created['result_var']}.value") >= 0
+
+
+def test_application_validates_control_values_before_sending_to_marimo(project, host):
+    _write_nodes(project.components)
+    app = _application(project, host)
+    app.open_project(project.notebook)
+    created = app.add_control("number", {"start": 0, "stop": 10, "value": 2})
+    source = host.marimo.added[-1][1]
+    host.marimo.snapshot["cells"].append({"id": created["cell_id"], "source": source})
+    sent = []
+    host.marimo.set_control_value = lambda session_id, variable, value: sent.append((session_id, variable, value))
+
+    app.set_control_value(created["cell_id"], 4)
+    assert sent == [(app.session_id, created["result_var"], 4)]
+    with pytest.raises(ApplicationError, match="above its maximum"):
+        app.set_control_value(created["cell_id"], 11)
 
 
 def test_application_adds_repeated_instances_as_separate_marimo_cells(project, host):

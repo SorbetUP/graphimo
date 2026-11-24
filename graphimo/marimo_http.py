@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -88,6 +89,7 @@ class MarimoHttpPort:
             self.close()
             raise RuntimeError("marimo did not expose an active kernel session")
         self._session_id = str(next(iter(sessions)))
+        self._server_token = self._discover_server_token()
         self._initialize_notebook()
 
     def _initialize_notebook(self) -> None:
@@ -135,6 +137,15 @@ class MarimoHttpPort:
     def _request_json(self, path: str) -> Any:
         with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def _discover_server_token(self) -> str:
+        """Read marimo's skew-protection token from its rendered notebook page."""
+        with urllib.request.urlopen(self.base_url + "/", timeout=10) as response:
+            html = response.read().decode("utf-8", errors="replace")
+        match = re.search(r'"serverToken"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', html)
+        if match is None:
+            raise RuntimeError("marimo page did not expose its server token")
+        return json.loads('"' + match.group(1) + '"')
 
     def _execute(self, code: str, *, timeout: float = 120.0) -> Any:
         payload = json.dumps({"code": code}).encode("utf-8")
@@ -240,6 +251,43 @@ print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")
             "print('GRAPHIMO_RESULT:' + json.dumps({'cell_id': str(cell_id)}))"
         )
         return result["cell_id"]
+
+    def inspect_control(self, session_id: str, variable_name: str) -> dict[str, Any]:
+        self._check_session(session_id)
+        code = (
+            "import json\nimport marimo._code_mode as cm\n"
+            "async with cm.get_context() as ctx:\n"
+            f"    control = ctx.globals[{self._literal(variable_name)}]\n"
+            "    result = {'object_id': str(control._id), 'value': control.value}\n"
+            "print('GRAPHIMO_RESULT:' + json.dumps(result, default=str, separators=(',', ':')))"
+        )
+        return self._execute(code)
+
+    def set_control_value(self, session_id: str, variable_name: str, value: Any) -> None:
+        self._check_session(session_id)
+        control = self.inspect_control(session_id, variable_name)
+        payload = json.dumps(
+            {"objectIds": [control["object_id"]], "values": [value]},
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.base_url + "/api/kernel/set_ui_element_value",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Marimo-Session-Id": self.session_id,
+                "Marimo-Server-Token": self._server_token,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                if response.status >= 400:
+                    raise RuntimeError(f"marimo rejected the control update ({response.status})")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"marimo rejected the control update: {detail or exc.code}") from exc
 
     def replace_cell_source(self, session_id: str, cell_id: str, source: str) -> dict[str, Any]:
         self._check_session(session_id)

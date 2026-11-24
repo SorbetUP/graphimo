@@ -90,3 +90,66 @@ def test_live_workbench_imports_component_definition_once(tmp_path):
         assert first["result_var"] != second["result_var"]
     finally:
         port.close()
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("marimo") is None or importlib.util.find_spec("websockets") is None,
+    reason="live Workbench conformance requires marimo and websockets",
+)
+def test_live_control_block_updates_marimo_and_reactive_node(tmp_path):
+    notebook = tmp_path / "live_control.py"
+    notebook.write_text(
+        "import marimo\napp = marimo.App()\n"
+        "@app.cell\ndef define_node():\n"
+        "    from graphimo import node\n"
+        "    @node\n    def scale(x: float, factor: float) -> float:\n"
+        "        return x * factor\n"
+        "    return (scale,)\n"
+        "if __name__ == '__main__': app.run()\n",
+        encoding="utf-8",
+    )
+    port = MarimoHttpPort(notebook)
+    try:
+        app = GraphimoApplication(port, tmp_path / "components")
+        app.open_project(notebook, port.session_id)
+        slider = app.add_control(
+            "slider",
+            {"label": "factor", "start": 0.0, "stop": 2.0, "step": 0.1, "value": 0.5, "debounce": False},
+        )
+        item = next(item for item in app.refresh_project().palette.items if item.title == "scale")
+        node = app.add_palette_item(item.id, bindings={"x": "4.0", "factor": f"{slider['result_var']}.value"})
+        app.run_target(node["cell_id"])
+        before = app.inspect_node_instance(node["cell_id"])
+        assert before["outputs"][0]["preview"] == "2.0"
+        control_state = port.inspect_control(port.session_id, slider["result_var"])
+        assert control_state["value"] == 0.5
+        assert control_state["object_id"]
+
+        app.set_control_value(slider["cell_id"], 1.5)
+        after = app.inspect_node_instance(node["cell_id"])
+        refreshed = app.refresh_project()
+        live_slider = next(block for block in refreshed.blocks if block.id == slider["cell_id"])
+        assert after["outputs"][0]["preview"] == "6.0"
+        assert live_slider.outputs[0].preview == "1.5"
+        extra_controls = {}
+        for control_type in ("range_slider", "number", "select", "checkbox", "switch", "text", "button"):
+            extra = app.add_control(control_type, {})
+            extra_state = port.inspect_control(port.session_id, extra["result_var"])
+            assert "object_id" in extra_state
+            extra_controls[control_type] = extra
+        values = {
+            "range_slider": [0.2, 0.8],
+            "number": 3.0,
+            "select": "B",
+            "checkbox": True,
+            "switch": True,
+            "text": "changed",
+            "button": 1,
+        }
+        for control_type, next_value in values.items():
+            control = extra_controls[control_type]
+            app.set_control_value(control["cell_id"], next_value)
+            updated = port.inspect_control(port.session_id, control["result_var"])
+            assert updated["value"] == next_value
+    finally:
+        port.close()

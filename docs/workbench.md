@@ -31,7 +31,7 @@ The browser code performs drawing, hit testing, pointer handling and transient s
 
 `MarimoHttpPort` owns the local marimo transport. It executes bounded inspection code in the active marimo context and returns JSON-safe view data. It never transfers arbitrary notebook values into browser JavaScript. The HTTP adapter is a transport for the same `GraphimoApplication` methods used by application-level tests.
 
-The current Workbench implements W1 node editing, disabled blocks and ArtifactStore inspection. Controls, undo/redo, Group Blocks, nested-scope navigation, addon catalogs and PyTorch editing remain outstanding. The application returns its supported action list so the renderer can keep unavailable operations hidden. Group Blocks remain blocked by the explicit human decision in the core contract.
+The current Workbench implements W1 node editing, disabled blocks, ArtifactStore inspection and W2 marimo-backed controls. Undo/redo, Group Blocks, nested-scope navigation, addon catalogs and PyTorch editing remain outstanding. The application returns its supported action list so the renderer can keep unavailable operations hidden. Group Blocks remain blocked by the explicit human decision in the core contract.
 
 ## Verification
 

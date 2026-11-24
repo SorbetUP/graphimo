@@ -56,6 +56,7 @@ class WorkbenchController:
                     payload["item_id"],
                     position=tuple(payload.get("position", (80, 80))),
                     bindings=payload.get("bindings", {}),
+                    parameters=payload.get("parameters", {}),
                 )
                 return {"result": result, "state": _jsonable(app.refresh_project())}
             if action in {"connect", "reconnect"}:
@@ -71,6 +72,9 @@ class WorkbenchController:
                 return {"result": result, "state": _jsonable(app.refresh_project())}
             if action == "set_literal":
                 result = app.set_literal(payload["cell_id"], payload["input_name"], payload["value"])
+                return {"result": result, "state": _jsonable(app.refresh_project())}
+            if action == "set_control_value":
+                result = app.set_control_value(payload["cell_id"], payload["value"])
                 return {"result": result, "state": _jsonable(app.refresh_project())}
             if action == "run_target":
                 result = app.run_target(payload["cell_id"])

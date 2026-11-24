@@ -7,6 +7,7 @@ import pytest
 
 from graphimo.metablocks import MetaDialectRegistration, discover_metablock_addons
 from graphimo.scopes import GraphEdge, GraphElement, GraphScope, MetaBlock
+from graphimo.controls import build_control_source, control_output_type, parse_control_source, validate_control_value
 
 
 def test_recursive_scope_roundtrip_preserves_opaque_addon_state() -> None:
@@ -72,3 +73,37 @@ def test_core_package_has_no_torch_or_torchlens_imports() -> None:
     for path in source_files:
         source = path.read_text(encoding="utf-8")
         assert not any(line.lstrip().startswith(forbidden) for line in source.splitlines()), path
+
+
+@pytest.mark.parametrize(
+    ("control_type", "parameters", "output_type"),
+    [
+        ("slider", {"start": 0.0, "stop": 1.0, "step": 0.01, "value": 0.25, "debounce": True}, "float"),
+        ("range_slider", {"start": 0, "stop": 10, "step": 1, "value": [2, 8]}, "tuple[float, float]"),
+        ("number", {"value": 3, "step": 1}, "int"),
+        ("select", {"options": ["small", "large"], "value": "large"}, "str"),
+        ("checkbox", {"value": True}, "bool"),
+        ("switch", {"value": False}, "bool"),
+        ("text", {"value": "hello"}, "str"),
+        ("button", {}, "event"),
+    ],
+)
+def test_control_sources_are_readable_owned_marimo_calls(control_type, parameters, output_type) -> None:
+    source, spec = build_control_source(control_type, parameters, instance_id="a81f2c40")
+    parsed = parse_control_source(source)
+    assert parsed == spec
+    assert control_output_type(spec) == output_type
+    assert f"# Graphimo control: {control_type}" in source
+    assert f"{spec.result_var}.value" == spec.output_expression
+
+
+def test_control_value_validation_preserves_select_types_and_bounds() -> None:
+    _, slider = build_control_source("slider", {"start": 0, "stop": 1, "value": 0.5})
+    assert validate_control_value(slider, 0.8) == 0.8
+    with pytest.raises(ValueError, match="above its maximum"):
+        validate_control_value(slider, 2)
+    _, select = build_control_source("select", {"options": [1, "1"], "value": 1})
+    assert validate_control_value(select, 1) == 1
+    assert validate_control_value(select, "1") == "1"
+    with pytest.raises(ValueError, match="exactly match"):
+        validate_control_value(select, True)

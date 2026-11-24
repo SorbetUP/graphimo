@@ -12,6 +12,8 @@ const ui = {
   pan: { x: 40, y: 40 },
   connectFrom: null,
   drag: null,
+  controlEditing: false,
+  controlTimers: new Map(),
 };
 
 async function intent(action, payload = {}) {
@@ -22,7 +24,10 @@ async function intent(action, payload = {}) {
   });
   const result = await response.json();
   if (!response.ok || result.error) throw new Error(result.error?.message || "Graphimo operation failed");
-  if (result.state) setState(result.state);
+  if (result.state) {
+    if (ui.controlEditing && action === "set_control_value") ui.state = result.state;
+    else setState(result.state);
+  }
   if (result.inspection) {
     ui.inspected = result.inspection;
     renderInspector();
@@ -86,14 +91,22 @@ function renderPalette() {
     button.querySelector(".palette-subtitle").textContent = item.description || item.category;
     button.addEventListener("click", async () => {
       const bindings = {};
+      let parameters;
+      if (item.kind === "control") {
+        parameters = Object.fromEntries((item.input_schema || []).map((input) => [input.name, input.default]));
+        const configured = window.prompt("Control settings (JSON)", JSON.stringify(parameters, null, 2));
+        if (configured === null) return;
+        try { parameters = JSON.parse(configured); } catch { tell("Enter valid JSON control settings.", true); return; }
+      }
       for (const input of item.input_schema || []) {
+        if (item.kind === "control") continue;
         if (!input.required) continue;
         const value = window.prompt(`Python expression for required input “${input.name}”`, "");
         if (value === null) return;
         bindings[input.name] = value;
       }
       const center = viewportCenter();
-      const result = await act("add_palette_item", { item_id: item.id, bindings, position: center });
+      const result = await act("add_palette_item", { item_id: item.id, bindings, parameters, position: center });
       if (result?.result?.cell_id) {
         ui.selected = [result.result.cell_id];
         ui.inspected = null;
@@ -134,6 +147,10 @@ function renderBlocks() {
     head.className = "block-head";
     head.innerHTML = `<span class="block-title-wrap"><i class="state-dot ${statusClass(block.state)}"></i><span class="block-title"></span></span><span class="block-actions"><button data-action="run" title="Run this block">▶</button><button data-action="inspect" title="Inspect outputs">ⓘ</button><button data-action="more" title="Block actions">⋯</button></span>`;
     head.querySelector(".block-title").textContent = block.title;
+    if (block.kind === "control") {
+      head.querySelector('[data-action="run"]').hidden = true;
+      head.querySelector('[data-action="inspect"]').hidden = true;
+    }
     head.querySelector('[data-action="run"]').addEventListener("click", (event) => {
       event.stopPropagation();
       act("run_target", { cell_id: block.id });
@@ -150,6 +167,7 @@ function renderBlocks() {
     card.append(head);
     const body = document.createElement("div");
     body.className = "block-body";
+    if (block.kind === "control") renderControlWidget(block, body);
     for (const input of block.inputs || []) {
       const row = document.createElement("div");
       row.className = "port-row";
@@ -194,7 +212,8 @@ function renderBlocks() {
   }
   applyWorldTransform();
   requestAnimationFrame(renderEdges);
-  el("run-selected").disabled = !ui.selected.length;
+  const selectedBlock = ui.state.blocks.find((item) => item.id === ui.selected.at(-1));
+  el("run-selected").disabled = !selectedBlock || selectedBlock.kind === "control";
 }
 
 function escapeHtml(value) {
@@ -368,12 +387,124 @@ function sectionLabel(text) {
 
 function showBlockMenu(id) {
   const block = ui.state?.blocks.find((item) => item.id === id);
-  const actions = ["duplicate", "delete", ...(block?.can_disable ? ["disable"] : []), ...(block?.can_enable ? ["enable"] : [])];
-  const choice = window.prompt(`Block action: ${actions.join(", ")}`, "duplicate");
+  const actions = [...(block?.kind === "control" ? [] : ["duplicate"]), "delete", ...(block?.can_disable ? ["disable"] : []), ...(block?.can_enable ? ["enable"] : [])];
+  const choice = window.prompt(`Block action: ${actions.join(", ")}`, actions[0]);
   if (choice === "duplicate") act("duplicate_elements", { ids: [id] });
   else if (choice === "delete") act("delete_elements", { ids: [id] });
   else if (choice === "disable" && block?.can_disable) act("disable_instance", { cell_id: id });
   else if (choice === "enable" && block?.can_enable) act("enable_instance", { cell_id: id });
+}
+
+function renderControlWidget(block, parent) {
+  const type = block.body.control_type;
+  const params = block.body.parameters || {};
+  const value = block.body.value;
+  const widget = document.createElement("div");
+  widget.className = "control-widget";
+  widget.addEventListener("pointerdown", (event) => event.stopPropagation());
+  const live = block.body.execution_policy === "live";
+  const submit = async (nextValue) => {
+    await act("set_control_value", { cell_id: block.id, value: nextValue });
+  };
+  const schedule = (nextValue) => {
+    ui.controlEditing = true;
+    const existing = ui.controlTimers.get(block.id);
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => {
+      const pending = ui.controlTimers.get(block.id);
+      ui.controlTimers.delete(block.id);
+      if (pending) submit(pending.value);
+    }, 100);
+    ui.controlTimers.set(block.id, { timer, value: nextValue });
+  };
+  const finish = async (nextValue) => {
+    const pending = ui.controlTimers.get(block.id);
+    if (pending) clearTimeout(pending.timer);
+    ui.controlTimers.delete(block.id);
+    ui.controlEditing = false;
+    await submit(nextValue);
+  };
+  const rangeInput = (current, label, onInput, onCommit) => {
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = params.start ?? 0;
+    input.max = params.stop ?? 1;
+    input.step = params.step ?? "any";
+    input.value = current ?? 0;
+    input.setAttribute("aria-label", label);
+    const output = document.createElement("output");
+    output.textContent = String(current ?? 0);
+    input.addEventListener("input", () => {
+      output.textContent = input.value;
+      onInput(Number(input.value));
+    });
+    input.addEventListener("change", () => onCommit(Number(input.value)));
+    widget.append(input, output);
+  };
+  if (type === "slider") {
+    rangeInput(value, params.label, (next) => live && schedule(next), finish);
+  } else if (type === "range_slider") {
+    const values = [...(Array.isArray(value) ? value : params.value)];
+    for (let index = 0; index < 2; index += 1) {
+      rangeInput(values[index], `${params.label} ${index === 0 ? "minimum" : "maximum"}`,
+        (next) => { values[index] = index === 0 ? Math.min(next, values[1]) : Math.max(next, values[0]); if (live) schedule(values); },
+        (next) => { values[index] = index === 0 ? Math.min(next, values[1]) : Math.max(next, values[0]); finish(values); });
+    }
+  } else if (type === "number") {
+    const input = document.createElement("input");
+    input.type = "number";
+    if (params.start != null) input.min = params.start;
+    if (params.stop != null) input.max = params.stop;
+    if (params.step != null) input.step = params.step;
+    input.value = value ?? "";
+    input.setAttribute("aria-label", params.label);
+    input.addEventListener("input", () => { if (live && input.value !== "") schedule(Number(input.value)); });
+    input.addEventListener("change", () => { if (input.value !== "") finish(Number(input.value)); });
+    widget.append(input);
+  } else if (type === "select") {
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", params.label);
+    for (const [index, option] of params.options.entries()) {
+      const item = document.createElement("option");
+      item.value = String(index);
+      item.textContent = String(option);
+      item.selected = typeof option === typeof value && option === value;
+      select.append(item);
+    }
+    select.addEventListener("change", () => finish(params.options[Number(select.value)]));
+    widget.append(select);
+  } else if (type === "checkbox" || type === "switch") {
+    const label = document.createElement("label");
+    if (type === "switch") label.className = "toggle-control";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(value);
+    input.addEventListener("change", () => finish(input.checked));
+    label.append(input, document.createTextNode(params.label || type));
+    widget.append(label);
+  } else if (type === "text") {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value ?? "";
+    input.placeholder = params.placeholder || "";
+    input.setAttribute("aria-label", params.label);
+    input.addEventListener("input", () => { if (live) schedule(input.value); });
+    input.addEventListener("change", () => { if (!live) finish(input.value); });
+    input.addEventListener("blur", () => finish(input.value));
+    widget.append(input);
+  } else if (type === "button") {
+    const button = document.createElement("button");
+    button.textContent = params.label || "Trigger";
+    button.addEventListener("click", () => finish((typeof value === "number" ? value : 0) + 1));
+    widget.append(button);
+  }
+  if (["slider", "range_slider", "number"].includes(type)) {
+    const policy = document.createElement("span");
+    policy.className = "control-policy";
+    policy.textContent = live ? "Live" : "On release";
+    widget.append(policy);
+  }
+  parent.append(widget);
 }
 
 function startBlockDrag(event, block) {

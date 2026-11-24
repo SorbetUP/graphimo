@@ -19,6 +19,8 @@ python -m graphimo.workbench.server
 
 The native ArtifactStore API and retention semantics are documented in
 [docs/artifacts.md](docs/artifacts.md).
+The Workbench's marimo-backed interactive controls are documented in
+[docs/controls.md](docs/controls.md).
 
 ## Existing Zeron plugin (legacy UI)
 

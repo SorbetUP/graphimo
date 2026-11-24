@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import graphimo
+from graphimo.controls import (
+    CONTROL_DEFAULTS,
+    build_control_source,
+    control_output_type,
+    parse_control_source,
+    validate_control_value,
+)
 from graphimo.instance import (
     build_instance_source,
     disable_instance_source,
@@ -169,6 +176,7 @@ class GraphimoApplication:
             "delete_elements", "duplicate_elements", "move_elements", "connect",
             "reconnect", "disconnect", "set_literal", "run_target", "open_inspector",
             "disable_instance", "enable_instance", "inspect_artifact_store",
+            "set_control_value",
         )
 
     def inspect_artifact_store(self) -> Any:
@@ -254,12 +262,67 @@ class GraphimoApplication:
         *,
         position: tuple[float, float] = (80.0, 80.0),
         bindings: dict[str, str] | None = None,
+        parameters: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         parts = item_id.split(":", 2)
+        if len(parts) == 2 and parts[0] == "control":
+            return self.add_control(parts[1], parameters or {}, position=position)
         if len(parts) != 3 or parts[0] != "node":
             raise ApplicationError("palette_item_not_found", f"Palette item '{item_id}' is unavailable")
         component_id = None if parts[1] == "session" else parts[1]
         return self.add_node(component_id, parts[2], bindings or {}, position=position)
+
+    def add_control(
+        self,
+        control_type: str,
+        parameters: dict[str, Any],
+        *,
+        position: tuple[float, float] = (80.0, 80.0),
+    ) -> dict[str, Any]:
+        if len(position) != 2 or not all(type(value) in (int, float) and math.isfinite(value) for value in position):
+            raise ApplicationError("invalid_position", "Block position must contain two finite numbers")
+        merged = dict(CONTROL_DEFAULTS.get(control_type, {}))
+        merged.update(parameters)
+        try:
+            self._ensure_marimo_ui_alias()
+            source, spec = build_control_source(control_type, merged)
+            cell_id = self.marimo.add_cell(self._require_session(), source)
+            self.marimo.run_cell(self._require_session(), cell_id)
+        except (TypeError, ValueError) as exc:
+            raise ApplicationError("invalid_control", str(exc)) from exc
+        self._save_positions({cell_id: {"x": position[0], "y": position[1]}})
+        return {"cell_id": cell_id, "instance_id": spec.instance_id, "result_var": spec.result_var}
+
+    def _ensure_marimo_ui_alias(self) -> None:
+        snapshot = self.marimo.inspect(self._require_session())
+        if any(
+            isinstance(cell, dict) and "mo" in cell.get("defs", [])
+            for cell in snapshot.get("cells", [])
+        ):
+            return
+        if any(
+            isinstance(cell, dict) and "mo" in _assigned_global_names(str(cell.get("source", "")))
+            for cell in snapshot.get("cells", [])
+        ):
+            return
+        helper_source = "# Graphimo control runtime\nimport marimo as mo"
+        helper_id = self.marimo.add_cell(self._require_session(), helper_source)
+        self.marimo.run_cell(self._require_session(), helper_id)
+
+    def set_control_value(self, cell_id: str, value: Any) -> dict[str, Any]:
+        cell = self._cell(cell_id)
+        spec = parse_control_source(cell.get("source", ""))
+        if spec is None:
+            raise ApplicationError("not_graphimo_control", "Value editing requires a Graphimo Control Block")
+        validator = getattr(self.marimo, "set_control_value", None)
+        if not callable(validator):
+            raise ApplicationError("control_updates_unavailable", "The active marimo host cannot update UI elements")
+        try:
+            normalized = validate_control_value(spec, value)
+            validator(self._require_session(), spec.result_var, normalized)
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            raise ApplicationError("control_update_failed", str(exc)) from exc
+        return {"changed": True, "cell_id": cell_id, "value": value}
 
     def connect(
         self,
@@ -277,14 +340,20 @@ class GraphimoApplication:
             raise ApplicationError("cell_not_found", "Connection endpoint no longer exists")
         source_instance = parse_instance_source(source_cell.get("source", ""))
         target_instance = parse_instance_source(target_cell.get("source", ""))
-        if source_instance is None or target_instance is None:
-            raise ApplicationError("unsafe_edit", "Connections require Graphimo-owned node instances")
-        source_spec = self._node_spec(None, source_instance.node_name)
+        source_control = parse_control_source(source_cell.get("source", ""))
+        if (source_instance is None and source_control is None) or target_instance is None:
+            raise ApplicationError("unsafe_edit", "Connections require a Graphimo output and target node instance")
         target_spec = self._node_spec(None, target_instance.node_name)
         if input_name not in {port.name for port in target_spec.inputs}:
             raise ApplicationError("input_not_found", f"Node has no input named '{input_name}'")
         try:
-            expression = output_expression(source_instance, output_index, len(source_spec.outputs))
+            if source_control is not None:
+                if output_index != 0:
+                    raise ValueError("Control Blocks have exactly one output")
+                expression = source_control.output_expression
+            else:
+                source_spec = self._node_spec(None, source_instance.node_name)
+                expression = output_expression(source_instance, output_index, len(source_spec.outputs))
             source, _ = self._reconnect(target_cell.get("source", ""), input_name, expression)
             self.marimo.replace_cell_source(self._require_session(), target_cell_id, source)
         except (ValueError, TypeError) as exc:
@@ -550,7 +619,23 @@ class GraphimoApplication:
         return updated, None
 
     def _palette(self) -> ScopePalette:
-        items = []
+        items = [
+            PaletteItem(
+                id=f"control:{control_type}",
+                title=control_type.replace("_", " ").title(),
+                category="Controls",
+                kind="control",
+                description="Reactive marimo UI value",
+                search_terms=(control_type, "control", "marimo"),
+                source_provider="graphimo",
+                icon_hint="control",
+                input_schema=tuple(
+                    {"name": key, "required": False, "default": value}
+                    for key, value in defaults.items()
+                ),
+            )
+            for control_type, defaults in CONTROL_DEFAULTS.items()
+        ]
         live_nodes = getattr(self.marimo, "list_graphimo_nodes", None)
         if callable(live_nodes) and self._session_id is not None:
             try:
@@ -665,6 +750,8 @@ class GraphimoApplication:
                 continue
             cell_id = cell["id"]
             raw_source = cell.get("source", "")
+            if raw_source == "# Graphimo control runtime\nimport marimo as mo":
+                continue
             disabled_instance = parse_disabled_instance_source(raw_source)
             instance = parse_instance_source(raw_source)
             is_disabled = disabled_instance is not None
@@ -725,6 +812,38 @@ class GraphimoApplication:
                     )
                     if spec.diagnostic:
                         diagnostics.append(DiagnosticView(spec.diagnostic, "Node output contract is inconsistent", cell_id))
+            elif (control := parse_control_source(raw_source)) is not None:
+                kind = "control"
+                title = control.parameters.get("label", control.control_type.title())
+                inspect_control = getattr(self.marimo, "inspect_control", None)
+                runtime_control = None
+                if callable(inspect_control):
+                    try:
+                        runtime_control = inspect_control(self._require_session(), control.result_var)
+                    except (KeyError, RuntimeError, ValueError):
+                        runtime_control = None
+                value = runtime_control.get("value") if isinstance(runtime_control, dict) else control.parameters.get("value")
+                preview = graphimo.preview_value(value)
+                body = {
+                    "control_type": control.control_type,
+                    "instance_id": control.instance_id,
+                    "result_var": control.result_var,
+                    "parameters": control.parameters,
+                    "value": value,
+                    "ui_element_id": runtime_control.get("object_id") if isinstance(runtime_control, dict) else None,
+                    "execution_policy": "on_release" if control.parameters.get("debounce") else "live",
+                }
+                outputs = (
+                    PortView(
+                        id=f"{cell_id}:output:0",
+                        name="value" if control.control_type != "button" else "trigger",
+                        direction="output",
+                        declared_type=control_output_type(control),
+                        runtime_type=preview["runtime_type"],
+                        expression=control.output_expression,
+                        preview=preview["preview"],
+                    ),
+                )
             position = saved.get(cell_id, {})
             blocks.append(
                 BlockView(
@@ -892,3 +1011,20 @@ def _expression_names(source: str) -> set[str]:
         except SyntaxError:
             return set()
     return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+
+def _assigned_global_names(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    names: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in statement.names)
+        elif isinstance(statement, ast.ImportFrom):
+            names.update(alias.asname or alias.name for alias in statement.names)
+        elif isinstance(statement, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names

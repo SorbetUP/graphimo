@@ -77,4 +77,12 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 
 ## Host integration seam
 
-The current repository has no host implementation of `MarimoPort.get_variable`. The adapter behavior is covered with a fake host port, and the example is executed by marimo itself. A standalone Workbench must implement this operation through its application/controller port before live output inspection is available there. No runtime scheduler was added.
+The production Zeron adapter still has no implementation of `MarimoPort.get_variable`. The standalone Workbench supports live output inspection through `describe_node_result` executed inside the marimo kernel, so Python values do not cross into the renderer. No runtime scheduler was added.
+
+### W2 — marimo-backed Control Blocks
+
+- Added source generation and strict parsing for Slider, Range Slider, Number, Select, Checkbox, Switch, Text and Button controls. Each is a Graphimo-owned marimo UI cell with stable markers and one typed `.value` output.
+- Added control items to the normal-scope application palette, control creation/config validation, value changes through the application/controller, and wiring from a control into a normal `@node` input.
+- The Workbench renders interactive control cards. Slider/range/number controls show Live or On release; the on-release policy is the default. Text is staged by default; checkboxes, switches, selects and buttons update immediately.
+- The Workbench marimo port uses the pinned marimo 0.25.2 native UI-value endpoint. It retrieves the skew-protection token from the local rendered page; the endpoint then triggers marimo's own reactive execution.
+- A live test creates and changes every baseline UI primitive and confirms a slider update recomputes a downstream node. The marimo button uses a fixed generated increment callback; its parser rejects other callback ASTs.
