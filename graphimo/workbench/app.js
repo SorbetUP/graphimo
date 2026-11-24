@@ -6,6 +6,8 @@ const ui = {
   state: null,
   selected: [],
   inspected: null,
+  artifactStats: null,
+  showArtifacts: false,
   zoom: 1,
   pan: { x: 40, y: 40 },
   connectFrom: null,
@@ -23,6 +25,11 @@ async function intent(action, payload = {}) {
   if (result.state) setState(result.state);
   if (result.inspection) {
     ui.inspected = result.inspection;
+    renderInspector();
+  }
+  if (result.artifact_stats) {
+    ui.artifactStats = result.artifact_stats;
+    ui.showArtifacts = true;
     renderInspector();
   }
   return result;
@@ -50,7 +57,7 @@ function setState(state) {
   el("breadcrumbs").textContent = (state.breadcrumbs || []).map((crumb) => crumb.title).join(" / ");
   el("canvas-empty").classList.toggle("hidden", state.blocks.length > 0);
   el("palette-search").disabled = false;
-  ["refresh", "zoom-out", "zoom-in", "fit", "run-selected"].forEach((id) => (el(id).disabled = false));
+  ["refresh", "zoom-out", "zoom-in", "fit", "run-selected", "artifact-store"].forEach((id) => (el(id).disabled = false));
   renderPalette();
   renderBlocks();
   renderInspector();
@@ -226,6 +233,7 @@ function selectBlock(id, toggle) {
   if (toggle) ui.selected = ui.selected.includes(id) ? ui.selected.filter((item) => item !== id) : [...ui.selected, id];
   else ui.selected = [id];
   ui.inspected = null;
+  ui.showArtifacts = false;
   act("select", { ids: ui.selected });
   renderBlocks();
   renderInspector();
@@ -262,6 +270,33 @@ function renderInspector() {
   el("inspector-title").textContent = selected?.title || "Inspector";
   el("status-pill").textContent = selected?.state || "Idle";
   el("status-pill").classList.toggle("error", statusClass(selected?.state) === "error");
+  if (ui.showArtifacts && ui.artifactStats) {
+    const stats = ui.artifactStats;
+    el("inspector-title").textContent = "ArtifactStore";
+    el("status-pill").textContent = `${stats.artifacts} artifacts`;
+    el("status-pill").classList.remove("error");
+    panel.className = "inspector-content";
+    panel.replaceChildren(sectionLabel("Storage usage"));
+    for (const [label, value] of [
+      ["Logical bytes", stats.logical_bytes],
+      ["Physical stored bytes", stats.physical_stored_bytes],
+      ["Deduplicated bytes", stats.deduplicated_bytes],
+      ["Unique blobs", stats.blobs],
+    ]) {
+      const row = document.createElement("div");
+      row.className = "detail-row";
+      row.innerHTML = "<strong></strong><code></code>";
+      row.querySelector("strong").textContent = label;
+      row.querySelector("code").textContent = Number(value).toLocaleString();
+      panel.append(row);
+    }
+    panel.append(sectionLabel("Persistence"));
+    const note = document.createElement("div");
+    note.className = "output-preview";
+    note.textContent = "Artifacts are stored only when a Graphimo operation explicitly persists them.";
+    panel.append(note);
+    return;
+  }
   if (!selected) {
     panel.className = "inspector-content empty-state";
     panel.textContent = "Select a block to inspect its inputs and outputs.";
@@ -441,6 +476,7 @@ el("open-form").addEventListener("submit", async (event) => {
   if (result?.state) {
     ui.selected = [];
     ui.inspected = null;
+    ui.showArtifacts = false;
     ui.pan = { x: 40, y: 40 };
     ui.zoom = 1;
     renderBlocks();
@@ -449,6 +485,14 @@ el("open-form").addEventListener("submit", async (event) => {
   }
 });
 el("refresh").addEventListener("click", () => act("refresh_project"));
+el("artifact-store").addEventListener("click", () => {
+  if (ui.showArtifacts) {
+    ui.showArtifacts = false;
+    renderInspector();
+  } else {
+    act("inspect_artifact_store");
+  }
+});
 el("palette-search").addEventListener("input", renderPalette);
 el("zoom-in").addEventListener("click", () => zoomAt(1.12, el("canvas-viewport").clientWidth / 2, el("canvas-viewport").clientHeight / 2));
 el("zoom-out").addEventListener("click", () => zoomAt(1 / 1.12, el("canvas-viewport").clientWidth / 2, el("canvas-viewport").clientHeight / 2));

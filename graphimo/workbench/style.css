@@ -94,6 +94,8 @@ h2 { margin: 0; font-size: 15px; font-weight: 650; }
 .canvas-hint { position: absolute; left: 13px; bottom: 11px; padding: 6px 8px; border-radius: 6px; background: #181b20dd; color: #8f98a6; font-size: 9px; pointer-events: none; }
 .status-pill { padding: 4px 8px; border-radius: 14px; background: #ffffff0c; color: #aeb6c3; font-size: 10px; }
 .status-pill.error { background: #ff767e1c; color: #ff949a; }
+.inspector-actions { display: flex; align-items: center; gap: 7px; }
+.inspector-actions button { padding: 4px 7px; font-size: 10px; }
 .inspector-content { display: grid; align-content: start; gap: 14px; }
 .detail-section { display: grid; gap: 7px; }
 .detail-label { color: #858f9e; font-size: 9px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }

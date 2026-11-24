@@ -21,6 +21,8 @@ def test_standalone_workbench_serves_renderer_and_reports_no_project_state():
             styles = response.read().decode("utf-8")
         assert "Graphimo Workbench" in page
         assert "add_palette_item" in script
+        assert "inspect_artifact_store" in script
+        assert 'id="artifact-store"' in page
         assert "canvas-viewport" in page
         assert "grid-template-columns" in styles
     finally:

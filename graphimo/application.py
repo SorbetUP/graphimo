@@ -168,8 +168,12 @@ class GraphimoApplication:
             "open_project", "close_project", "refresh_project", "add_palette_item",
             "delete_elements", "duplicate_elements", "move_elements", "connect",
             "reconnect", "disconnect", "set_literal", "run_target", "open_inspector",
-            "disable_instance", "enable_instance",
+            "disable_instance", "enable_instance", "inspect_artifact_store",
         )
+
+    def inspect_artifact_store(self) -> Any:
+        """Return native store usage without exposing CAS paths to the renderer."""
+        return graphimo.artifacts.stats()
 
     def close_project(self) -> None:
         self._session_id = None

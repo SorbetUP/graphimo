@@ -53,6 +53,21 @@ def test_application_opens_project_and_projects_typed_view_state(project, host):
     assert "disable_instance" in state.available_actions
 
 
+def test_application_inspects_native_artifact_store_without_loading_payload(project, host):
+    from graphimo import artifacts
+
+    store = artifacts.configure_default_store(project.root / "artifacts")
+    ref = artifacts.put_bytes(b"persisted", kind="dataset")
+    app = _application(project, host)
+
+    usage = app.inspect_artifact_store()
+
+    assert usage.logical_bytes == len(b"persisted")
+    assert usage.physical_stored_bytes == len(b"persisted")
+    assert usage.artifacts == 1
+    assert store.get(ref.id) == ref
+
+
 def test_application_adds_repeated_instances_as_separate_marimo_cells(project, host):
     _write_nodes(project.components)
     app = _application(project, host)

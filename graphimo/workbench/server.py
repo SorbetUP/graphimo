@@ -82,6 +82,8 @@ class WorkbenchController:
                 return {"result": _jsonable(result), "inspection": inspection, "state": _jsonable(state)}
             if action == "inspect":
                 return {"inspection": app.open_inspector(payload["cell_id"])}
+            if action == "inspect_artifact_store":
+                return {"artifact_stats": _jsonable(app.inspect_artifact_store())}
             if action == "delete_elements":
                 result = app.delete_elements(payload.get("ids", []))
                 return {"result": result, "state": _jsonable(app.refresh_project())}

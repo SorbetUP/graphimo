@@ -58,6 +58,7 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 - Directory manifests deduplicate each file and preserve empty directories. Symlinks and unsafe relative paths are rejected. No chunking dependency or content-defined chunking was added.
 - Storage statistics count the sum of file references across all manifests as logical bytes, the unique blob files as physical bytes, and their non-negative difference as deduplication savings.
 - The original `graphimo_core.LocalArtifactStore` remains available for the experimental vertical-slice prototype; product callers use `graphimo.artifacts`.
+- The application/controller exposes an explicit ArtifactStore inspection action, and the Workbench inspector displays usage statistics without loading payloads or showing CAS paths.
 
 ## Contract conflict to resolve
 
