@@ -17,6 +17,9 @@ For source checkouts without installation, use:
 python -m graphimo.workbench.server
 ```
 
+The native ArtifactStore API and retention semantics are documented in
+[docs/artifacts.md](docs/artifacts.md).
+
 ## Existing Zeron plugin (legacy UI)
 
 The following sections describe the existing Zeron plugin, which remains available as a reference renderer while the standalone Core Workbench is built. The new Workbench is not yet wired into Zeron.

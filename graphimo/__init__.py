@@ -2,6 +2,7 @@
 
 from .node import inspect_node, is_node, node
 from .preview import describe_result, preview_value
+from . import artifacts
 
 __all__ = [
     "node",
@@ -9,4 +10,5 @@ __all__ = [
     "inspect_node",
     "preview_value",
     "describe_result",
+    "artifacts",
 ]

@@ -50,6 +50,15 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 - Connections into disabled outputs are projected as stale edges, and their dependent blocks are marked stale. No downstream source is removed or silently rewired.
 - The contract still labels the detailed downstream UX decision `HUMAN DECISION REQUIRED`; the implementation provides only the normative stale/unavailable behavior until that decision is made.
 
+### Native ArtifactStore — Core §25–27
+
+- Added `graphimo.artifacts` as an explicit persistence API for files, directories, and byte payloads. Importing it does not initialize a store; the first operation uses `GRAPHIMO_ARTIFACTS_DIR` or `~/.graphimo/artifacts`. Hosts can set an explicit location with `configure_default_store`.
+- Added immutable public `ArtifactRef(id, kind)`, `put`, `put_bytes`, `materialize`, `stats`, `pin`, `unpin` and mark/sweep `gc` operations. Persistence remains opt-in; Python outputs are not stored automatically.
+- Reused the prototype's file-level CAS and lineage/pin model, replacing large-file `read_bytes()` hashing and verification with 1 MiB streaming. Materialization attempts APFS/Linux reflinks and streams the fallback copy.
+- Directory manifests deduplicate each file and preserve empty directories. Symlinks and unsafe relative paths are rejected. No chunking dependency or content-defined chunking was added.
+- Storage statistics count the sum of file references across all manifests as logical bytes, the unique blob files as physical bytes, and their non-negative difference as deduplication savings.
+- The original `graphimo_core.LocalArtifactStore` remains available for the experimental vertical-slice prototype; product callers use `graphimo.artifacts`.
+
 ## Contract conflict to resolve
 
 `Graphimo_CODEX_IMPLEMENTATION.md` §5.2 says `active_expression` remains `null` until a separately specified runtime hook exists. §18's expected runtime-inspection response shows `active_expression: "normalized"`. No such hook is defined in the contract. M1's core rule is followed for now: `describe_result` and the adapter return `null`. The runtime output still carries every statically known expression in `expressions`.

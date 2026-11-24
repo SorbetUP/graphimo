@@ -69,6 +69,9 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "adapter/__init__.py" in names
     assert "adapter/graphimo_adapter.py" in names
     assert "graphimo/__init__.py" in names
+    assert "graphimo/artifacts/__init__.py" in names
+    assert "graphimo/artifacts/local.py" in names
+    assert "graphimo/artifacts/types.py" in names
     assert "graphimo/node.py" in names
     assert "graphimo/instance.py" in names
     assert "graphimo/marimo_http.py" in names
@@ -89,7 +92,11 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     env = os.environ.copy()
     env["PYTHONPATH"] = str(install_target)
     import_result = subprocess.run(
-        [sys.executable, "-c", "from graphimo_core import LocalArtifactStore, WorkspaceGraph; print('import-ok')"],
+        [
+            sys.executable,
+            "-c",
+            "import graphimo; from graphimo import artifacts; from graphimo_core import LocalArtifactStore, WorkspaceGraph; print('import-ok')",
+        ],
         cwd=tmp_path, env=env, capture_output=True, check=False, text=True, timeout=30,
     )
     assert import_result.returncode == 0, import_result.stderr
