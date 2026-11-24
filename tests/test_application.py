@@ -44,7 +44,8 @@ def test_application_opens_project_and_projects_typed_view_state(project, host):
     assert block.outputs[0].runtime_type == "float"
     assert block.outputs[0].preview == "6.0"
     assert block.outputs[0].expression == "result"
-    assert block.inputs[0].connected is True
+    assert block.inputs[0].connected is False
+    assert block.inputs[0].expression == "2.0"
     assert "connect" in state.available_actions
     assert "disable_instance" not in state.available_actions
 

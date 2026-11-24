@@ -16,10 +16,17 @@ notebook = ["marimo==0.25.2"]
 dev = ["pytest>=8,<9", "ruff>=0.8"]
 prototype = ["numpy", "torch"]
 inspection = ["torchlens"]
+workbench = ["marimo==0.25.2", "websockets>=15"]
+
+[project.scripts]
+graphimo-workbench = "graphimo.workbench.server:main"
 
 [tool.setuptools]
-packages = ["adapter", "graphimo", "graphimo_core"]
+packages = ["adapter", "graphimo", "graphimo.workbench", "graphimo_core"]
 package-dir = { graphimo_core = "core/graphimo_core" }
+
+[tool.setuptools.package-data]
+"graphimo.workbench" = ["*.html", "*.js", "*.css"]
 
 [tool.marimo.runtime]
 cache_cells = true

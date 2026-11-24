@@ -71,6 +71,10 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "graphimo/__init__.py" in names
     assert "graphimo/node.py" in names
     assert "graphimo/instance.py" in names
+    assert "graphimo/marimo_http.py" in names
+    assert "graphimo/workbench/server.py" in names
+    assert "graphimo/workbench/index.html" in names
+    assert "graphimo/workbench/app.js" in names
     assert "graphimo_core/artifacts.py" in names
     assert "graphimo_core/vertical_demo.py" in names
     for excluded in ("plugin/", "components/", "examples/", "tests/", "core/"):

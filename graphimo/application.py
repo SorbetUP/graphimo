@@ -23,6 +23,7 @@ from graphimo.instance import (
     parse_instance_source,
     reconnect_instance_source,
 )
+from graphimo.node import InputPort, NodeSpec, OutputPort
 
 
 class MarimoApplicationPort(Protocol):
@@ -94,6 +95,7 @@ class PaletteItem:
     icon_hint: str | None = None
     enabled: bool = True
     disabled_reason: str | None = None
+    input_schema: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -200,7 +202,7 @@ class GraphimoApplication:
 
     def add_node(
         self,
-        component_id: str,
+        component_id: str | None,
         node_name: str,
         bindings: dict[str, str],
         *,
@@ -208,13 +210,26 @@ class GraphimoApplication:
     ) -> dict[str, Any]:
         if len(position) != 2 or not all(type(value) in (int, float) and math.isfinite(value) for value in position):
             raise ApplicationError("invalid_position", "Block position must contain two finite numbers")
-        function = self._resolve_node(component_id, node_name)
-        spec = graphimo.inspect_node(function)
+        spec = self._node_spec(component_id, node_name)
         if spec.diagnostic:
             raise ApplicationError(spec.diagnostic, f"Node '{node_name}' has an invalid output contract")
         for port in spec.inputs:
             if port.required and port.name not in bindings:
                 raise ApplicationError("missing_required_binding", f"Required input '{port.name}' has no connection or value")
+        if component_id is not None:
+            importer = getattr(self.marimo, "ensure_node_available", None)
+            if callable(importer):
+                component_path = self._safe_component_path(component_id)
+                relative_module = (
+                    component_path.parent.relative_to(self.components_root)
+                    if component_path.name == "__init__.py"
+                    else component_path.relative_to(self.components_root).with_suffix("")
+                )
+                module_name = ".".join(("components", *relative_module.parts))
+                try:
+                    importer(self._require_session(), module_name, node_name, str(self.components_root.parent))
+                except (KeyError, ValueError, RuntimeError) as exc:
+                    raise ApplicationError("node_import_failed", str(exc)) from exc
         try:
             source, instance = build_instance_source(node_name, bindings, node_spec=spec)
             cell_id = self.marimo.add_cell(self._require_session(), source)
@@ -233,7 +248,8 @@ class GraphimoApplication:
         parts = item_id.split(":", 2)
         if len(parts) != 3 or parts[0] != "node":
             raise ApplicationError("palette_item_not_found", f"Palette item '{item_id}' is unavailable")
-        return self.add_node(parts[1], parts[2], bindings or {}, position=position)
+        component_id = None if parts[1] == "session" else parts[1]
+        return self.add_node(component_id, parts[2], bindings or {}, position=position)
 
     def connect(
         self,
@@ -253,10 +269,8 @@ class GraphimoApplication:
         target_instance = parse_instance_source(target_cell.get("source", ""))
         if source_instance is None or target_instance is None:
             raise ApplicationError("unsafe_edit", "Connections require Graphimo-owned node instances")
-        source_fn = self._resolve_node_by_name(source_instance.node_name)
-        target_fn = self._resolve_node_by_name(target_instance.node_name)
-        source_spec = graphimo.inspect_node(source_fn)
-        target_spec = graphimo.inspect_node(target_fn)
+        source_spec = self._node_spec(None, source_instance.node_name)
+        target_spec = self._node_spec(None, target_instance.node_name)
         if input_name not in {port.name for port in target_spec.inputs}:
             raise ApplicationError("input_not_found", f"Node has no input named '{input_name}'")
         try:
@@ -295,9 +309,22 @@ class GraphimoApplication:
     def set_literal(self, cell_id: str, input_name: str, value: Any) -> dict[str, Any]:
         cell = self._cell(cell_id)
         expression = _literal_expression(value)
+        instance = parse_instance_source(cell.get("source", ""))
+        if instance is None:
+            raise ApplicationError("unsafe_edit", "Literal editing requires a Graphimo-owned node instance")
         try:
-            source = reconnect_instance_source(cell["source"], input_name=input_name, expression=expression)
+            if any(binding.input_name == input_name for binding in instance.bindings):
+                source = reconnect_instance_source(cell["source"], input_name=input_name, expression=expression)
+            else:
+                spec = self._node_spec(None, instance.node_name)
+                if input_name not in {port.name for port in spec.inputs}:
+                    raise ApplicationError("input_not_found", f"Node has no input named '{input_name}'")
+                bindings = {binding.input_name: binding.expression for binding in instance.bindings}
+                bindings[input_name] = expression
+                source, _ = build_instance_source(instance.node_name, bindings, instance_id=instance.instance_id)
             self.marimo.replace_cell_source(self._require_session(), cell_id, source)
+        except ApplicationError:
+            raise
         except ValueError as exc:
             raise ApplicationError("invalid_request", str(exc)) from exc
         return {"changed": True, "source": source}
@@ -310,8 +337,16 @@ class GraphimoApplication:
         instance = parse_instance_source(cell.get("source", ""))
         if instance is None:
             raise ApplicationError("not_graphimo_instance", "Cell is not a Graphimo-owned node instance")
-        function = self._resolve_node_by_name(instance.node_name)
-        spec = graphimo.inspect_node(function)
+        spec = self._node_spec(None, instance.node_name)
+        remote_describer = getattr(self.marimo, "describe_node_result", None)
+        if callable(remote_describer):
+            try:
+                outputs = remote_describer(self._require_session(), instance.result_var, instance.node_name)
+            except (KeyError, LookupError) as exc:
+                raise ApplicationError("runtime_value_unavailable", f"Result '{instance.result_var}' is not available") from exc
+            except ValueError as exc:
+                raise ApplicationError(str(exc), f"Could not describe node result: {exc}") from exc
+            return {"instance_id": instance.instance_id, "node": instance.node_name, "outputs": outputs}
         getter = getattr(self.marimo, "get_variable", None)
         if not callable(getter):
             raise ApplicationError("runtime_value_unavailable", "The marimo host does not expose live variable inspection")
@@ -395,7 +430,36 @@ class GraphimoApplication:
             raise ApplicationError("node_not_found", f"Callable '{node_name}' is not an exported @node")
         return function
 
+    def _node_spec(self, component_id: str | None, node_name: str) -> NodeSpec:
+        inspector = getattr(self.marimo, "inspect_node", None)
+        if callable(inspector):
+            try:
+                spec = inspector(self._require_session(), node_name)
+                if isinstance(spec, NodeSpec):
+                    return spec
+                if isinstance(spec, dict):
+                    inputs = tuple(InputPort(**item) for item in spec.get("inputs", []))
+                    outputs = tuple(
+                        OutputPort(
+                            index=item["index"],
+                            declared_type=item.get("declared_type"),
+                            expressions=tuple(item.get("expressions", ())),
+                        )
+                        for item in spec.get("outputs", [])
+                    )
+                    return NodeSpec(node_name, inputs, outputs, spec.get("diagnostic"))
+            except (KeyError, LookupError, RuntimeError):
+                pass
+        if component_id is not None:
+            return graphimo.inspect_node(self._resolve_node(component_id, node_name))
+        return graphimo.inspect_node(self._resolve_node_by_name(node_name))
+
     def _resolve_node_by_name(self, node_name: str) -> Any:
+        inspector = getattr(self.marimo, "resolve_node", None)
+        if callable(inspector):
+            function = inspector(self._require_session(), node_name)
+            if graphimo.is_node(function):
+                return function
         matches = []
         if self.components_root.is_dir():
             paths = set(self.components_root.rglob("*.py")) | set(self.components_root.rglob("__init__.py"))
@@ -457,6 +521,27 @@ class GraphimoApplication:
 
     def _palette(self) -> ScopePalette:
         items = []
+        live_nodes = getattr(self.marimo, "list_graphimo_nodes", None)
+        if callable(live_nodes) and self._session_id is not None:
+            try:
+                for node_info in live_nodes(self._session_id):
+                    name = node_info.get("name")
+                    if isinstance(name, str):
+                        items.append(
+                            PaletteItem(
+                                id=f"node:session:{name}",
+                                title=name,
+                                category="Nodes",
+                                kind="node",
+                                description=node_info.get("description"),
+                                search_terms=(name,),
+                                source_provider="notebook",
+                                icon_hint="function",
+                                input_schema=tuple(node_info.get("inputs", ())),
+                            )
+                        )
+            except (KeyError, LookupError, ValueError):
+                pass
         if self.components_root.is_dir():
             paths = set(self.components_root.rglob("*.py")) | set(self.components_root.rglob("__init__.py"))
             for path in sorted(paths):
@@ -469,6 +554,8 @@ class GraphimoApplication:
                 for name, value in vars(module).items():
                     if not isinstance(name, str) or name.startswith("_") or not graphimo.is_node(value):
                         continue
+                    if any(item.title == name and item.source_provider == "notebook" for item in items):
+                        continue
                     items.append(
                         PaletteItem(
                             id=f"node:{path.relative_to(self.components_root).as_posix()}:{name}",
@@ -479,6 +566,16 @@ class GraphimoApplication:
                             search_terms=(name,),
                             source_provider="project",
                             icon_hint="function",
+                            input_schema=tuple(
+                                {
+                                    "name": port.name,
+                                    "required": port.required,
+                                    "annotation": port.annotation,
+                                    "has_default": port.has_default,
+                                    "default": port.default if _is_json_safe_value(port.default) else None,
+                                }
+                                for port in graphimo.inspect_node(value).inputs
+                            ),
                         )
                     )
         return ScopePalette("root", "python", tuple(items))
@@ -506,21 +603,33 @@ class GraphimoApplication:
             outputs: tuple[PortView, ...] = ()
             kind = "python_cell"
             title = cell.get("name") or f"Cell {index + 1}"
-            body: dict[str, Any] = {"source": cell.get("source", "")}
+            cell_errors = cell.get("errors", []) if isinstance(cell.get("errors", []), list) else []
+            body: dict[str, Any] = {"source": cell.get("source", ""), "errors": cell_errors}
+            for error in cell_errors:
+                if isinstance(error, dict):
+                    diagnostics.append(
+                        DiagnosticView(
+                            "python_runtime_exception",
+                            f"{error.get('kind', 'Error')}: {error.get('message', 'Cell execution failed')}",
+                            cell_id,
+                        )
+                    )
             if instance is not None:
                 kind = "node_instance"
                 title = instance.node_name
                 body = {"instance_id": instance.instance_id, "result_var": instance.result_var}
-                found = self._try_resolve_node(instance.node_name)
-                if found is not None:
-                    spec = graphimo.inspect_node(found)
+                spec = self._try_node_spec(instance.node_name)
+                if spec is not None:
                     inputs = tuple(
                         PortView(
                             id=f"{cell_id}:input:{port.name}",
                             name=port.name,
                             direction="input",
                             declared_type=port.annotation,
-                            connected=any(binding.input_name == port.name for binding in instance.bindings),
+                            expression=next((binding.expression for binding in instance.bindings if binding.input_name == port.name), None),
+                            connected=_is_connection_expression(
+                                next((binding.expression for binding in instance.bindings if binding.input_name == port.name), None)
+                            ),
                         )
                         for port in spec.inputs
                     )
@@ -565,6 +674,13 @@ class GraphimoApplication:
             )
         project = snapshot.get("notebook", {})
         project_id = str(project.get("path") or self._project_path or "marimo") if isinstance(project, dict) else self._project_path or "marimo"
+        block_states = [block.state.lower() for block in blocks]
+        if any("run" in state or "queued" in state for state in block_states):
+            run_state = ProjectRunState("running")
+        elif any("error" in state or "exception" in state for state in block_states):
+            run_state = ProjectRunState("error")
+        else:
+            run_state = ProjectRunState("idle")
         return GraphimoViewState(
             project_id=project_id,
             active_scope_id="root",
@@ -573,7 +689,7 @@ class GraphimoApplication:
             edges=edges,
             palette=self._palette(),
             selection=tuple(item for item in self._selection if any(block.id == item for block in blocks)),
-            run_state=ProjectRunState("idle"),
+            run_state=run_state,
             diagnostics=tuple(diagnostics),
             available_actions=self.available_actions,
         )
@@ -581,6 +697,12 @@ class GraphimoApplication:
     def _try_resolve_node(self, node_name: str) -> Any | None:
         try:
             return self._resolve_node_by_name(node_name)
+        except ApplicationError:
+            return None
+
+    def _try_node_spec(self, node_name: str) -> NodeSpec | None:
+        try:
+            return self._node_spec(None, node_name)
         except ApplicationError:
             return None
 
@@ -653,3 +775,34 @@ def _literal_expression(value: Any, depth: int = 0) -> str:
     except SyntaxError as exc:
         raise ApplicationError("invalid_literal", "Value cannot be represented as a Python literal") from exc
     return expression
+
+
+def _is_json_safe_value(value: Any, depth: int = 0) -> bool:
+    if depth > 5:
+        return False
+    if value is None or type(value) in (bool, int, str):
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) in (list, tuple):
+        return len(value) <= 100 and all(_is_json_safe_value(item, depth + 1) for item in value)
+    if type(value) is dict:
+        return len(value) <= 100 and all(
+            _is_json_safe_value(key, depth + 1) and _is_json_safe_value(item, depth + 1)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _is_connection_expression(expression: str | None) -> bool:
+    if not expression:
+        return False
+    try:
+        parsed = ast.parse(expression, mode="eval").body
+    except SyntaxError:
+        return False
+    if isinstance(parsed, (ast.Constant, ast.List, ast.Tuple, ast.Dict, ast.Set)):
+        return False
+    if isinstance(parsed, ast.Name) and parsed.id in {"True", "False", "None"}:
+        return False
+    return True

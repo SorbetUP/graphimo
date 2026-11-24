@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Graphimo Workbench</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">G</span><strong>Graphimo</strong><span class="workbench-label">Workbench</span></div>
+      <form id="open-form" class="open-form">
+        <label for="project-path">Marimo project</label>
+        <input id="project-path" type="text" placeholder="/path/to/notebook.py" autocomplete="off" />
+        <button type="submit" class="primary">Open project</button>
+      </form>
+      <div class="top-actions"><span id="project-name" class="project-name">No project open</span><button id="refresh" title="Refresh project" disabled>↻</button></div>
+    </header>
+    <main class="shell">
+      <aside class="panel library">
+        <div class="panel-heading"><div><p class="eyebrow">CURRENT SCOPE</p><h2>Components</h2></div><span id="scope-badge" class="scope-badge">Python</span></div>
+        <input id="palette-search" class="search" type="search" placeholder="Search nodes" disabled />
+        <div id="palette-list" class="palette-list empty-state">Open a marimo project to discover its <code>@node</code> definitions.</div>
+      </aside>
+      <section class="canvas-region">
+        <div class="canvas-toolbar"><div class="breadcrumbs" id="breadcrumbs">Project / Root</div><div class="canvas-tools"><button id="zoom-out" title="Zoom out" disabled>−</button><span id="zoom-label">100%</span><button id="zoom-in" title="Zoom in" disabled>+</button><button id="fit" disabled>Fit</button><button id="run-selected" class="primary" disabled>Run selected</button></div></div>
+        <div id="canvas-viewport" class="canvas-viewport">
+          <div id="canvas-world" class="canvas-world">
+            <svg id="edges" class="edges" aria-hidden="true"></svg>
+            <div id="blocks" class="blocks"></div>
+          </div>
+          <div id="canvas-empty" class="canvas-empty"><div class="empty-icon">⌘</div><h2>Open a marimo project</h2><p>Graphimo will show its nodes, dependencies and live results here.</p></div>
+          <div class="canvas-hint">Drag blocks to arrange · Drag an output port to an input port to connect</div>
+        </div>
+      </section>
+      <aside class="panel inspector">
+        <div class="panel-heading"><div><p class="eyebrow">DETAILS</p><h2 id="inspector-title">Inspector</h2></div><span id="status-pill" class="status-pill">Idle</span></div>
+        <div id="inspector-content" class="inspector-content empty-state">Select a block to inspect its inputs and outputs.</div>
+      </aside>
+    </main>
+    <footer class="feedback"><div id="feedback-message">Workbench ready. Graphimo semantics are handled by the application layer.</div><button id="dismiss-feedback" aria-label="Dismiss message">×</button></footer>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

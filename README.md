@@ -1,5 +1,26 @@
 # Graphimo
 
+## Standalone development Workbench
+
+Install the Workbench dependencies and run it locally:
+
+```bash
+python -m pip install -e '.[workbench]'
+graphimo-workbench
+```
+
+Open the printed `127.0.0.1` address, enter a marimo notebook path ending in `.py`, then discover `@node` functions, add instances, connect ports, run blocks and inspect bounded outputs. The Workbench starts a local marimo server for the selected notebook and uses the same `GraphimoApplication` controller as other renderers. Marimo remains responsible for cell execution and dependencies; `.graphimo.json` stores only canvas positions.
+
+For source checkouts without installation, use:
+
+```bash
+python -m graphimo.workbench.server
+```
+
+## Existing Zeron plugin (legacy UI)
+
+The following sections describe the existing Zeron plugin, which remains available as a reference renderer while the standalone Core Workbench is built. The new Workbench is not yet wired into Zeron.
+
 Graphimo is a small Zeron v3 plugin that projects a live marimo notebook onto a
 canvas. marimo owns the notebook, dependency graph, execution, cell outputs,
 and cache. Graphimo reads that state, offers conservative source edits, and

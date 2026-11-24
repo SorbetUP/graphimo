@@ -33,7 +33,15 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 - Added structured view models for blocks, ports, edges, scoped palettes, navigation, run state and diagnostics.
 - Implemented project selection/refresh, node palette discovery, repeated node insertion, connect/reconnect, run, output inspection, delete, selection and layout movement/persistence.
 - The Workbench and any later host adapter can invoke the same application methods; layout state remains in `.graphimo.json` and execution state remains in marimo.
-- Current palette discovery reads project component files. Discovering node definitions that exist only inside an already-running notebook still needs a host-safe live-definition discovery seam before Workbench W1 is complete.
+- The initial application seam exposed project-file nodes; M5 added host-safe discovery of `@node` definitions already defined in the active marimo notebook.
+
+### M5 — standalone Workbench W1
+
+- Added a standalone browser Workbench with contextual node palette, canvas, inspector, navigation, status and feedback regions.
+- Added a local marimo HTTP/code-mode port. The Workbench can open an existing or new `.py` project, discover live notebook `@node` definitions, import library definitions once, add multiple instances, connect/reconnect, run, inspect bounded outputs, edit literals, disconnect, duplicate, delete, pan, zoom and persist layout.
+- Browser code renders application view models and sends application intents; it contains no Python parsing, source generation, marimo calls or project state.
+- Live marimo tests cover notebook-defined and library-defined node insertion, execution, reconnection and output previews.
+- W2 Controls and later W3–W5 functionality remain for their ordered milestones.
 
 ## Contract conflict to resolve
 
