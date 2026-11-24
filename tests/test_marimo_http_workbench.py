@@ -41,6 +41,18 @@ def test_live_workbench_add_connect_run_and_inspect(tmp_path):
         second_result = app.inspect_node_instance(second["cell_id"])
         assert first_result["outputs"][0]["preview"] == "4.0"
         assert second_result["outputs"][0]["preview"] == "12.0"
+        before_disable = {cell["id"]: cell["source"] for cell in port.inspect(port.session_id)["cells"]}
+        app.disable_instance(first["cell_id"])
+        disabled_state = app.refresh_project()
+        disabled_block = next(block for block in disabled_state.blocks if block.id == first["cell_id"])
+        stale_block = next(block for block in disabled_state.blocks if block.id == second["cell_id"])
+        assert disabled_block.state == "disabled"
+        assert stale_block.state == "stale"
+        assert any(edge.source_block_id == first["cell_id"] and edge.target_block_id == second["cell_id"] and edge.state == "stale" for edge in disabled_state.edges)
+        app.enable_instance(first["cell_id"])
+        after_enable = {cell["id"]: cell["source"] for cell in port.inspect(port.session_id)["cells"]}
+        assert after_enable[first["cell_id"]] == before_disable[first["cell_id"]]
+        assert after_enable[second["cell_id"]] == before_disable[second["cell_id"]]
         refreshed = app.refresh_project()
         assert {block.id for block in refreshed.blocks} >= {first["cell_id"], second["cell_id"]}
     finally:

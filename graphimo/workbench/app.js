@@ -107,6 +107,8 @@ function statusClass(status) {
   const value = String(status || "").toLowerCase();
   if (value.includes("error") || value.includes("exception")) return "error";
   if (value.includes("run") || value.includes("queued")) return "running";
+  if (value.includes("stale")) return "stale";
+  if (value.includes("disabled")) return "disabled";
   if (value.includes("success") || value.includes("idle")) return "success";
   return "";
 }
@@ -210,7 +212,7 @@ function renderEdges() {
     const bend = Math.max(40, Math.abs(x2 - x1) * .45);
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
-    path.setAttribute("class", "edge-path");
+    path.setAttribute("class", `edge-path ${edge.state === "stale" ? "stale" : ""}`);
     svg.append(path);
   }
 }
@@ -330,9 +332,13 @@ function sectionLabel(text) {
 }
 
 function showBlockMenu(id) {
-  const choice = window.prompt("Block action: duplicate or delete", "duplicate");
+  const block = ui.state?.blocks.find((item) => item.id === id);
+  const actions = ["duplicate", "delete", ...(block?.can_disable ? ["disable"] : []), ...(block?.can_enable ? ["enable"] : [])];
+  const choice = window.prompt(`Block action: ${actions.join(", ")}`, "duplicate");
   if (choice === "duplicate") act("duplicate_elements", { ids: [id] });
   else if (choice === "delete") act("delete_elements", { ids: [id] });
+  else if (choice === "disable" && block?.can_disable) act("disable_instance", { cell_id: id });
+  else if (choice === "enable" && block?.can_enable) act("enable_instance", { cell_id: id });
 }
 
 function startBlockDrag(event, block) {

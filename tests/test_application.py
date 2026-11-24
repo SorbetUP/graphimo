@@ -1,5 +1,8 @@
+import pytest
+
 from graphimo.application import ApplicationError, GraphimoApplication
 from graphimo.instance import build_instance_source, parse_instance_source
+from graphimo.instance import disable_instance_source
 
 
 def _write_nodes(root):
@@ -47,7 +50,7 @@ def test_application_opens_project_and_projects_typed_view_state(project, host):
     assert block.inputs[0].connected is False
     assert block.inputs[0].expression == "2.0"
     assert "connect" in state.available_actions
-    assert "disable_instance" not in state.available_actions
+    assert "disable_instance" in state.available_actions
 
 
 def test_application_adds_repeated_instances_as_separate_marimo_cells(project, host):
@@ -106,6 +109,36 @@ def test_application_edits_literals_duplicates_and_disconnects(project, host):
     assert copied[0]["result_var"] != instance.result_var
     disconnected = app.disconnect("node-a", input_name="x")
     assert "x=" not in disconnected["source"]
+
+
+def test_disabling_instance_keeps_it_visible_and_marks_downstream_stale(project, host):
+    _write_nodes(project.components)
+    upstream, source_instance = build_instance_source(
+        "scale", {"x": "data", "factor": "2.0"}, instance_id="44444444"
+    )
+    downstream, target_instance = build_instance_source(
+        "scale", {"x": source_instance.result_var, "factor": "3.0"}, instance_id="55555555"
+    )
+    host.marimo.snapshot["cells"] = [
+        {"id": "source", "source": disable_instance_source(upstream), "defs": [], "refs": [], "status": "idle"},
+        {"id": "target", "source": downstream, "defs": [target_instance.result_var], "refs": [], "status": "success"},
+    ]
+    host.marimo.snapshot["edges"] = []
+    app = _application(project, host)
+    app.open_project(project.notebook)
+
+    state = app.refresh_project()
+
+    source_block = next(block for block in state.blocks if block.id == "source")
+    target_block = next(block for block in state.blocks if block.id == "target")
+    assert source_block.state == "disabled"
+    assert source_block.can_enable and not source_block.can_disable
+    assert source_block.outputs[0].preview == "unavailable · disabled"
+    assert target_block.state == "stale"
+    assert any(edge.source_block_id == "source" and edge.target_block_id == "target" and edge.state == "stale" for edge in state.edges)
+
+    with pytest.raises(ApplicationError, match="Enable"):
+        app.run_target("source")
 
 
 def test_application_reports_unavailable_or_invalid_commands(project, host):

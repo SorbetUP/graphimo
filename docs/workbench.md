@@ -21,6 +21,7 @@ The Workbench and notebook server use the same Python interpreter. That interpre
 - Drag a card to persist its canvas position. Drag from an output anchor to an input anchor to connect or reconnect. The Workbench redraws from refreshed marimo state after the application accepts the edit.
 - Run a selected block through marimo. The inspector shows bounded output previews, declared/runtime types, return expressions, and runtime cell errors.
 - Edit supported literals through the inspector; disconnect a bound input; duplicate or delete an instance from its card menu.
+- Disable or re-enable an instance from its card menu. The disabled card and output ports remain visible; dependent connections are dashed and dependent blocks are marked stale.
 - Pan and zoom the canvas with pointer drag, trackpad/wheel and the zoom controls. `F` fits the visible graph.
 
 The browser code performs drawing, hit testing, pointer handling and transient selection only. `GraphimoApplication` validates commands, mutates canonical instance source, reads values through the marimo port, and writes layout coordinates to `.graphimo.json`. Marimo remains the execution and dependency engine.

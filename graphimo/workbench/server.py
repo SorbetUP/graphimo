@@ -85,6 +85,12 @@ class WorkbenchController:
             if action == "delete_elements":
                 result = app.delete_elements(payload.get("ids", []))
                 return {"result": result, "state": _jsonable(app.refresh_project())}
+            if action == "disable_instance":
+                result = app.disable_instance(payload["cell_id"])
+                return {"result": result, "state": _jsonable(app.refresh_project())}
+            if action == "enable_instance":
+                result = app.enable_instance(payload["cell_id"])
+                return {"result": result, "state": _jsonable(app.refresh_project())}
             if action == "duplicate_elements":
                 result = app.duplicate_elements(payload.get("ids", []))
                 return {"result": result, "state": _jsonable(app.refresh_project())}

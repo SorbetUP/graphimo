@@ -19,7 +19,10 @@ from typing import Any, Protocol
 import graphimo
 from graphimo.instance import (
     build_instance_source,
+    disable_instance_source,
+    enable_instance_source,
     output_expression,
+    parse_disabled_instance_source,
     parse_instance_source,
     reconnect_instance_source,
 )
@@ -61,6 +64,7 @@ class EdgeView:
     source_block_id: str
     target_block_id: str
     variable: str
+    state: str = "valid"
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,7 @@ class BlockView:
     can_open: bool
     can_edit_source: bool
     can_disable: bool
+    can_enable: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +168,7 @@ class GraphimoApplication:
             "open_project", "close_project", "refresh_project", "add_palette_item",
             "delete_elements", "duplicate_elements", "move_elements", "connect",
             "reconnect", "disconnect", "set_literal", "run_target", "open_inspector",
+            "disable_instance", "enable_instance",
         )
 
     def close_project(self) -> None:
@@ -342,7 +348,7 @@ class GraphimoApplication:
         if callable(remote_describer):
             try:
                 outputs = remote_describer(self._require_session(), instance.result_var, instance.node_name)
-            except (KeyError, LookupError) as exc:
+            except (KeyError, LookupError, RuntimeError) as exc:
                 raise ApplicationError("runtime_value_unavailable", f"Result '{instance.result_var}' is not available") from exc
             except ValueError as exc:
                 raise ApplicationError(str(exc), f"Could not describe node result: {exc}") from exc
@@ -360,8 +366,28 @@ class GraphimoApplication:
         return {"instance_id": instance.instance_id, "node": instance.node_name, "outputs": outputs}
 
     def run_target(self, cell_id: str) -> Any:
-        self._cell(cell_id)
+        cell = self._cell(cell_id)
+        if parse_disabled_instance_source(cell.get("source", "")) is not None:
+            raise ApplicationError("instance_disabled", "Enable this Graphimo instance before running it")
         return self.marimo.run_cell(self._require_session(), cell_id)
+
+    def disable_instance(self, cell_id: str) -> dict[str, Any]:
+        cell = self._cell(cell_id)
+        try:
+            source = disable_instance_source(cell.get("source", ""))
+            self.marimo.replace_cell_source(self._require_session(), cell_id, source)
+        except ValueError as exc:
+            raise ApplicationError("not_graphimo_instance", str(exc)) from exc
+        return {"changed": True, "source": source}
+
+    def enable_instance(self, cell_id: str) -> dict[str, Any]:
+        cell = self._cell(cell_id)
+        try:
+            source = enable_instance_source(cell.get("source", ""))
+            self.marimo.replace_cell_source(self._require_session(), cell_id, source)
+        except ValueError as exc:
+            raise ApplicationError("not_disabled_instance", str(exc)) from exc
+        return {"changed": True, "source": source}
 
     def delete_elements(self, ids: tuple[str, ...] | list[str]) -> list[Any]:
         results = []
@@ -582,6 +608,31 @@ class GraphimoApplication:
 
     def _view_state(self, snapshot: dict[str, Any]) -> GraphimoViewState:
         saved = self._read_positions()
+        disabled = {
+            instance.result_var: cell["id"]
+            for cell in snapshot.get("cells", [])
+            if isinstance(cell, dict)
+            and isinstance(cell.get("id"), str)
+            and (instance := parse_disabled_instance_source(cell.get("source", ""))) is not None
+        }
+        stale_targets: dict[str, set[str]] = {}
+        for cell in snapshot.get("cells", []):
+            if not isinstance(cell, dict) or not isinstance(cell.get("id"), str):
+                continue
+            source_text = cell.get("source", "")
+            instance = parse_instance_source(source_text)
+            if instance is not None:
+                refs = {
+                    name
+                    for binding in instance.bindings
+                    for name in _expression_names(binding.expression)
+                    if name in disabled
+                }
+            else:
+                refs = set(cell.get("refs", [])) & set(disabled)
+                refs.update(name for name in disabled if isinstance(source_text, str) and name in _expression_names(source_text))
+            if refs:
+                stale_targets[cell["id"]] = refs
         edges = tuple(
             EdgeView(
                 id=f"{edge.get('source_cell_id')}:{edge.get('target_cell_id')}:{edge.get('variable')}",
@@ -591,6 +642,17 @@ class GraphimoApplication:
             )
             for edge in snapshot.get("edges", [])
             if isinstance(edge, dict)
+        ) + tuple(
+            EdgeView(
+                id=f"{source_id}:{target_id}:{variable}:stale",
+                source_block_id=source_id,
+                target_block_id=target_id,
+                variable=variable,
+                state="stale",
+            )
+            for target_id, variables in stale_targets.items()
+            for variable in variables
+            for source_id in (disabled[variable],)
         )
         blocks = []
         diagnostics = []
@@ -598,7 +660,12 @@ class GraphimoApplication:
             if not isinstance(cell, dict) or not isinstance(cell.get("id"), str):
                 continue
             cell_id = cell["id"]
-            instance = parse_instance_source(cell.get("source", ""))
+            raw_source = cell.get("source", "")
+            disabled_instance = parse_disabled_instance_source(raw_source)
+            instance = parse_instance_source(raw_source)
+            is_disabled = disabled_instance is not None
+            if is_disabled:
+                instance = disabled_instance
             inputs: tuple[PortView, ...] = ()
             outputs: tuple[PortView, ...] = ()
             kind = "python_cell"
@@ -633,10 +700,13 @@ class GraphimoApplication:
                         )
                         for port in spec.inputs
                     )
-                    try:
-                        runtime_outputs = self.inspect_node_instance(cell_id)["outputs"]
-                    except ApplicationError:
+                    if is_disabled:
                         runtime_outputs = []
+                    else:
+                        try:
+                            runtime_outputs = self.inspect_node_instance(cell_id)["outputs"]
+                        except ApplicationError:
+                            runtime_outputs = []
                     outputs = tuple(
                         PortView(
                             id=f"{cell_id}:output:{port.index}",
@@ -645,7 +715,7 @@ class GraphimoApplication:
                             declared_type=port.declared_type,
                             runtime_type=(runtime_outputs[port.index]["runtime_type"] if port.index < len(runtime_outputs) else None),
                             expression=(port.expressions[0] if len(port.expressions) == 1 else None),
-                            preview=(runtime_outputs[port.index]["preview"] if port.index < len(runtime_outputs) else None),
+                            preview=(runtime_outputs[port.index]["preview"] if port.index < len(runtime_outputs) else "unavailable · disabled" if is_disabled else None),
                         )
                         for port in spec.outputs
                     )
@@ -662,14 +732,15 @@ class GraphimoApplication:
                     y=float(position.get("y", 80 + (index // 4) * 190)),
                     width=float(position.get("width", 240)),
                     height=float(position.get("height", 150)),
-                    state=str(cell.get("status", "unknown")),
+                    state="disabled" if is_disabled else "stale" if cell_id in stale_targets else str(cell.get("status", "unknown")),
                     inputs=inputs,
                     outputs=outputs,
                     body=body,
                     badges=(),
                     can_open=True,
                     can_edit_source=True,
-                    can_disable=instance is not None,
+                    can_disable=instance is not None and not is_disabled,
+                    can_enable=is_disabled,
                 )
             )
         project = snapshot.get("notebook", {})
@@ -806,3 +877,14 @@ def _is_connection_expression(expression: str | None) -> bool:
     if isinstance(parsed, ast.Name) and parsed.id in {"True", "False", "None"}:
         return False
     return True
+
+
+def _expression_names(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return set()
+    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}

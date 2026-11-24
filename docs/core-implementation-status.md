@@ -43,6 +43,13 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 - Live marimo tests cover notebook-defined and library-defined node insertion, execution, reconnection and output previews.
 - W2 Controls and later W3–W5 functionality remain for their ordered milestones.
 
+### M6 — disabled instances
+
+- Added canonical comment-wrapped disabled bodies and strict enable/disable parsing. Enabling restores the generated active source exactly.
+- Disabled cards remain visible with declared outputs marked unavailable; the Workbench exposes enable/disable on the card menu.
+- Connections into disabled outputs are projected as stale edges, and their dependent blocks are marked stale. No downstream source is removed or silently rewired.
+- The contract still labels the detailed downstream UX decision `HUMAN DECISION REQUIRED`; the implementation provides only the normative stale/unavailable behavior until that decision is made.
+
 ## Contract conflict to resolve
 
 `Graphimo_CODEX_IMPLEMENTATION.md` §5.2 says `active_expression` remains `null` until a separately specified runtime hook exists. §18's expected runtime-inspection response shows `active_expression: "normalized"`. No such hook is defined in the contract. M1's core rule is followed for now: `describe_result` and the adapter return `null`. The runtime output still carries every statically known expression in `expressions`.
