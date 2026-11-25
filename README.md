@@ -101,6 +101,12 @@ context API to read current cell/graph data and ask the active session to edit
 or run cells. Graphimo does not implement a graph store, executor, scheduler,
 or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
 
+The host-independent MetaBlock entry-point and application contracts live in
+[`graphimo/application.py`](graphimo/application.py) and
+[`docs/metablock-host-api.md`](docs/metablock-host-api.md). Core preserves
+addon-owned sidecar state when an addon is missing; the PyTorch addon has not
+yet been migrated behind this API.
+
 ## Development
 
 For the Zeron plugin API reference and examples from Graphimo and Orchestrator Builder, see [the plugin development guide](docs/zeron-plugin-api.md).

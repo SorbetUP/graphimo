@@ -1,11 +1,12 @@
 """Check that the Python distribution contains the adapter and core spike."""
+
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 import zipfile
-import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,7 @@ PROJECT_ENTRIES = (
     "README.md",
     "LICENSE",
     "adapter",
+    "graphimo",
     "core",
     "plugin",
     "components",
@@ -67,6 +69,8 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
 
     assert "adapter/__init__.py" in names
     assert "adapter/graphimo_adapter.py" in names
+    assert "graphimo/__init__.py" in names
+    assert "graphimo/metablocks.py" in names
     assert "graphimo_core/artifacts.py" in names
     assert "graphimo_core/vertical_demo.py" in names
     for excluded in ("plugin/", "components/", "examples/", "tests/", "core/"):
@@ -74,15 +78,39 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
 
     install_target = tmp_path / "install"
     install_result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--no-deps", "--target", str(install_target), str(wheels[0])],
-        cwd=tmp_path, capture_output=True, check=False, text=True, timeout=90,
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--target",
+            str(install_target),
+            str(wheels[0]),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=90,
     )
-    assert install_result.returncode == 0, f"wheel install failed:\n{install_result.stdout}\n{install_result.stderr}"
+    assert install_result.returncode == 0, (
+        f"wheel install failed:\n{install_result.stdout}\n{install_result.stderr}"
+    )
     env = os.environ.copy()
     env["PYTHONPATH"] = str(install_target)
     import_result = subprocess.run(
-        [sys.executable, "-c", "from graphimo_core import LocalArtifactStore, WorkspaceGraph; print('import-ok')"],
-        cwd=tmp_path, env=env, capture_output=True, check=False, text=True, timeout=30,
+        [
+            sys.executable,
+            "-c",
+            "import sys; from graphimo import GraphimoApplication, MetaBlockAddonManager; from graphimo_core import LocalArtifactStore, WorkspaceGraph; assert 'torch' not in sys.modules and 'torchlens' not in sys.modules; print('import-ok')",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
     )
     assert import_result.returncode == 0, import_result.stderr
     assert import_result.stdout.strip() == "import-ok"

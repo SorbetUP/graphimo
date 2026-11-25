@@ -18,7 +18,7 @@ prototype = ["numpy", "torch"]
 inspection = ["torchlens"]
 
 [tool.setuptools]
-packages = ["adapter", "graphimo_core"]
+packages = ["adapter", "graphimo", "graphimo_core"]
 package-dir = { graphimo_core = "core/graphimo_core" }
 
 [tool.marimo.runtime]
