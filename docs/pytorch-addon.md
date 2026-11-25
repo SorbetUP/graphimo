@@ -50,7 +50,30 @@ proven mismatch. Shape inference does not run PyTorch or call model forward.
 The V1 registry and shape rules cover the full catalog in addon contract
 §§12–16. Tests include MLP/attention paths, batched matmul, broadcasting,
 tensor transforms, RoPE checks, recursive Groups and diagnostic behavior.
-The compiler and visual Workbench projection are still later milestones.
+The visual Workbench projection remains a later milestone.
+
+## P3 delivered: model compiler
+
+`compile_model(state, external_values={})` validates the semantic state,
+resolves external values, infers shapes, then emits readable Python and
+compiles that addon-generated source into a fresh-model factory. Invalid
+graphs raise `GraphimoPytorchError` with structured diagnostic codes before
+source execution. The generated source includes the MetaBlock ID, semantic
+revision and materialization key; the key changes when resolved external
+values or the addon compiler version changes.
+
+The result exposes `generated_source`, `factory`, `bindings`, `shape_result`,
+`diagnostics` and a `PyTorchModelDefinition`. The definition's
+`instantiate(device=..., dtype=...)` returns an independent real `nn.Module`
+and registers process-local runtime metadata through weak references. Call
+`release_runtime_model(model)` to explicitly release its addon registration.
+
+Generated model code includes inspectable wrappers for functional operations
+and uses `nn.ModuleList` for repeated Groups. Binding sites retain logical
+element IDs, module paths and repetition indexes. The generated source is
+trusted addon code; this path does not accept arbitrary Python source.
+The definition remains inside the addon until the Core/addon parent-port
+contract conflict described above is resolved.
 
 ## Open normative conflict
 

@@ -106,3 +106,12 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Implemented V1 shape rules for all catalog kinds: embedding/linear/norm, activation and dropout, tensor transforms, split/merge heads, concat, broadcast add/multiply, batched matmul, RoPE, causal masks and cross entropy. Static concrete incompatibilities are errors; unresolved symbolic compatibility remains unresolved rather than falsely blocking compilation.
 - The P2 suite covers the exact registry catalog, MLP propagation, embedding/attention matmul shapes, dimension failures, invalid ports/cycles/parameters, broadcast and loss shapes, reshape/transpose/flatten/unflatten, RoPE parity, recursive Groups and unresolved external bindings.
 - P2 does not create a compiler, PyTorch module instances, Workbench editing surface, or addon host handler methods; those belong to later milestones and the Core handler contract remains unfrozen.
+
+### PyTorch addon P3 — compiler and generated source
+
+- Added deterministic topology-based compilation from validated semantic state to readable Python source. Source and factory share one graph revision and one materialization key derived from resolved external parameter values and addon compiler version.
+- Generated source defines the model and reusable Group classes, constructs standard `nn` layers, routes method graphs through `forward`/`loss`/`predict`, emits repeated Groups as `nn.ModuleList`, includes the required provenance header, and never embeds scheduler, UI, or TorchLens code.
+- Added inspectable wrappers for reshape, transpose, split/merge heads, add/multiply, scale, matmul, RoPE, causal masking, concatenate, unflatten and cross entropy. The compiler executes only addon-generated trusted source in a private namespace.
+- Added stable `RuntimeBindingMap` records for visual module sites and repeated Group paths. `PyTorchModelDefinition.instantiate()` creates a fresh real module, applies optional device/dtype, attaches private runtime metadata, and registers the model weakly; metadata does not enter `state_dict()`.
+- P3 tests execute an MLP, an attention/mask graph and a repeated Group; they verify readable generated source, external-parameter materialization changes, stable binding paths, invalid-graph refusal and weak registry cleanup.
+- P3 compiles to the addon-local definition handle. It does not expose that handle as a parent Graphimo port because Core §32 and addon §7 still conflict on that boundary.

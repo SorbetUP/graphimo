@@ -21,7 +21,11 @@ class ValidationReport:
         return not any(item.severity == "error" for item in self.diagnostics)
 
 
-_MODULE_NAME = re.compile(r"^[A-Za-z_]\w*$")
+_RESERVED_MODULE_NAMES = {
+    "training", "_parameters", "_buffers", "_non_persistent_buffers_set", "_backward_hooks",
+    "_forward_hooks", "_forward_pre_hooks", "_state_dict_hooks", "_load_state_dict_pre_hooks",
+    "_load_state_dict_post_hooks", "_modules", "forward", "register_buffer", "add_module",
+}
 
 
 def validate_model_graph(
@@ -37,11 +41,12 @@ def validate_model_graph(
         if group.id in groups_by_id:
             diagnostics.append(Diagnostic("pytorch_duplicate_group_id", f"Duplicate Group id {group.id!r}"))
         groups_by_id[group.id] = group
-        if not _MODULE_NAME.fullmatch(group.name) or keyword.iskeyword(group.name):
+        generated_name = _sanitize_name(group.name)
+        if not generated_name:
             diagnostics.append(Diagnostic("pytorch_module_name_invalid", f"Invalid generated Group class name {group.name!r}"))
-        if group.name in group_names:
-            diagnostics.append(Diagnostic("pytorch_module_path_conflict", f"Generated Group class name {group.name!r} is used by {group_names[group.name]!r} and {group.id!r}"))
-        group_names[group.name] = group.id
+        if generated_name in group_names:
+            diagnostics.append(Diagnostic("pytorch_module_path_conflict", f"Generated Group class name {generated_name!r} is used by {group_names[generated_name]!r} and {group.id!r}"))
+        group_names[generated_name] = group.id
 
     method_names = [method.name for method in state.entrypoints]
     if len(method_names) != len(set(method_names)):
@@ -114,7 +119,8 @@ def _validate_scope(
         if kind is None:
             result.append(Diagnostic("pytorch_element_unknown", f"Unknown element kind {element.kind!r}", element_id=element.id))
             continue
-        if not _MODULE_NAME.fullmatch(element.name) or keyword.iskeyword(element.name):
+        generated_name = _sanitize_name(element.name)
+        if not generated_name or generated_name in _RESERVED_MODULE_NAMES:
             result.append(Diagnostic("pytorch_module_name_invalid", f"Invalid generated Python module name {element.name!r}", element_id=element.id))
         params = dict(element.params)
         for parameter, binding in element.parameter_bindings.items():
@@ -135,22 +141,24 @@ def _validate_scope(
     names: dict[str, str] = {}
     for element in elements:
         if element.kind in ELEMENT_REGISTRY:
-            previous = names.get(element.name)
+            generated_name = _sanitize_name(element.name)
+            previous = names.get(generated_name)
             if previous is not None:
-                result.append(Diagnostic("pytorch_module_path_conflict", f"Generated module name {element.name!r} is used by {previous!r} and {element.id!r}", element_id=element.id))
-            names[element.name] = element.id
+                result.append(Diagnostic("pytorch_module_path_conflict", f"Generated module name {generated_name!r} is used by {previous!r} and {element.id!r}", element_id=element.id))
+            names[generated_name] = element.id
 
     for instance in instances:
         if instance.group_id not in groups:
             result.append(Diagnostic("pytorch_group_reference_invalid", f"Group instance {instance.id!r} references missing Group {instance.group_id!r}", element_id=instance.id))
         if type(instance.repeat) is not int or instance.repeat < 1:
             result.append(Diagnostic("pytorch_group_repeat_invalid", "Group repetition must be an integer >= 1", element_id=instance.id))
-        if not _MODULE_NAME.fullmatch(instance.name) or keyword.iskeyword(instance.name):
+        generated_name = _sanitize_name(instance.name)
+        if not generated_name or generated_name in _RESERVED_MODULE_NAMES:
             result.append(Diagnostic("pytorch_module_name_invalid", f"Invalid generated Python module name {instance.name!r}", element_id=instance.id))
-        previous = names.get(instance.name)
+        previous = names.get(generated_name)
         if previous is not None:
-            result.append(Diagnostic("pytorch_module_path_conflict", f"Generated module name {instance.name!r} is used by {previous!r} and {instance.id!r}", element_id=instance.id))
-        names[instance.name] = instance.id
+            result.append(Diagnostic("pytorch_module_path_conflict", f"Generated module name {generated_name!r} is used by {previous!r} and {instance.id!r}", element_id=instance.id))
+        names[generated_name] = instance.id
 
     input_ids = {item.id for item in inputs}
     output_ids = {item.id for item in outputs}
@@ -246,6 +254,17 @@ def _validate_scope(
 def _matches_parameter_type(value: object, declared: str) -> bool:
     return {"int": lambda: type(value) is int, "float": lambda: type(value) in (int, float),
             "bool": lambda: type(value) is bool, "str": lambda: isinstance(value, str)}[declared]()
+
+
+def _sanitize_name(value: str) -> str:
+    cleaned = re.sub(r"\W+", "_", value).strip("_")
+    if not cleaned:
+        return ""
+    if cleaned[0].isdigit():
+        cleaned = "module_" + cleaned
+    if keyword.iskeyword(cleaned):
+        cleaned += "_"
+    return cleaned
 
 
 def _port_kind(element_id: str, port: str, direction: str, elements: Mapping[str, object],

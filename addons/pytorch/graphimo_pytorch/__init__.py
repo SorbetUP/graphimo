@@ -6,6 +6,9 @@ implemented and used.
 """
 
 from .diagnostics import Diagnostic, GraphimoPytorchError
+from .bindings import GroupRuntimeIndex, RuntimeBindingMap, RuntimeSite
+from .compiler import CompileResult, compile_model
+from .definition import PyTorchModelDefinition
 from .revision import graph_revision
 from .registry import ELEMENT_REGISTRY, ElementKind, ParameterSpec, PortSpec, element_kinds, get_element_kind
 from .schema import (
@@ -25,12 +28,23 @@ from .schema import (
 )
 from .serialization import canonical_state_json, load_state, save_state, state_from_dict, state_to_dict
 from .version import __version__
+from .runtime import RuntimeModelInfo, RuntimeRegistry, release_runtime_model, runtime_registry
 from .shapes import Dim, ShapeInferenceResult, TensorSpec, infer_model_shapes, tensor_spec
 from .validation import ValidationReport, validate_model_graph
 
 __all__ = [
     "Diagnostic",
     "GraphimoPytorchError",
+    "CompileResult",
+    "compile_model",
+    "PyTorchModelDefinition",
+    "RuntimeSite",
+    "GroupRuntimeIndex",
+    "RuntimeBindingMap",
+    "RuntimeModelInfo",
+    "RuntimeRegistry",
+    "runtime_registry",
+    "release_runtime_model",
     "PyTorchMetaBlockState",
     "ElementRecord",
     "Endpoint",
