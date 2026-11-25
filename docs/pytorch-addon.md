@@ -23,10 +23,10 @@ PyTorch integration in U3, and Zeron rendering in U6.
 - Unknown element kinds keep their JSON schema fields and remain serializable.
   The later registry/compiler milestone will diagnose them as unmaterializable.
 - Schema and registration imports do not import `torch` or `torchlens`.
-- When a semantic JSON file is present but the plugin is absent, the Core Workbench displays its generic opaque placeholder and leaves the file byte-for-byte unchanged.
+- When a semantic JSON file is present but the plugin is absent, Graphimo displays its generic opaque placeholder and leaves the file byte-for-byte unchanged.
 
-P1 established the independent schema and entry point. The registration
-factory becomes an active host dialect during U2; P1 does not put PyTorch
+P1 established the independent schema and entry point. U3 connects its
+registration factory to the generic handler contract; P1 does not put PyTorch
 semantics in Graphimo Core.
 
 ## P2 delivered: element registry and shape validation
@@ -76,7 +76,7 @@ Generated model code includes inspectable wrappers for functional operations
 and uses `nn.ModuleList` for repeated Groups. Binding sites retain logical
 element IDs, module paths and repetition indexes. The generated source is
 trusted addon code; this path does not accept arbitrary Python source.
-U3 will use this definition to build the canonical marimo materialization cell
+U3 uses this definition to build the canonical marimo materialization cell
 and expose it as an opaque parent value.
 
 ## P5 independent runtime inspection subset
@@ -216,8 +216,9 @@ instantiated in routine tests.
 
 `project_workbench(...)` exposes the repeated Group card, repetition count,
 method tabs, Group-internal element/edge shapes and optionally generated
-source for the Llama template. U3 adapts this to the generic host projection;
-U6 integrates it into the existing Zeron renderer and product workflow.
+source for the Llama template. U3 adapts it to the generic JSON-safe host
+projection; U6 integrates it into the existing Zeron renderer and product
+workflow.
 
 ## P9 packaging and runtime hardening
 
@@ -237,7 +238,33 @@ histogram/sample detail; the subscription manager rate-limits before enqueuing.
 The P5 and P9 tests cover rate enforcement, queue saturation and invalid
 unbounded capacities.
 
+## U3 host integration
+
+`graphimo_pytorch.registration.registration.factory(context)` now returns the
+active `PyTorchMetaBlockDialect`. `GraphimoApplication` can create a state from
+the `mlp`, `self_attention`, `llama_decoder_layer`, or `llama_causal_lm`
+templates, request the contextual palette and JSON-safe projection, apply
+supported immutable parameter edits, and request a canonical materialization
+specification.
+
+`app.materialize_metablock(metablock_id, bindings)` asks the addon to build the
+specification and inserts or updates one managed marimo cell. Core adds the
+`# Graphimo metablock:` and `# Graphimo instance:` markers; the addon generates
+the import/call to `graphimo_pytorch.materialize_definition` and maps external
+parameter IDs to readable Python expressions. The helper loads the JSON state
+and returns a `PyTorchModelDefinition` when the cell runs in marimo. Downstream
+Python nodes can receive that definition as an ordinary value and call
+`definition.instantiate(...)` themselves.
+
+Addon action names are `subscribe`, `unsubscribe`, `torchlens.inspect`,
+`checkpoint.save`, `checkpoint.load`, `runtime.list`, `runtime.release`, and
+`migration.report`. `drain_events` transfers the addon's bounded runtime queue
+to per-MetaBlock cursors; checkpoint and TorchLens artifacts use the host
+context's ArtifactStore. Runtime models loaded by `checkpoint.load` are held by
+the dialect until `runtime.release` or project close, because the generic
+service response carries JSON metadata rather than a live Python object.
+
 The Graphimo Core and PyTorch package boundary remains import-safe when the
-addon is absent. Visible addon controls and project restoration through the
-application/service are U2/U3/U6 work; no renderer-only semantic route is
+addon is absent. The existing Zeron UI still needs the U6 adapter migration to
+show and edit these projections; no renderer-only semantic route is
 introduced.

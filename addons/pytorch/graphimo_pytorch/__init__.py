@@ -8,7 +8,14 @@ implemented and used.
 from .diagnostics import Diagnostic, GraphimoPytorchError
 from .bindings import GroupRuntimeIndex, RuntimeBindingMap, RuntimeSite
 from .compiler import CompileResult, compile_model
-from .checkpoints import ShapeMismatch, WeightMigrationReport, load_checkpoint, migrate_state_dict, save_checkpoint
+from .handler import PyTorchMetaBlockDialect, materialize_definition
+from .checkpoints import (
+    ShapeMismatch,
+    WeightMigrationReport,
+    load_checkpoint,
+    migrate_state_dict,
+    save_checkpoint,
+)
 from .inspection import (
     TorchLensIntervention,
     TorchLensOperation,
@@ -20,7 +27,14 @@ from .inspection import (
 from .definition import PyTorchModelDefinition
 from .editing import demote_parameter, promote_parameter, set_element_parameter
 from .revision import graph_revision
-from .registry import ELEMENT_REGISTRY, ElementKind, ParameterSpec, PortSpec, element_kinds, get_element_kind
+from .registry import (
+    ELEMENT_REGISTRY,
+    ElementKind,
+    ParameterSpec,
+    PortSpec,
+    element_kinds,
+    get_element_kind,
+)
 from .schema import (
     EdgeRecord,
     ElementRecord,
@@ -36,7 +50,13 @@ from .schema import (
     PyTorchMetaBlockState,
     TensorContract,
 )
-from .serialization import canonical_state_json, load_state, save_state, state_from_dict, state_to_dict
+from .serialization import (
+    canonical_state_json,
+    load_state,
+    save_state,
+    state_from_dict,
+    state_to_dict,
+)
 from .version import __version__
 from .runtime import RuntimeModelInfo, RuntimeRegistry, release_runtime_model, runtime_registry
 from .telemetry import (
@@ -71,6 +91,8 @@ __all__ = [
     "GraphimoPytorchError",
     "CompileResult",
     "compile_model",
+    "PyTorchMetaBlockDialect",
+    "materialize_definition",
     "save_checkpoint",
     "load_checkpoint",
     "migrate_state_dict",

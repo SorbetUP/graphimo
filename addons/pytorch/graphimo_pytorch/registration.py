@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from graphimo.metablocks import MetaBlockContext, MetaDialectRegistration
 
-from graphimo.metablocks import ExperimentalGraphimoAPI, MetaDialectRegistration
-
+from .handler import PyTorchMetaBlockDialect
 from .version import __version__
 
 
-@dataclass(frozen=True, slots=True)
-class _ExperimentalDialect:
-    """Private P1 marker object; the stable host handler API is not frozen."""
-
-    api: ExperimentalGraphimoAPI
-
-
-def create_pytorch_dialect(api: ExperimentalGraphimoAPI) -> object:
-    return _ExperimentalDialect(api)
+def create_pytorch_dialect(api: MetaBlockContext) -> PyTorchMetaBlockDialect:
+    return PyTorchMetaBlockDialect(api)
 
 
 registration = MetaDialectRegistration(

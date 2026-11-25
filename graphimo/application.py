@@ -182,7 +182,8 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             "disable_instance", "enable_instance", "inspect_artifact_store",
             "set_control_value",
             "create_metablock", "metablock_catalog", "project_metablock", "apply_metablock",
-            "build_metablock_materialization", "invoke_metablock", "drain_metablock_events",
+            "build_metablock_materialization", "materialize_metablock", "invoke_metablock",
+            "drain_metablock_events",
         )
 
     def inspect_artifact_store(self) -> Any:

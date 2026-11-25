@@ -177,10 +177,15 @@ def _requirements(full: bool) -> list[str]:
 
 def _format_changed_python() -> None:
     files = _changed_python_files()
-    # The legacy application controller predates the current formatter config.
-    # Keep its small delegation wiring readable without reformatting thousands
-    # of unrelated lines; new controller behavior lives in formatted mixins.
-    files = [path for path in files if path != ROOT / "graphimo/application.py"]
+    # These legacy modules predate the current formatter config. Keep the small
+    # integration edits readable without reformatting unrelated code; new host
+    # behavior lives in formatted mixins/handlers.
+    format_exemptions = {
+        ROOT / "graphimo/application.py",
+        ADDON / "graphimo_pytorch/checkpoints.py",
+        ADDON / "graphimo_pytorch/registry.py",
+    }
+    files = [path for path in files if path not in format_exemptions]
     if not files:
         print("No changed Python files to format-check.")
         return

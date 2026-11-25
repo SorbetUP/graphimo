@@ -28,6 +28,14 @@ Workbench remains a conformance/debug harness.
 - Added fake-addon lifecycle tests for catalog/projection, state edits and persistence, materialization-cell insertion/update, invoke/events, artifact access and path validation. Core source stays free of PyTorch imports.
 - Verification: **21 MetaBlock/scopes regression tests passed**; `scripts/check --full` passes with **186 passed, 1 opt-in network bootstrap skipped**, both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass. The legacy `application.py` controller remains outside formatter checks to avoid a broad unrelated reformat; its new behavior is delegated to formatted `metablock_application.py`.
 
+### U3 — PyTorch MetaBlock host integration
+
+- Replaced the P1 registration marker with a real `pytorch.model` `MetaBlockDialect`. The handler adapts the existing templates, palette registry, Workbench projection, schema validation/compiler, and immutable parameter promotion/demotion/value edits to the generic Core contract. Unsupported graph intents return explicit addon diagnostics.
+- `GraphimoApplication.materialize_metablock()` now inserts or updates a host-owned marimo cell with Core-owned MetaBlock/instance markers. The generated source calls `graphimo_pytorch.materialize_definition(...)`; that helper loads the sidecar and creates the opaque `PyTorchModelDefinition` inside the executing Python environment. Existing unowned cells are never overwritten.
+- Generic addon actions now expose runtime listing/release, activation/gradient subscriptions, explicit TorchLens inspection and trace export, checkpoint save/load, and migration reports. Runtime events are drained through bounded per-MetaBlock cursor buffers. Checkpoints and TorchLens trace artifacts use the `ArtifactStore` from the host context; action-loaded runtime models are released explicitly or when the project handler is closed.
+- Fixed the PyTorch registry's single-parameter `dropout` descriptor so catalog projection and parameter validation receive a tuple consistently.
+- Verification: **30 focused MetaBlock/PyTorch host and checkpoint tests passed**; `scripts/check --full` passes with **191 passed, 1 opt-in network bootstrap skipped**, both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass. TorchLens emits its upstream `ScalarEscapeWarning` during the live inspection test; the capture and assertions pass.
+
 ## Completed milestones
 
 ### M1 — transparent node API

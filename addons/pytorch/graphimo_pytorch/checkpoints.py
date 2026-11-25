@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from graphimo.artifacts import ArtifactRef, materialize, put
+from graphimo.artifacts import ArtifactRef, LocalArtifactStore, materialize, put
 
 from .definition import PyTorchModelDefinition
 from .diagnostics import GraphimoPytorchError
@@ -38,6 +38,7 @@ def save_checkpoint(
     optimizer: object | None = None,
     scheduler: object | None = None,
     metadata: Mapping[str, JsonValue] | None = None,
+    store: LocalArtifactStore | None = None,
 ) -> ArtifactRef:
     """Persist model state (never a pickled model object) through ArtifactStore."""
     import torch
@@ -82,7 +83,7 @@ def save_checkpoint(
     with tempfile.TemporaryDirectory(prefix="graphimo-pytorch-checkpoint-") as folder:
         path = Path(folder) / "checkpoint.pt"
         torch.save(payload, path)
-        return put(path, kind="pytorch-checkpoint")
+        return store.put(path, kind="pytorch-checkpoint") if store is not None else put(path, kind="pytorch-checkpoint")
 
 
 def load_checkpoint(
@@ -92,6 +93,7 @@ def load_checkpoint(
     device: str | object | None = None,
     dtype: object | None = None,
     strict: bool = True,
+    store: LocalArtifactStore | None = None,
 ) -> object:
     """Load exact-compatible weights, or explicitly migrate when strict=False."""
     import torch
@@ -99,7 +101,8 @@ def load_checkpoint(
     if artifact.kind != "pytorch-checkpoint":
         raise GraphimoPytorchError("pytorch_checkpoint_kind_invalid", f"Expected pytorch-checkpoint, got {artifact.kind!r}")
     with tempfile.TemporaryDirectory(prefix="graphimo-pytorch-checkpoint-load-") as folder:
-        path = materialize(artifact, Path(folder) / "checkpoint.pt")
+        destination = Path(folder) / "checkpoint.pt"
+        path = store.materialize(artifact, destination) if store is not None else materialize(artifact, destination)
         try:
             payload = torch.load(path, map_location=device or "cpu", weights_only=True)
         except Exception as error:

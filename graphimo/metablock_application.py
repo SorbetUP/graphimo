@@ -83,6 +83,14 @@ class MetaBlockApplicationMixin:
             )
         return spec
 
+    def materialize_metablock(self, metablock_id: str, bindings: dict[str, str]) -> dict[str, Any]:
+        """Build and update the host-owned marimo cell for an addon value."""
+        spec = self.build_metablock_materialization(metablock_id, bindings)
+        dialect_id, _ = self._load_metablock_state(metablock_id)
+        _handler, context = self._metablock_handler(dialect_id, metablock_id)
+        cell_id = context.update_materialization_cell(metablock_id, spec.source, spec.result_var)
+        return {"cell_id": cell_id, "materialization": spec}
+
     def invoke_metablock(
         self, metablock_id: str, action: str, args: dict[str, Any] | None = None
     ) -> Any:
@@ -175,7 +183,7 @@ class MetaBlockApplicationMixin:
             _sidecar_load=lambda: self._read_metablock_sidecar(sidecar),
             _sidecar_save=lambda state: self._save_metablock_state(dialect_id, metablock_id, state),
             _materialize=lambda cell_id, source, result_var: self._update_metablock_materialization(
-                cell_id, source, result_var
+                cell_id, source, result_var, dialect_id=dialect_id, metablock_id=metablock_id
             ),
             _diagnostic_sink=self._metablock_host.add_diagnostic,
         )
@@ -251,16 +259,47 @@ class MetaBlockApplicationMixin:
             )
         return value
 
-    def _update_metablock_materialization(self, cell_id: str, source: str, result_var: str) -> Any:
+    def _update_metablock_materialization(
+        self, cell_id: str, source: str, result_var: str, *, dialect_id: str, metablock_id: str
+    ) -> Any:
         session_id = self._require_session()
         if not cell_id or not isinstance(source, str) or not result_var.isidentifier():
             raise ApplicationError(
                 "invalid_materialization", "Materialization cell identity/source is invalid"
             )
+        _safe_component(dialect_id)
+        _safe_component(metablock_id)
+        managed_source = (
+            f"# Graphimo metablock: {dialect_id}\n"
+            f"# Graphimo instance: {metablock_id}\n"
+            f"{source.rstrip()}\n"
+        )
         cells = self.marimo.inspect(session_id).get("cells", [])
-        if not any(isinstance(cell, dict) and cell.get("id") == cell_id for cell in cells):
-            return self.marimo.add_cell(session_id, source)
-        return self.marimo.replace_cell_source(session_id, cell_id, source)
+        marker = f"# Graphimo instance: {metablock_id}"
+        dialect_marker = f"# Graphimo metablock: {dialect_id}"
+        owned = [
+            cell
+            for cell in cells
+            if isinstance(cell, dict)
+            and marker in str(cell.get("source", "")).splitlines()
+            and dialect_marker in str(cell.get("source", "")).splitlines()
+        ]
+        if len(owned) > 1:
+            raise ApplicationError(
+                "duplicate_metablock_materialization",
+                "Multiple managed marimo cells exist for this MetaBlock",
+            )
+        if owned:
+            return self.marimo.replace_cell_source(session_id, owned[0]["id"], managed_source)
+        target = next(
+            (cell for cell in cells if isinstance(cell, dict) and cell.get("id") == cell_id), None
+        )
+        if target is not None:
+            raise ApplicationError(
+                "unsafe_materialization_edit",
+                "Refusing to replace a marimo cell not owned by this MetaBlock",
+            )
+        return self.marimo.add_cell(session_id, managed_source)
 
 
 def _safe_component(value: str) -> str:

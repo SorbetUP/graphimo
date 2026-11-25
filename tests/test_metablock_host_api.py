@@ -129,12 +129,19 @@ def test_metablock_materialization_updates_existing_or_adds_cell(project, host, 
     app._metablock_context("test.dialect", "meta-3").update_materialization_cell(
         "new-cell", "value = 1", "value"
     )
-    assert host.marimo.added[-1][1] == "value = 1"
-    host.marimo.snapshot["cells"].append({"id": "existing-cell", "source": "old"})
+    assert "# Graphimo metablock: test.dialect" in host.marimo.added[-1][1]
+    assert "# Graphimo instance: meta-3" in host.marimo.added[-1][1]
+    host.marimo.snapshot["cells"].append(
+        {
+            "id": "existing-cell",
+            "source": "# Graphimo metablock: test.dialect\n# Graphimo instance: meta-3\nold = 1\n",
+        }
+    )
     app._metablock_context("test.dialect", "meta-3").update_materialization_cell(
         "existing-cell", "value = 2", "value"
     )
-    assert host.marimo.replaced[-1][1:] == ("existing-cell", "value = 2")
+    assert host.marimo.replaced[-1][1] == "existing-cell"
+    assert "value = 2" in host.marimo.replaced[-1][2]
 
 
 def test_metablock_context_rejects_unsafe_sidecar_ids(project, host):

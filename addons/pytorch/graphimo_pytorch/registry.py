@@ -105,7 +105,7 @@ _KINDS = (
     _kind("embedding", (_p("num_embeddings", "int", None, 1), _p("embedding_dim", "int", None, 1), _p("init_std", "float", None, 0)), required=("num_embeddings", "embedding_dim")),
     _kind("linear", (_p("in_features", "int", None, 1), _p("out_features", "int", None, 1), _p("bias", "bool", True), _p("init_std", "float", None, 0)), required=("in_features", "out_features")),
     _kind("rms_norm", (_p("normalized_shape", "int", None, 1), _p("eps", "float", 1e-5, 0)), required=("normalized_shape",)),
-    _kind("dropout", (_p("p", "float", 0.5, 0, 1))),
+    _kind("dropout", (_p("p", "float", 0.5, 0, 1),)),
     _kind("relu"), _kind("gelu"), _kind("silu"),
     _kind("softmax", (_p("dim", "int", -1),)),
     _kind("reshape", (_p("target_shape", "shape", None),), required=("target_shape",)),
