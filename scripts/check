@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Run Graphimo's local verification gate."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(label: str, *command: str, env: dict[str, str] | None = None) -> None:
+    print(f"\n== {label} ==", flush=True)
+    subprocess.run(command, cwd=ROOT, env=env, check=True)
+
+
+def require(command: str, explanation: str) -> str:
+    located = shutil.which(command)
+    if located is None:
+        raise SystemExit(f"Missing required command '{command}': {explanation}")
+    return located
+
+
+def check_dependencies(mode: str) -> None:
+    try:
+        import pytest  # noqa: F401
+        import ruff  # noqa: F401
+    except ImportError as exc:
+        raise SystemExit(
+            "Install Graphimo development dependencies first: "
+            "python -m pip install -e '.[dev,notebook,prototype]'"
+        ) from exc
+
+    if mode == "full":
+        if not (ROOT / "addons" / "pytorch" / "pyproject.toml").is_file():
+            raise SystemExit(
+                "Full gate unavailable: the separately installable addons/pytorch package "
+                "has not been implemented yet."
+            )
+        try:
+            import marimo
+            import torch
+            import torchlens
+        except ImportError as exc:
+            raise SystemExit(
+                "Full gate requires marimo, PyTorch and TorchLens. Install the project extras "
+                "and the graphimo-pytorch addon first."
+            ) from exc
+        if not torch.__version__:
+            raise SystemExit("PyTorch did not report a version.")
+        if marimo.__version__ != "0.25.2":
+            raise SystemExit(f"Full gate requires marimo==0.25.2; found {marimo.__version__}.")
+        if torchlens.__version__ != "2.34.1":
+            raise SystemExit(
+                f"Full gate requires torchlens==2.34.1; found {torchlens.__version__}."
+            )
+
+
+def python_paths() -> list[str]:
+    return ["adapter", "core", "components", "examples", "tests"]
+
+
+def lint_paths() -> list[str]:
+    return [
+        "core/graphimo_core",
+        "tests/test_core_vertical_slice.py",
+        "tests/test_optional_torchlens.py",
+        "scripts/check",
+    ]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--fast", action="store_true", help="run the fast local gate")
+    group.add_argument("--full", action="store_true", help="run the pre-push gate")
+    args = parser.parse_args()
+    mode = "full" if args.full else "fast"
+    check_dependencies(mode)
+
+    ruff = require("ruff", "install the 'dev' extra")
+    py_paths = python_paths()
+    checked_paths = lint_paths()
+    run("Python syntax/import sanity", sys.executable, "-m", "compileall", "-q", *py_paths)
+    run("Ruff format", ruff, "format", "--check", *checked_paths)
+    run("Ruff lint", ruff, "check", *checked_paths)
+
+    env = os.environ.copy()
+    env["GRAPHIMO_TEST_BOOTSTRAP"] = "1" if args.full else "0"
+    marimo_python = subprocess.run(
+        [sys.executable, "-c", "import sys, marimo; print(sys.executable)"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if marimo_python.returncode == 0:
+        env["GRAPHIMO_MARIMO_PYTHON"] = marimo_python.stdout.strip()
+    run("Python and marimo contracts", sys.executable, "-m", "pytest", "-q", "-rs", env=env)
+
+    if args.full:
+        require("luau", "install the Luau CLI for live Graphimo bridge tests")
+        run("Dependency consistency", sys.executable, "-m", "pip", "check")
+        with tempfile.TemporaryDirectory(prefix="graphimo-wheel-") as temporary:
+            build_root = Path(temporary) / "source"
+            shutil.copytree(
+                ROOT,
+                build_root,
+                ignore=shutil.ignore_patterns(
+                    ".git",
+                    ".pytest_cache",
+                    ".ruff_cache",
+                    "__pycache__",
+                    "build",
+                    "dist",
+                    "*.egg-info",
+                ),
+            )
+            run(
+                "Root wheel build",
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                "--no-deps",
+                "--no-build-isolation",
+                str(build_root),
+                "-w",
+                str(Path(temporary) / "wheels"),
+            )
+            addon = build_root / "addons" / "pytorch"
+            run(
+                "PyTorch addon wheel build",
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                "--no-deps",
+                "--no-build-isolation",
+                str(addon),
+                "-w",
+                str(Path(temporary) / "wheels"),
+            )
+
+    print(f"\nGraphimo {mode} verification passed.", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

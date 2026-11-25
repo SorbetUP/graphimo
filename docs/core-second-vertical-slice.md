@@ -18,7 +18,7 @@ continuation after the worker process is destroyed. It does not implement a UI.
 | Avoid a fixed total-event lifetime cap | Verified | Throttling is per `(run, node, kind, component_path, metric name)` series. It coalesces to the latest pending value; it does not stop after 500 events. A 600-series test verifies this. |
 | Preserve node code/config that produced each run | Verified | `add_node` appends a content-derived immutable revision. Every run stores the selected `revision_id`; later edits update the current node pointer without replacing prior revisions. `start_run` rejects missing nodes or mismatched code versions. |
 | Resume model + optimizer + RNG after process restart | Verified for deterministic CPU training | The test compares 8 uninterrupted AdamW epochs with 4 epochs, worker termination, checkpoint restore, and 4 resumed epochs. Parameters are exactly equal for the deterministic fixture. |
-| Protect the core checks in GitHub Actions | Added | `.github/workflows/core.yml` installs the prototype dependencies, runs Ruff, and tests the core suite on Python 3.11. The workflow has not yet run on GitHub from this workspace. |
+| Local verification gate | Implemented for current core slice | `./scripts/check --fast` runs syntax/import sanity, Ruff format/lint and the local contract suite. `./scripts/check --full` fails clearly until the separate PyTorch addon and its full integration tests exist. Hosted GitHub Actions are intentionally not part of the current validation policy. |
 
 ## Data node API
 
@@ -127,14 +127,17 @@ consumer.
 
 ## Verification
 
-Local validation is recorded in the branch's test output. The relevant commands
-are:
+The repository's local fast gate is:
 
 ```bash
-python -m pytest -q tests/test_core_vertical_slice.py tests/test_optional_torchlens.py
-ruff check core/graphimo_core tests/test_core_vertical_slice.py tests/test_optional_torchlens.py
-ruff format --check core/graphimo_core tests/test_core_vertical_slice.py
+./scripts/check --fast
 ```
+
+On this branch it passes with 64 tests passed and one network-backed bootstrap
+test skipped. That bootstrap test was separately run in a clean temporary Python
+environment and passed. The full gate currently reports the missing
+`addons/pytorch` distribution instead of silently treating the unfinished addon
+acceptance suite as complete.
 
 The tests include the original artifact/worker/model contracts, generic
 directory transformations through the worker, control during active training,

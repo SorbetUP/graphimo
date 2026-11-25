@@ -106,14 +106,20 @@ or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
 For the Zeron plugin API reference and examples from Graphimo and Orchestrator Builder, see [the plugin development guide](docs/zeron-plugin-api.md).
 For Codex plugin work in this repository, use the reusable [Zeron Plugin Builder skill](.agents/skills/zeron-plugin-builder/SKILL.md).
 
-Install the pinned notebook runtime and development tools, then run the
-independent contract suite:
+Install the pinned notebook runtime and development tools, then run the local
+verification gate:
 
 ```bash
-python3 -m pip install -e '.[notebook,dev]'
-rtk proxy env PYTHONDONTWRITEBYTECODE=1 pytest -q
-rtk ruff check adapter examples components
+python3 -m pip install -e '.[notebook,dev,prototype,inspection]'
+./scripts/check --fast
 ```
+
+Use `./scripts/check --full` before a pre-push once the independent
+`graphimo-pytorch` addon has been implemented and installed. Until then, the
+full gate exits with a clear missing-addon message instead of silently
+skipping addon packaging and integration requirements. `./scripts/install-hooks`
+optionally installs a local pre-push hook that runs the full gate. No hosted
+GitHub Actions workflow is required by the current project validation policy.
 
 The pytest suite exercises `adapter.graphimo_adapter` through a fake marimo
 port. It does not replace an end-to-end run inside Zeron with a live marimo
