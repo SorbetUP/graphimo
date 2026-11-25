@@ -2,7 +2,7 @@ name: Graphimo core
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "sb/**"]
   pull_request:
 
 jobs:
