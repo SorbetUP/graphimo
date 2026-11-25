@@ -24,13 +24,20 @@ from .metablocks import (
 )
 from .node import inspect_node, is_node, node
 from .preview import describe_result, preview_value
+from .scopes import GraphEdge, GraphElement, GraphScope, GraphScopeError, GroupBlock, MetaBlock
 
 __all__ = [
     "AddonUnavailableError",
     "Binding",
+    "GraphEdge",
+    "GraphElement",
+    "GraphScope",
+    "GraphScopeError",
     "GraphimoApplication",
     "GraphimoHostAPI",
+    "GroupBlock",
     "InstanceSpec",
+    "MetaBlock",
     "MetaBlockAddonManager",
     "MetaBlockDialect",
     "MetaDialectRegistration",
