@@ -485,6 +485,14 @@ class MarimoSessionPool:
                 for port in self._ports_by_path.values()
             ]
 
+    def url_for_session(self, session_id: str | None) -> str | None:
+        """Return the local editor URL for an owned marimo session."""
+        if not isinstance(session_id, str):
+            return None
+        with self._lock:
+            port = self._ports_by_session.get(session_id)
+        return port.base_url if port is not None else None
+
     def open_notebook(self, path: str | Path) -> dict[str, str]:
         resolved = str(Path(path).expanduser().resolve())
         with self._lock:

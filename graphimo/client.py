@@ -138,13 +138,25 @@ class GraphimoClient:
 
     def open_project(self, path: str | Path) -> GraphimoProject:
         response = self._post("/v1/projects/open", {"path": str(Path(path).expanduser().resolve())})
-        return GraphimoProject(self, response["project_id"], response["state"], response["path"])
+        return GraphimoProject(
+            self,
+            response["project_id"],
+            response["state"],
+            response["path"],
+            response.get("editor_url"),
+        )
 
     def create_project(self, path: str | Path) -> GraphimoProject:
         response = self._post(
             "/v1/projects/create", {"path": str(Path(path).expanduser().resolve())}
         )
-        return GraphimoProject(self, response["project_id"], response["state"], response["path"])
+        return GraphimoProject(
+            self,
+            response["project_id"],
+            response["state"],
+            response["path"],
+            response.get("editor_url"),
+        )
 
     def execute(self, project_id: str, action: str, **args: Any) -> dict[str, Any]:
         return self._post("/v1/execute", {"project_id": project_id, "action": action, "args": args})
@@ -238,11 +250,17 @@ class GraphimoClient:
 
 class GraphimoProject:
     def __init__(
-        self, client: GraphimoClient, project_id: str, state: dict[str, Any], path: str
+        self,
+        client: GraphimoClient,
+        project_id: str,
+        state: dict[str, Any],
+        path: str,
+        editor_url: str | None = None,
     ) -> None:
         self.client = client
         self.id = project_id
         self.path = path
+        self.editor_url = editor_url
         self.state = state
 
     def refresh(self) -> dict[str, Any]:

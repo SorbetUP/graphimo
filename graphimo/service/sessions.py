@@ -58,6 +58,7 @@ class ProjectSessionManager:
                 return {
                     "project_id": session.id,
                     "path": key,
+                    "editor_url": self._editor_url(session.marimo, session.application.session_id),
                     "state": jsonable(state),
                     "reused": True,
                 }
@@ -82,9 +83,18 @@ class ProjectSessionManager:
             return {
                 "project_id": project_id,
                 "path": key,
+                "editor_url": self._editor_url(marimo, application.session_id),
                 "state": jsonable(state),
                 "reused": False,
             }
+
+    @staticmethod
+    def _editor_url(marimo: Any, session_id: str | None) -> str | None:
+        url_for_session = getattr(marimo, "url_for_session", None)
+        if callable(url_for_session):
+            url = url_for_session(session_id)
+            return url if isinstance(url, str) else None
+        return None
 
     def create_project(self, path: str | Path) -> dict[str, Any]:
         if not isinstance(path, (str, Path)) or not str(path).strip():

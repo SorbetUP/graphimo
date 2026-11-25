@@ -57,8 +57,10 @@ function Canvas.draw_edges(c, cells, edges, zoom, pan_x, pan_y, selected, pendin
 		local from = Canvas.node(cells, edge.source_cell_id)
 		local to = Canvas.node(cells, edge.target_cell_id)
 		if from and to then
-			local x1, y1 = screen((from.x or 0) + Canvas.width, Canvas.port(from, edge.variable, true))
-			local x2, y2 = screen(to.x or 0, Canvas.port(to, edge.variable, false))
+			local source_port = edge.output_name or edge.variable
+			local target_port = edge.input_name or edge.variable
+			local x1, y1 = screen((from.x or 0) + Canvas.width, Canvas.port(from, source_port, true))
+			local x2, y2 = screen(to.x or 0, Canvas.port(to, target_port, false))
 			local bend = math.max(52 * zoom, math.abs(x2 - x1) * 0.42)
 			local path = ui.path():move(x1, y1):cubic(x1 + bend, y1, x2 - bend, y2, x2, y2)
 			c:stroke(path, "$background", 5 * zoom, { cap = "round" })

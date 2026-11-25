@@ -1,5 +1,6 @@
 local zeron = require("./zeron")("graphimo")
 local Bridge = require("./marimo_bridge")
+local Service = require("./graphimo_service")
 local Layout = require("./layout")
 local Canvas = require("./canvas")
 local BaseBlock = require("./base_block")
@@ -13,6 +14,132 @@ local SearchField = require("@ds/search_field")
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
 local saved_problems = zeron.store("problems-v1", {})
+
+local function renderer_snapshot(state, path, project_id)
+	state = if type(state) == "table" then state else {}
+	local cells, blocks_by_id, edges = {}, {}, {}
+	for index, block in state.blocks or {} do
+		if type(block) == "table" and type(block.id) == "string" then
+			local inputs, outputs, refs, defs = {}, {}, {}, {}
+			for _, port in block.inputs or {} do
+				if type(port) == "table" and type(port.name) == "string" then
+					table.insert(inputs, port)
+					table.insert(refs, port.name)
+				end
+			end
+			for output_index, port in block.outputs or {} do
+				if type(port) == "table" and type(port.name) == "string" then
+					table.insert(outputs, port)
+					table.insert(defs, port.name)
+				end
+			end
+			local body = if type(block.body) == "table" then block.body else {}
+			local cell = {
+				id = block.id,
+				name = block.title or ("Block " .. tostring(index)),
+				kind = block.kind,
+				source = "Graphimo " .. tostring(block.kind or "block"),
+				status = block.state or "idle",
+				defs = defs,
+				refs = refs,
+				inputs = inputs,
+				outputs = outputs,
+				output_index = {},
+				output = nil,
+				errors = {},
+				body = body,
+				can_open = block.can_open == true,
+				can_disable = block.can_disable == true,
+				can_enable = block.can_enable == true,
+			}
+			for output_index, port in outputs do cell.output_index[port.name] = output_index - 1 end
+			if #outputs > 0 and outputs[1].preview then
+				cell.output = { mimetype = "text/plain", preview = tostring(outputs[1].preview) }
+			end
+			blocks_by_id[block.id] = cell
+			table.insert(cells, cell)
+		end
+	end
+	for _, edge in state.edges or {} do
+		if type(edge) == "table" then
+			local source = blocks_by_id[edge.source_block_id]
+			local target = blocks_by_id[edge.target_block_id]
+			local output_name = if source and source.defs[1] then source.defs[1] else edge.variable
+			local input_name = if target and target.refs[1] then target.refs[1] else edge.variable
+			if source then
+				for _, port in source.outputs do
+					if port.expression == edge.variable or port.name == edge.variable then output_name = port.name; break end
+				end
+			end
+			if target then
+				for _, port in target.inputs do
+					if type(port.expression) == "string" and string.find(port.expression, edge.variable, 1, true) then input_name = port.name; break end
+				end
+			end
+			table.insert(edges, {
+				id = edge.id,
+				source_cell_id = edge.source_block_id,
+				target_cell_id = edge.target_block_id,
+				variable = edge.variable,
+				output_name = output_name,
+				input_name = input_name,
+				state = edge.state,
+			})
+		end
+	end
+	for _, diagnostic in state.diagnostics or {} do
+		local block = diagnostic.block_id and blocks_by_id[diagnostic.block_id]
+		if block then
+			table.insert(block.errors, { kind = diagnostic.code or "Graphimo", message = diagnostic.message or "Graphimo diagnostic" })
+		end
+	end
+	for _, cell in cells do
+		for _, edge in edges do
+			if edge.target_cell_id == cell.id then
+				local found = false
+				for _, name in cell.refs do if name == edge.input_name then found = true end end
+				if not found then table.insert(cell.refs, edge.input_name) end
+			end
+		end
+	end
+	local palette = state.palette or {}
+	local components = {}
+	for _, item in palette.items or {} do
+		local parameters, signature = {}, {}
+		for _, schema in item.input_schema or {} do
+			if type(schema) == "table" and type(schema.name) == "string" then
+				table.insert(parameters, {
+					name = schema.name,
+					required = schema.required == true,
+					positional = true,
+					has_default = schema.has_default == true,
+					default = schema.default,
+					annotation = schema.annotation,
+				})
+				table.insert(signature, schema.name .. (schema.required and "" or "=…"))
+			end
+		end
+		table.insert(components, {
+			id = item.id,
+			path = item.id,
+			category = item.category or item.kind or "Components",
+			kind = item.kind or "node",
+			description = item.description,
+			callables = {{ name = item.title or item.id, signature = "(" .. table.concat(signature, ", ") .. ")", description = item.description, parameters = parameters }},
+		})
+	end
+	return {
+		notebook = { path = path or "", session_id = project_id or "" },
+		project_id = state.project_id,
+		active_scope_id = state.active_scope_id,
+		breadcrumbs = state.breadcrumbs or {},
+		cells = cells,
+		edges = edges,
+		palette = palette,
+		diagnostics = state.diagnostics or {},
+		components = components,
+	}
+end
 
 local function config_for(args)
 	local saved = active_notebook:get()
@@ -107,7 +234,7 @@ local Page = ui.component(function()
 	local url = ui.use_state(saved.url or "")
 	local token = ui.use_state("")
 	local session_id = ui.use_state(saved.session_id or "")
-	local sessions = ui.use_state({})
+	local service_connection = ui.use_state(nil)
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local visible_cell_ids = ui.use_state({})
 	local log_entries = ui.use_state(saved_logs:peek() or {})
@@ -218,80 +345,56 @@ local Page = ui.component(function()
 		return positioned
 	end
 
+	local function apply_project_state(state, path, project_id)
+		local value = renderer_snapshot(state, path, project_id)
+		snapshot:set(value)
+		components:set(value.components or {})
+		local ids = {}
+		for _, cell in value.cells or {} do table.insert(ids, cell.id) end
+		visible_cell_ids:set(ids)
+		local function apply_layout(saved_positions)
+			local merged, active = {}, {}
+			for index, cell in value.cells do
+				active[cell.id] = true
+				local saved_cell = saved_positions[cell.id] or {}
+				merged[cell.id] = {
+					x = saved_cell.x or cell.x or (80 + ((index - 1) % 4) * 320),
+					y = saved_cell.y or cell.y or (80 + math.floor((index - 1) / 4) * 230),
+					collapsed = saved_cell.collapsed or false,
+				}
+			end
+			positions:set(merged)
+			if selected:peek() ~= "" and not active[selected:peek()] then selected:set("") end
+			notice:set("Showing " .. tostring(#value.cells) .. " Graphimo blocks")
+		end
+		Layout.load(zeron, path, function(saved_positions, err)
+			if err then log("Load canvas layout failed: " .. tostring(err)) end
+			apply_layout(saved_positions)
+		end)
+	end
+
 	local refresh_graph
-	local function refresh_sessions()
-		if url:peek() == "" then
+	refresh_graph = function()
+		local connection = service_connection:peek()
+		if type(connection) ~= "table" then
+			local path = active_notebook:peek().path or ""
+			if path ~= "" then
+				observe("Connect Graphimo service", function() return Service.open_project(zeron, path) end, function(opened)
+					service_connection:set(opened)
+					url:set(opened.editor_url or "")
+					session_id:set(opened.project_id)
+					apply_project_state(opened.state, opened.path, opened.project_id)
+				end, function(err) notice:set("Could not connect to Graphimo service: " .. tostring(err)) end)
+				return
+			end
 			notice:set("Open or create a notebook to begin")
 			return
 		end
-		observe("List marimo sessions", function()
-			return Bridge.sessions(zeron, url:peek(), token:peek())
-		end, function(items)
-			sessions:set(items)
-			if #items == 1 and session_id:peek() == "" then session_id:set(items[1].session_id) end
-			if session_id:peek() ~= "" then
-				local exists = false
-				for _, item in items do if item.session_id == session_id:peek() then exists = true end end
-				if not exists then session_id:set("") end
-			end
-			if session_id:peek() == "" then
-				snapshot:set({ notebook = {}, cells = {}, edges = {} })
-				visible_cell_ids:set({})
-				positions:set({}); components:set({}); selected:set("")
-			end
-			notice:set(if #items == 0 then "No active marimo notebooks found" else "Found " .. tostring(#items) .. " active notebook(s)")
-			if session_id:peek() ~= "" then refresh_graph() end
-		end, function(err) notice:set("Marimo connection failed: " .. tostring(err)) end)
-	end
-
-	refresh_graph = function()
-		observe("Inspect marimo graph", function()
-			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
-		end, function(value)
-			snapshot:set(value)
-			local ids = {}
-			for _, cell in value.cells or {} do table.insert(ids, cell.id) end
-			visible_cell_ids:set(ids)
-			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
-			local path = value.notebook.path or ""
-			local function apply_layout(saved_positions)
-				local merged, active = {}, {}
-				for index, cell in value.cells do
-					active[cell.id] = true
-					local saved_cell = saved_positions[cell.id] or {}
-					merged[cell.id] = {
-						x = saved_cell.x or (80 + ((index - 1) % 4) * 320),
-						y = saved_cell.y or (80 + math.floor((index - 1) / 4) * 230),
-						collapsed = saved_cell.collapsed or false,
-					}
-				end
-				positions:set(merged)
-				if selected:peek() ~= "" and not active[selected:peek()] then selected:set("") end
-				notice:set("Showing " .. tostring(#value.cells) .. " marimo cells")
-				observe("Discover components", function()
-					return Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, path)
-				end, function(component_result)
-					local available = component_result.components or {}
-					components:set(available)
-					observe("Check component sources", function()
-						return Bridge.refresh_component_hashes(zeron, url:peek(), token:peek(), value.notebook.session_id, available)
-					end, function(hash_result)
-						if #(hash_result.changed_cells or {}) > 0 then
-							notice:set("A component source changed; marimo marked its cell stale")
-							ui.after(300, refresh_graph)
-						end
-					end, function(err) notice:set("Component freshness check failed: " .. tostring(err)) end)
-				end, function(err) notice:set("Component discovery failed: " .. tostring(err)) end)
-			end
-			if is_local_url(url:peek()) then
-				Layout.load(zeron, path, function(saved_positions, err)
-					if err then log("Load canvas layout failed: " .. tostring(err)) end
-					apply_layout(saved_positions)
-				end)
-			else
-				apply_layout({})
-			end
-		end, function(err) notice:set("Could not inspect marimo: " .. tostring(err)) end)
+		observe("Refresh Graphimo project", function()
+			return Service.execute(zeron, connection, "refresh_project", {})
+		end, function(response)
+			apply_project_state(response.state, connection.path, connection.project_id)
+		end, function(err) notice:set("Could not refresh Graphimo project: " .. tostring(err)) end)
 	end
 
 	local function save_positions()
@@ -306,73 +409,20 @@ local Page = ui.component(function()
 		end)
 	end
 
-	local function select_session(value)
-		session_id:set(value)
-		local next_saved = table.clone(active_notebook:peek())
-		next_saved.session_id = value
-		active_notebook:set(next_saved)
-		if value ~= "" then refresh_graph() end
-	end
-
-	local function wait_for_notebook(path, base_url, attempt)
-		attempt = attempt or 0
-		if attempt >= 40 then
-			local message = "Marimo editor opened, but its notebook session did not become active. See Logs for the marimo process output."
-			log(message, "error")
-			notice:set(message)
-			return
-		end
-		Bridge.sessions(zeron, base_url, ""):after(function(items)
-			if type(items) == "table" and items.ok == false then
-				if attempt == 39 then log("Could not read marimo sessions: " .. tostring(items.error.message), "error") end
-				ui.after(750, function() wait_for_notebook(path, base_url, attempt + 1) end)
-				return
-			end
-			for _, item in items or {} do
-				local same_path = item.path == path
-				if not same_path and item.path ~= "" then
-					local a = string.gsub(item.path, "\\\\", "/")
-					local b = string.gsub(path, "\\\\", "/")
-					same_path = string.gsub(a, "/+$", "") == string.gsub(b, "/+$", "")
-				end
-				if same_path then
-					sessions:set(items)
-					session_id:set(item.session_id)
-					local current = table.clone(active_notebook:peek())
-					current.url, current.path, current.session_id = base_url, path, item.session_id
-					active_notebook:set(current)
-					log("Notebook session connected: " .. path)
-					refresh_graph()
-					return
-				end
-			end
-			ui.after(750, function() wait_for_notebook(path, base_url, attempt + 1) end)
-		end, function(err)
-			if attempt == 39 then log("Could not connect to marimo sessions: " .. tostring(err), "error") end
-			ui.after(750, function() wait_for_notebook(path, base_url, attempt + 1) end)
-		end)
-	end
-
 	local function start_notebook(path)
-		notice:set("Starting marimo for " .. path .. "…")
-		log("Opening notebook " .. path)
-		observe("Start marimo", function()
-			return Bridge.open_notebook(zeron, path)
-		end, function(started)
-			url:set(started.url)
-			session_id:set(started.session_id or "")
-			local current = { url = started.url, session_id = started.session_id or "", path = path, log_path = started.log_path or "" }
-			active_notebook:set(current)
-			if started.started then log("Started marimo process " .. tostring(started.pid)) else log("Reused existing marimo process") end
-			if started.session_id and started.session_id ~= "" then
-				refresh_graph()
-			else
-				zeron.open_url(started.url)
-				log("Opened marimo editor; waiting for its live notebook session")
-				wait_for_notebook(path, started.url, 0)
-			end
+		notice:set("Opening Graphimo project for " .. path .. "…")
+		log("Opening Graphimo project " .. path)
+		observe("Open Graphimo project", function()
+			return Service.open_project(zeron, path)
+		end, function(opened)
+			service_connection:set(opened)
+			url:set(opened.editor_url or "")
+			session_id:set(opened.project_id)
+			active_notebook:set({ url = opened.editor_url or "", session_id = opened.project_id, path = opened.path, log_path = "" })
+			apply_project_state(opened.state, opened.path, opened.project_id)
+			log("Graphimo service connected for " .. opened.path)
 		end, function(err)
-			local message = "Could not start marimo: " .. tostring(err)
+			local message = "Could not open Graphimo project: " .. tostring(err)
 			notice:set(message)
 			log(message, "error")
 		end)
@@ -391,11 +441,16 @@ local Page = ui.component(function()
 	local function create_notebook()
 		ui.save_file({ title = "Create marimo notebook", name = "notebook.py", filters = { { "Python notebook", { "py" } } } }):after(function(file)
 			if not file then return end
-			local source = "import marimo\n\n__generated_with = \"0.25.2\"\napp = marimo.App()\n\n\nif __name__ == \"__main__\":\n    app.run()\n"
-			ui.write_file(file, source):after(function()
-				if type(file.path) == "string" then start_notebook(file.path) end
+			if type(file.path) ~= "string" then return end
+			observe("Create Graphimo project", function() return Service.create_project(zeron, file.path) end, function(opened)
+				service_connection:set(opened)
+				url:set(opened.editor_url or "")
+				session_id:set(opened.project_id)
+				active_notebook:set({ url = opened.editor_url or "", session_id = opened.project_id, path = opened.path, log_path = "" })
+				apply_project_state(opened.state, opened.path, opened.project_id)
+				log("Created Graphimo project " .. opened.path)
 			end, function(err)
-				local message = "Could not create notebook: " .. tostring(err)
+				local message = "Could not create Graphimo project: " .. tostring(err)
 				notice:set(message); log(message, "error")
 			end)
 		end, function(err)
@@ -541,9 +596,9 @@ local Page = ui.component(function()
 		for index = #current_cells, 1, -1 do
 			local cell = current_cells[index]
 			local pos = ps[cell.id] or { x = 0, y = 0 }
-			for _, variable in cell.defs or {} do
+			for output_index, variable in cell.defs or {} do
 				if Canvas.near(x, y, pos.x + Canvas.width, pos.y + Canvas.port(cell, variable, true), 12 / zoom:peek()) then
-					selected:set(cell.id); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
+					selected:set(cell.id); drag = { kind = "wire", cell_id = cell.id, variable = variable, output_index = output_index - 1 }; return
 				end
 			end
 			for _, variable in cell.refs or {} do
@@ -581,9 +636,14 @@ local Page = ui.component(function()
 					if cell.id ~= drag.cell_id and Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, ref, false), 14 / zoom:peek()) then
 						connected = true
 						observe("Connect " .. drag.variable .. " to " .. ref, function()
-							return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
+							return Service.execute(zeron, service_connection:peek(), "connect", {
+								source_cell_id = drag.cell_id,
+								target_cell_id = cell.id,
+								input_name = ref,
+								output_index = drag.output_index,
+							})
 						end, function()
-							notice:set("Python source updated; marimo owns the new dependency")
+							notice:set("Connected blocks; marimo owns the dependency")
 							refresh_graph()
 						end, function(err) notice:set("Connection refused: " .. tostring(err) .. " · Open code to edit it") end)
 						break
@@ -604,10 +664,11 @@ local Page = ui.component(function()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
 		notice:set("Sending run request to marimo…")
-		observe("Run cell " .. cell.id, function()
-			return Bridge.run(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
-		end, function()
-			notice:set("Marimo queued the cell and its reactive dependents")
+		observe("Run block " .. cell.id, function()
+			return Service.execute(zeron, service_connection:peek(), "run_target", { cell_id = cell.id })
+		end, function(response)
+			if response.state then apply_project_state(response.state, service_connection:peek().path, session_id:peek()) end
+			notice:set("Marimo ran the selected block and its reactive dependents")
 			ui.after(500, refresh_graph)
 		end, function(err)
 			notice:set("Cell run failed: " .. tostring(err))
@@ -618,7 +679,9 @@ local Page = ui.component(function()
 	local function open_selected()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
-		zeron.open_url(url:peek())
+		local editor_url = service_connection:peek() and service_connection:peek().editor_url
+		if type(editor_url) ~= "string" or editor_url == "" then notice:set("The marimo editor URL is unavailable"); return end
+		zeron.open_url(editor_url)
 		notice:set("Opened the marimo editor for cell " .. cell.id)
 		log("Opened marimo editor for cell " .. cell.id)
 	end
@@ -626,9 +689,10 @@ local Page = ui.component(function()
 	local function delete_selected()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
-		observe("Delete cell " .. cell.id, function()
-			return Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
-		end, function()
+		observe("Delete block " .. cell.id, function()
+			return Service.execute(zeron, service_connection:peek(), "delete_elements", { ids = { cell.id } })
+		end, function(response)
+			if response.state then apply_project_state(response.state, service_connection:peek().path, session_id:peek()) end
 			selected:set(""); refresh_graph()
 		end, function(err) notice:set("Could not delete cell: " .. tostring(err)) end)
 	end
@@ -647,16 +711,15 @@ local Page = ui.component(function()
 		for _, parameter in callable.parameters or {} do
 			if parameter.required then bindings[parameter.name] = { variable = parameter.name } end
 		end
-		local defined = {}
-		for _, cell in cells_now() do for _, name in cell.defs or {} do defined[name] = true end end
-		local next_number = output_counter:peek()
-		local out = callable.name .. "_result_" .. tostring(next_number)
-		while defined[out] do next_number += 1; out = callable.name .. "_result_" .. tostring(next_number) end
-		output_counter:set(next_number + 1)
-		observe("Add component " .. item.id .. "::" .. callable.name, function()
-			return Bridge.add_component(zeron, url:peek(), token:peek(), session_id:peek(), item.id, callable.name, out, bindings)
-		end, function()
-			notice:set("Inserted ordinary Python into the marimo notebook")
+		for name, value in bindings do bindings[name] = if type(value) == "table" and value.variable then value.variable else value end
+		observe("Add Graphimo block " .. item.id, function()
+			return Service.execute(zeron, service_connection:peek(), "add_palette_item", {
+				item_id = item.id,
+				bindings = bindings,
+			})
+		end, function(response)
+			if response.state then apply_project_state(response.state, service_connection:peek().path, session_id:peek()) end
+			notice:set("Added a Graphimo block to the marimo project")
 			refresh_graph()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
 	end
@@ -740,8 +803,8 @@ local Page = ui.component(function()
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
 				on_mount = function()
 					ui.after(150, function()
-						if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
-						else notice:set("Open or create a notebook to begin") end
+						local path = active_notebook:peek().path or ""
+						if path ~= "" then start_notebook(path) else notice:set("Open or create a notebook to begin") end
 					end)
 				end,
 				on_press = on_press, on_pointer_move = on_move, on_release = on_release,

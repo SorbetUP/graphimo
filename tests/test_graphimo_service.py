@@ -23,6 +23,7 @@ class FakeMarimoPort:
     def __init__(self, path):
         self.notebook_path = str(path)
         self.session_id = "session-1"
+        self.base_url = "http://127.0.0.1:2745"
         self.snapshot = {
             "notebook": {"path": self.notebook_path, "session_id": self.session_id},
             "cells": [],
@@ -33,6 +34,9 @@ class FakeMarimoPort:
 
     def list_active_notebooks(self):
         return [{"session_id": self.session_id, "path": self.notebook_path}]
+
+    def url_for_session(self, session_id):
+        return self.base_url if session_id == self.session_id else None
 
     def inspect(self, session_id):
         assert session_id == self.session_id
@@ -105,6 +109,7 @@ def test_loopback_service_client_batch_references_and_events(tmp_path):
         project = client.open_project(notebook)
         reopened = client.open_project(notebook)
         assert reopened.id == project.id
+        assert project.editor_url == "http://127.0.0.1:2745"
         assert reopened.state["palette"]["items"]
 
         block = project.add("Pipeline", dataset=expr("input_data"))
