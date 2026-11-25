@@ -3,7 +3,7 @@
 from .node import inspect_node, is_node, node
 from .preview import describe_result, preview_value
 from . import artifacts
-from . import metablocks, scopes
+from . import groups, metablocks, scopes
 
 __all__ = [
     "node",
@@ -14,4 +14,5 @@ __all__ = [
     "artifacts",
     "metablocks",
     "scopes",
+    "groups",
 ]

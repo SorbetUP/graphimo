@@ -12,6 +12,7 @@ import json
 import math
 import os
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,6 +34,16 @@ from graphimo.instance import (
     parse_disabled_instance_source,
     parse_instance_source,
     reconnect_instance_source,
+)
+from graphimo.groups import (
+    GroupContract,
+    build_group_instance_source,
+    disconnect_group_instance_source,
+    group_output_expression,
+    is_group_managed_cell,
+    load_group_contract,
+    parse_group_instance_source,
+    reconnect_group_instance_source,
 )
 from graphimo.node import InputPort, NodeSpec, OutputPort
 from graphimo.metablock_application import MetaBlockApplicationMixin
@@ -163,6 +174,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         self._session_id: str | None = None
         self._project_path: str | None = None
         self._selection: tuple[str, ...] = ()
+        self._scope_stack: list[tuple[str, str, str, str]] = []
         self._init_metablocks()
 
     @property
@@ -184,6 +196,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             "create_metablock", "metablock_catalog", "project_metablock", "apply_metablock",
             "build_metablock_materialization", "materialize_metablock", "invoke_metablock",
             "drain_metablock_events",
+            "enter_group", "leave_scope",
         )
 
     def inspect_artifact_store(self) -> Any:
@@ -194,6 +207,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         self._session_id = None
         self._project_path = None
         self._selection = ()
+        self._scope_stack = []
         self._close_metablocks()
 
     def open_project(self, path: str | os.PathLike[str], session_id: str | None = None) -> GraphimoViewState:
@@ -210,6 +224,42 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             raise ApplicationError(code, "A unique active marimo session for this project is required")
         self._project_path = requested_path
         self._session_id = matching[0]["session_id"]
+        self._selection = ()
+        self._scope_stack = [("root", Path(requested_path).name or "Project", self._session_id, requested_path)]
+        return self.refresh_project()
+
+    def enter_group(self, group_path: str, session_id: str | None = None) -> GraphimoViewState:
+        """Open and enter a Group file through the injected marimo application port."""
+        contract = self._resolve_group_path(group_path)
+        sessions = self.marimo.list_active_notebooks()
+        matching = [
+            item for item in sessions
+            if item.get("path")
+            and str(Path(item["path"]).expanduser().resolve()) == str(contract.path)
+            and (session_id is None or item.get("session_id") == session_id)
+        ]
+        if len(matching) != 1:
+            opener = getattr(self.marimo, "open_notebook", None)
+            if not callable(opener):
+                raise ApplicationError("group_session_required", "The Group file cannot be opened by this marimo host")
+            opened = opener(str(contract.path))
+            opened_id = opened.get("session_id") if isinstance(opened, dict) else opened
+            matching = [item for item in self.marimo.list_active_notebooks() if item.get("session_id") == opened_id and str(Path(item.get("path", "")).expanduser().resolve()) == str(contract.path)]
+        if len(matching) != 1:
+            raise ApplicationError("group_session_not_found", "Could not select a unique active marimo session for this Group")
+        if not self._scope_stack and self._session_id is not None and self._project_path is not None:
+            self._scope_stack.append(("root", Path(self._project_path).name or "Project", self._session_id, self._project_path))
+        self._scope_stack.append((contract.id, contract.name, matching[0]["session_id"], str(contract.path)))
+        self._session_id = matching[0]["session_id"]
+        self._project_path = str(contract.path)
+        self._selection = ()
+        return self.refresh_project()
+
+    def leave_scope(self) -> GraphimoViewState:
+        if len(self._scope_stack) <= 1:
+            raise ApplicationError("root_scope", "The root Graphimo scope has no parent")
+        self._scope_stack.pop()
+        _, _, self._session_id, self._project_path = self._scope_stack[-1]
         self._selection = ()
         return self.refresh_project()
 
@@ -275,10 +325,41 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         parts = item_id.split(":", 2)
         if len(parts) == 2 and parts[0] == "control":
             return self.add_control(parts[1], parameters or {}, position=position)
+        if len(parts) == 2 and parts[0] == "group":
+            return self.add_group_instance(parts[1], bindings or {}, position=position)
         if len(parts) != 3 or parts[0] != "node":
             raise ApplicationError("palette_item_not_found", f"Palette item '{item_id}' is unavailable")
         component_id = None if parts[1] == "session" else parts[1]
         return self.add_node(component_id, parts[2], bindings or {}, position=position)
+
+    def add_group_instance(
+        self,
+        group_id: str,
+        bindings: dict[str, str],
+        *,
+        position: tuple[float, float] = (80.0, 80.0),
+    ) -> dict[str, Any]:
+        if len(position) != 2 or not all(type(value) in (int, float) and math.isfinite(value) for value in position):
+            raise ApplicationError("invalid_position", "Block position must contain two finite numbers")
+        group_path = self._safe_group_path(group_id)
+        try:
+            contract = load_group_contract(group_path)
+            self._ensure_group_runtime_alias()
+            source, instance = build_group_instance_source(contract, bindings)
+            cell_id = self.marimo.add_cell(self._require_session(), source)
+        except (TypeError, ValueError) as exc:
+            raise ApplicationError("invalid_group", str(exc)) from exc
+        self._save_positions({cell_id: {"x": position[0], "y": position[1]}})
+        return {"cell_id": cell_id, "instance_id": instance.instance_id, "result_var": instance.result_var, "source": source, "group_id": instance.group_id}
+
+    def _ensure_group_runtime_alias(self) -> None:
+        snapshot = self.marimo.inspect(self._require_session())
+        if any(isinstance(cell, dict) and "graphimo" in cell.get("defs", []) for cell in snapshot.get("cells", [])):
+            return
+        if any(isinstance(cell, dict) and "graphimo" in _assigned_global_names(str(cell.get("source", ""))) for cell in snapshot.get("cells", [])):
+            return
+        cell_id = self.marimo.add_cell(self._require_session(), "# Graphimo group runtime\nimport graphimo")
+        self.marimo.run_cell(self._require_session(), cell_id)
 
     def add_control(
         self,
@@ -348,21 +429,35 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             raise ApplicationError("cell_not_found", "Connection endpoint no longer exists")
         source_instance = parse_instance_source(source_cell.get("source", ""))
         target_instance = parse_instance_source(target_cell.get("source", ""))
+        source_group = parse_group_instance_source(source_cell.get("source", ""))
+        target_group = parse_group_instance_source(target_cell.get("source", ""))
         source_control = parse_control_source(source_cell.get("source", ""))
-        if (source_instance is None and source_control is None) or target_instance is None:
-            raise ApplicationError("unsafe_edit", "Connections require a Graphimo output and target node instance")
-        target_spec = self._node_spec(None, target_instance.node_name)
-        if input_name not in {port.name for port in target_spec.inputs}:
-            raise ApplicationError("input_not_found", f"Node has no input named '{input_name}'")
+        if (source_instance is None and source_group is None and source_control is None) or (target_instance is None and target_group is None):
+            raise ApplicationError("unsafe_edit", "Connections require a Graphimo output and target Graphimo instance")
+        if target_instance is not None:
+            target_spec = self._node_spec(None, target_instance.node_name)
+            target_input_names = {port.name for port in target_spec.inputs}
+        else:
+            target_contract = self._resolve_group_path(target_group.path)
+            target_input_names = {port.name for port in target_contract.inputs}
+        if input_name not in target_input_names:
+            raise ApplicationError("input_not_found", f"Target has no input named '{input_name}'")
         try:
             if source_control is not None:
                 if output_index != 0:
                     raise ValueError("Control Blocks have exactly one output")
                 expression = source_control.output_expression
+            elif source_group is not None:
+                if not 0 <= output_index < len(source_group.outputs):
+                    raise ValueError("Group output index is outside the declared output range")
+                expression = group_output_expression(source_group, source_group.outputs[output_index])
             else:
                 source_spec = self._node_spec(None, source_instance.node_name)
                 expression = output_expression(source_instance, output_index, len(source_spec.outputs))
-            source, _ = self._reconnect(target_cell.get("source", ""), input_name, expression)
+            if target_group is not None:
+                source = reconnect_group_instance_source(target_cell.get("source", ""), input_name=input_name, expression=expression)
+            else:
+                source, _ = self._reconnect(target_cell.get("source", ""), input_name, expression)
             self.marimo.replace_cell_source(self._require_session(), target_cell_id, source)
         except (ValueError, TypeError) as exc:
             raise ApplicationError("invalid_connection", str(exc)) from exc
@@ -382,6 +477,13 @@ class GraphimoApplication(MetaBlockApplicationMixin):
 
     def disconnect(self, target_cell_id: str, *, input_name: str) -> dict[str, Any]:
         cell = self._cell(target_cell_id)
+        if parse_group_instance_source(cell.get("source", "")) is not None:
+            try:
+                source = disconnect_group_instance_source(cell.get("source", ""), input_name=input_name)
+            except ValueError as exc:
+                raise ApplicationError("invalid_request", str(exc)) from exc
+            self.marimo.replace_cell_source(self._require_session(), target_cell_id, source)
+            return {"changed": True, "source": source}
         instance = parse_instance_source(cell.get("source", ""))
         if instance is None:
             raise ApplicationError("unsafe_edit", "Disconnection requires a Graphimo-owned node instance")
@@ -446,6 +548,40 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             raise ApplicationError(str(exc), f"Could not describe node result: {exc}") from exc
         return {"instance_id": instance.instance_id, "node": instance.node_name, "outputs": outputs}
 
+    def inspect_group_instance(self, cell_id: str) -> dict[str, Any]:
+        cell = self._cell(cell_id)
+        instance = parse_group_instance_source(cell.get("source", ""))
+        if instance is None:
+            raise ApplicationError("not_group_instance", "Cell is not a Graphimo Group instance")
+        try:
+            contract = self._resolve_group_path(instance.path)
+            remote_describer = getattr(self.marimo, "describe_group_result", None)
+            if callable(remote_describer):
+                raw_outputs = remote_describer(self._require_session(), instance.result_var, [port.name for port in contract.outputs])
+                by_name = {item.get("name"): item for item in raw_outputs if isinstance(item, dict)}
+                outputs = [
+                    {"index": index, "name": port.name, "declared_type": port.type,
+                     "runtime_type": by_name.get(port.name, {}).get("runtime_type"),
+                     "preview": by_name.get(port.name, {}).get("preview"),
+                     "expression": f"{instance.result_var}.{port.name}"}
+                    for index, port in enumerate(contract.outputs)
+                ]
+                return {"instance_id": instance.instance_id, "group_id": instance.group_id, "outputs": outputs}
+            value = self.marimo.get_variable(self._require_session(), instance.result_var)
+        except (ApplicationError, KeyError, LookupError, RuntimeError) as exc:
+            raise ApplicationError("runtime_value_unavailable", "Group result is not available") from exc
+        outputs = []
+        for port in contract.outputs:
+            try:
+                output_value = value[port.name]
+            except (KeyError, TypeError, AttributeError) as exc:
+                raise ApplicationError("group_output_missing", f"Group result has no output {port.name!r}") from exc
+            preview = graphimo.preview_value(output_value)
+            outputs.append({"index": len(outputs), "name": port.name, "declared_type": port.type,
+                            "runtime_type": preview["runtime_type"], "preview": preview["preview"],
+                            "expression": f"{instance.result_var}.{port.name}"})
+        return {"instance_id": instance.instance_id, "group_id": instance.group_id, "outputs": outputs}
+
     def run_target(self, cell_id: str) -> Any:
         cell = self._cell(cell_id)
         if parse_disabled_instance_source(cell.get("source", "")) is not None:
@@ -490,17 +626,27 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         for cell_id in dict.fromkeys(ids):
             cell = cells.get(cell_id)
             instance = parse_instance_source(cell.get("source", "")) if cell else None
-            if instance is None:
-                raise ApplicationError("unsupported_duplicate", "Only Graphimo-owned node instances can be duplicated")
-            bindings = {binding.input_name: binding.expression for binding in instance.bindings}
-            source, clone = build_instance_source(instance.node_name, bindings)
+            group_instance = parse_group_instance_source(cell.get("source", "")) if cell else None
+            if instance is not None:
+                bindings = {binding.input_name: binding.expression for binding in instance.bindings}
+                source, clone = build_instance_source(instance.node_name, bindings)
+                clone_info = {"instance_id": clone.instance_id, "result_var": clone.result_var}
+            elif group_instance is not None:
+                contract = self._resolve_group_path(group_instance.path)
+                bindings = {binding.input_name: binding.expression for binding in group_instance.bindings}
+                source, clone = build_group_instance_source(contract, bindings, outputs=group_instance.outputs, allow_incomplete=True)
+                clone_info = {"instance_id": clone.instance_id, "result_var": clone.result_var, "group_id": clone.group_id}
+            else:
+                raise ApplicationError("unsupported_duplicate", "Only Graphimo node and Group instances can be duplicated")
             new_id = self.marimo.add_cell(self._require_session(), source)
             position = positions.get(cell_id, {"x": 80, "y": 80})
             self._save_positions({new_id: {"x": position.get("x", 80) + offset[0], "y": position.get("y", 80) + offset[1]}})
-            results.append({"cell_id": new_id, "instance_id": clone.instance_id, "result_var": clone.result_var, "source": source})
+            results.append({"cell_id": new_id, **clone_info, "source": source})
         return results
 
     def open_inspector(self, cell_id: str) -> dict[str, Any]:
+        if parse_group_instance_source(self._cell(cell_id).get("source", "")) is not None:
+            return self.inspect_group_instance(cell_id)
         return self.inspect_node_instance(cell_id)
 
     def open_source(self, element_id: str) -> Any:
@@ -598,6 +744,23 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             return path
         raise ApplicationError("component_not_found", f"Component '{component_id}' was not found")
 
+    def _safe_group_path(self, group_id_or_path: str) -> Path:
+        if not isinstance(group_id_or_path, str) or not group_id_or_path:
+            raise ApplicationError("group_not_found", "Group path must be non-empty")
+        relative = Path(group_id_or_path)
+        base = self.components_root
+        path = relative.resolve() if relative.is_absolute() else (base / relative).resolve()
+        if base not in path.parents or path.suffix != ".py" or not path.is_file():
+            raise ApplicationError("group_not_found", "Group file must be a .py file inside the component library")
+        try:
+            load_group_contract(path)
+        except ValueError as exc:
+            raise ApplicationError("group_not_found", str(exc)) from exc
+        return path
+
+    def _resolve_group_path(self, group_id_or_path: str) -> GroupContract:
+        return load_group_contract(self._safe_group_path(group_id_or_path))
+
     @staticmethod
     def _load_module(path: Path) -> Any:
         import importlib.util
@@ -671,6 +834,20 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                 if any(part.startswith(".") for part in path.relative_to(self.components_root).parts):
                     continue
                 try:
+                    contract = load_group_contract(path)
+                except ValueError:
+                    contract = None
+                if contract is not None:
+                    relative_group = path.relative_to(self.components_root).as_posix()
+                    items.append(PaletteItem(
+                        id=f"group:{relative_group}", title=contract.name, category="Groups", kind="group",
+                        description=f"Reusable {contract.dialect_id} workflow",
+                        search_terms=(contract.name, contract.id, "group", "workflow"),
+                        source_provider="project", icon_hint="group",
+                        input_schema=tuple({"name": port.name, "required": port.required, "type": port.type, "default": port.default} for port in contract.inputs),
+                    ))
+                    continue
+                try:
                     module = self._load_module(path)
                 except ApplicationError:
                     continue
@@ -701,10 +878,18 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                             ),
                         )
                     )
-        return ScopePalette("root", "python", tuple(items))
+        scope_id = self._scope_stack[-1][0] if self._scope_stack else "root"
+        return ScopePalette(scope_id, "python", tuple(items))
 
     def _view_state(self, snapshot: dict[str, Any]) -> GraphimoViewState:
         saved = self._read_positions()
+        current_is_group_file = False
+        if self._project_path is not None:
+            try:
+                load_group_contract(self._project_path)
+                current_is_group_file = True
+            except ValueError:
+                pass
         disabled = {
             instance.result_var: cell["id"]
             for cell in snapshot.get("cells", [])
@@ -758,10 +943,16 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                 continue
             cell_id = cell["id"]
             raw_source = cell.get("source", "")
+            if current_is_group_file and (
+                is_group_managed_cell(raw_source)
+                or cell.get("name") in {"__graphimo_inputs", "__graphimo_outputs"}
+            ):
+                continue
             if raw_source == "# Graphimo control runtime\nimport marimo as mo":
                 continue
             disabled_instance = parse_disabled_instance_source(raw_source)
             instance = parse_instance_source(raw_source)
+            group_instance = parse_group_instance_source(raw_source)
             is_disabled = disabled_instance is not None
             if is_disabled:
                 instance = disabled_instance
@@ -852,6 +1043,62 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                         preview=preview["preview"],
                     ),
                 )
+            elif group_instance is not None:
+                try:
+                    contract = self._resolve_group_path(group_instance.path)
+                    if contract.id != group_instance.group_id:
+                        raise ValueError("Group instance reference no longer matches its file")
+                    kind = "group_instance"
+                    title = contract.name
+                    body = {
+                        "group_id": contract.id,
+                        "instance_id": group_instance.instance_id,
+                        "result_var": group_instance.result_var,
+                        "path": group_instance.path,
+                        "summary": f"{len(contract.inputs)} inputs · {len(contract.outputs)} outputs",
+                    }
+                    inputs = tuple(
+                        PortView(
+                            id=f"{cell_id}:input:{port.name}", name=port.name, direction="input",
+                            declared_type=port.type,
+                            expression=next((item.expression for item in group_instance.bindings if item.input_name == port.name), None),
+                            connected=_is_connection_expression(next((item.expression for item in group_instance.bindings if item.input_name == port.name), None)),
+                        )
+                        for port in contract.inputs
+                    )
+                    runtime_values = {}
+                    runtime_descriptions = {}
+                    if not is_disabled:
+                        describe_group = getattr(self.marimo, "describe_group_result", None)
+                        if callable(describe_group):
+                            try:
+                                runtime_descriptions = {
+                                    item["name"]: item
+                                    for item in describe_group(self._require_session(), group_instance.result_var, [port.name for port in contract.outputs])
+                                }
+                            except (KeyError, LookupError, RuntimeError, ValueError):
+                                pass
+                        elif callable(getattr(self.marimo, "get_variable", None)):
+                            try:
+                                runtime_result = self.marimo.get_variable(self._require_session(), group_instance.result_var)
+                                if isinstance(runtime_result, Mapping):
+                                    runtime_values = runtime_result
+                            except (KeyError, LookupError, RuntimeError):
+                                pass
+                    outputs = tuple(
+                        PortView(
+                            id=f"{cell_id}:output:{port.name}", name=port.name, direction="output",
+                            declared_type=port.type,
+                            runtime_type=runtime_descriptions[port.name].get("runtime_type") if port.name in runtime_descriptions else graphimo.preview_value(runtime_values.get(port.name))["runtime_type"] if port.name in runtime_values else None,
+                            expression=f"{group_instance.result_var}.{port.name}",
+                            preview=runtime_descriptions[port.name].get("preview") if port.name in runtime_descriptions else graphimo.preview_value(runtime_values.get(port.name))["preview"] if port.name in runtime_values else None,
+                        )
+                        for port in contract.outputs
+                    )
+                except (ApplicationError, ValueError) as exc:
+                    diagnostics.append(DiagnosticView("group_reference_invalid", str(exc), cell_id))
+                    kind = "group_instance"
+                    body = {"group_id": group_instance.group_id, "instance_id": group_instance.instance_id, "path": group_instance.path}
             position = saved.get(cell_id, {})
             blocks.append(
                 BlockView(
@@ -889,8 +1136,8 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             run_state = ProjectRunState("idle")
         return GraphimoViewState(
             project_id=project_id,
-            active_scope_id="root",
-            breadcrumbs=(ScopeCrumb("root", Path(project_id).name or "Project"),),
+            active_scope_id=self._scope_stack[-1][0] if self._scope_stack else "root",
+            breadcrumbs=tuple(ScopeCrumb(item[0], item[1]) for item in self._scope_stack) or (ScopeCrumb("root", Path(project_id).name or "Project"),),
             blocks=tuple(blocks),
             edges=edges,
             palette=self._palette(),

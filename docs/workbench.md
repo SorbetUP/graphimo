@@ -26,6 +26,7 @@ The Workbench and notebook server use the same Python interpreter. That interpre
 - Disable or re-enable an instance from its card menu. The disabled card and output ports remain visible; dependent connections are dashed and dependent blocks are marked stale.
 - Inspect native ArtifactStore logical, physical, deduplicated byte counts and blob/artifact counts from the inspector. This action does not read artifact payloads or expose CAS paths.
 - Preserve missing MetaBlock addons as opaque unavailable cards. Their JSON sidecars are not rewritten; details appear only after the addon host is available.
+- Discover Group files in `components/` from their static contract, add reusable reference instances, connect their named ports, run them through marimo, and inspect bounded named outputs. Use the Group card's open control to enter its Python/marimo scope; the back arrow restores the parent scope and its live notebook session.
 - Pan and zoom the canvas with pointer drag, trackpad/wheel and the zoom controls. `F` fits the visible graph.
 
 The browser code performs drawing, hit testing, pointer handling and transient selection only. `GraphimoApplication` validates commands, mutates canonical instance source, reads values through the marimo port, and writes layout coordinates to `.graphimo.json`. Marimo remains the execution and dependency engine.
@@ -35,12 +36,12 @@ The browser code performs drawing, hit testing, pointer handling and transient s
 `MarimoHttpPort` owns the local marimo transport. It executes bounded inspection code in the active marimo context and returns JSON-safe view data. It never transfers arbitrary notebook values into browser JavaScript. The HTTP adapter is a transport for the same `GraphimoApplication` methods used by application-level tests.
 
 The current Workbench implements W1 node editing, disabled blocks,
-ArtifactStore inspection, W2 marimo-backed controls and opaque missing-addon
-placeholders. Undo/redo, Group Blocks, nested-scope navigation, active addon
+ArtifactStore inspection, W2 marimo-backed controls, opaque missing-addon
+placeholders, and U4 Group references and nested navigation. Each open scope
+uses a separate local marimo session, and Group execution itself uses a cloned
+`App.run(defs=...)` with the declared input definitions. Undo/redo, active addon
 catalogs and PyTorch editing remain outstanding. The application returns its
 supported action list so the renderer can keep unavailable operations hidden.
-The 2026-11-25 implementation update resolves the Group backend as a cloned
-marimo `App.run(defs=...)` workflow; implementation is scheduled for U4.
 
 ## Verification
 

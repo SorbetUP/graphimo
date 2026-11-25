@@ -25,7 +25,13 @@ def _free_port() -> int:
 class MarimoHttpPort:
     """Use marimo's local code-mode API while marimo owns notebook execution."""
 
-    def __init__(self, notebook_path: str | Path, *, startup_timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        notebook_path: str | Path,
+        *,
+        startup_timeout: float = 30.0,
+        initialize_notebook: bool = True,
+    ) -> None:
         self.notebook_path = str(Path(notebook_path).expanduser().resolve())
         self.port = _free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -35,6 +41,8 @@ class MarimoHttpPort:
         self._closing = threading.Event()
         self._session_id: str | None = None
         self._start(startup_timeout)
+        if initialize_notebook:
+            self._initialize_notebook()
 
     @property
     def session_id(self) -> str:
@@ -47,8 +55,8 @@ class MarimoHttpPort:
         notebook.parent.mkdir(parents=True, exist_ok=True)
         if not notebook.exists():
             notebook.write_text(
-                "import marimo\n\n__generated_with = \"0.25.2\"\napp = marimo.App()\n\n"
-                "if __name__ == \"__main__\":\n    app.run()\n",
+                'import marimo\n\n__generated_with = "0.25.2"\napp = marimo.App()\n\n'
+                'if __name__ == "__main__":\n    app.run()\n',
                 encoding="utf-8",
             )
         self.process = subprocess.Popen(
@@ -90,7 +98,6 @@ class MarimoHttpPort:
             raise RuntimeError("marimo did not expose an active kernel session")
         self._session_id = str(next(iter(sessions)))
         self._server_token = self._discover_server_token()
-        self._initialize_notebook()
 
     def _initialize_notebook(self) -> None:
         self._execute(
@@ -106,14 +113,18 @@ class MarimoHttpPort:
             from websockets.sync.client import connect
         except ImportError as exc:
             self.close()
-            raise RuntimeError("The Workbench live marimo port requires the websockets package") from exc
+            raise RuntimeError(
+                "The Workbench live marimo port requires the websockets package"
+            ) from exc
         websocket_session = f"graphimo-workbench-{uuid.uuid4().hex}"
         ws_url = f"ws://127.0.0.1:{self.port}/ws?session_id={websocket_session}"
         self._websocket = connect(ws_url, open_timeout=10, close_timeout=2)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
-                payload = json.loads(self._websocket.recv(timeout=max(0.2, deadline - time.monotonic())))
+                payload = json.loads(
+                    self._websocket.recv(timeout=max(0.2, deadline - time.monotonic()))
+                )
             except Exception as exc:
                 self.close()
                 raise RuntimeError(f"marimo websocket did not become ready: {exc}") from exc
@@ -203,7 +214,7 @@ class MarimoHttpPort:
     def inspect(self, session_id: str) -> dict[str, Any]:
         if session_id != self.session_id:
             raise KeyError(session_id)
-        code = '''
+        code = """
 import json
 import marimo._code_mode as cm
 async with cm.get_context() as ctx:
@@ -237,7 +248,7 @@ async with cm.get_context() as ctx:
     notebook = {"path": __import__("os").environ.get("GRAPHIMO_NOTEBOOK_PATH", ""), "session_id": ""}
     result = {"notebook": notebook, "cells": cells, "edges": edges}
 print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")))
-'''
+"""
         result = self._execute(code)
         result["notebook"] = {"path": self.notebook_path, "session_id": session_id}
         return result
@@ -344,7 +355,9 @@ print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")
         )
         return self._execute(code)
 
-    def ensure_node_available(self, session_id: str, module_name: str, node_name: str, import_root: str) -> None:
+    def ensure_node_available(
+        self, session_id: str, module_name: str, node_name: str, import_root: str
+    ) -> None:
         self._check_session(session_id)
         result = self._execute(
             "import graphimo, json\nimport marimo._code_mode as cm\n"
@@ -365,7 +378,9 @@ print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")
         if result.get("cell_id") is not None and not isinstance(result["cell_id"], str):
             raise RuntimeError("Marimo returned an invalid node import cell ID")
 
-    def describe_node_result(self, session_id: str, result_var: str, node_name: str) -> list[dict[str, Any]]:
+    def describe_node_result(
+        self, session_id: str, result_var: str, node_name: str
+    ) -> list[dict[str, Any]]:
         self._check_session(session_id)
         code = (
             "import graphimo, json\nimport marimo._code_mode as cm\n"
@@ -375,9 +390,28 @@ print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")
         )
         return self._execute(code)
 
+    def describe_group_result(
+        self, session_id: str, result_var: str, output_names: list[str]
+    ) -> list[dict[str, Any]]:
+        self._check_session(session_id)
+        code = (
+            "import graphimo, json\nimport marimo._code_mode as cm\n"
+            "async with cm.get_context() as ctx:\n"
+            f"    value = ctx.globals[{self._literal(result_var)}]\n"
+            f"    names = {self._literal(output_names)}\n"
+            "    outputs = []\n"
+            "    for name in names:\n"
+            "        summary = graphimo.preview_value(value[name])\n"
+            "        outputs.append({'index': len(outputs), 'name': name, 'runtime_type': summary['runtime_type'], 'preview': summary['preview'], 'expression': name})\n"
+            "print('GRAPHIMO_RESULT:' + json.dumps(outputs, separators=(',', ':')))"
+        )
+        return self._execute(code)
+
     def get_variable(self, session_id: str, variable_name: str) -> Any:
         del session_id, variable_name
-        raise RuntimeError("Raw Python values never cross the Workbench marimo boundary; use describe_node_result")
+        raise RuntimeError(
+            "Raw Python values never cross the Workbench marimo boundary; use describe_node_result"
+        )
 
     def _check_session(self, session_id: str) -> None:
         if session_id != self.session_id:
@@ -405,3 +439,79 @@ print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")
 
     def __exit__(self, *_args: Any) -> None:
         self.close()
+
+
+class MarimoSessionPool:
+    """Own one local marimo server per open notebook scope."""
+
+    _SESSION_METHODS = frozenset(
+        {
+            "inspect",
+            "add_cell",
+            "inspect_control",
+            "set_control_value",
+            "replace_cell_source",
+            "run_cell",
+            "delete_cell",
+            "list_graphimo_nodes",
+            "inspect_node",
+            "ensure_node_available",
+            "describe_node_result",
+            "describe_group_result",
+            "get_variable",
+        }
+    )
+
+    def __init__(self, notebook_path: str | Path, *, port_factory=MarimoHttpPort) -> None:
+        self._lock = threading.RLock()
+        self._port_factory = port_factory
+        root = port_factory(notebook_path)
+        self._ports_by_path = {str(Path(root.notebook_path).resolve()): root}
+        self._ports_by_session = {root.session_id: root}
+        self.notebook_path = root.notebook_path
+
+    @property
+    def session_id(self) -> str:
+        with self._lock:
+            root = self._ports_by_path.get(str(Path(self.notebook_path).resolve()))
+            if root is None:
+                raise RuntimeError("root marimo session is not open")
+            return root.session_id
+
+    def list_active_notebooks(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {"session_id": port.session_id, "path": port.notebook_path}
+                for port in self._ports_by_path.values()
+            ]
+
+    def open_notebook(self, path: str | Path) -> dict[str, str]:
+        resolved = str(Path(path).expanduser().resolve())
+        with self._lock:
+            port = self._ports_by_path.get(resolved)
+            if port is None:
+                port = self._port_factory(resolved, initialize_notebook=False)
+                self._ports_by_path[resolved] = port
+                self._ports_by_session[port.session_id] = port
+            return {"session_id": port.session_id, "path": port.notebook_path}
+
+    def __getattr__(self, name: str):
+        if name not in self._SESSION_METHODS:
+            raise AttributeError(name)
+
+        def route(session_id: str, *args: Any, **kwargs: Any):
+            with self._lock:
+                port = self._ports_by_session.get(session_id)
+            if port is None:
+                raise KeyError(session_id)
+            return getattr(port, name)(session_id, *args, **kwargs)
+
+        return route
+
+    def close(self) -> None:
+        with self._lock:
+            ports = tuple(self._ports_by_path.values())
+            self._ports_by_path.clear()
+            self._ports_by_session.clear()
+        for port in ports:
+            port.close()

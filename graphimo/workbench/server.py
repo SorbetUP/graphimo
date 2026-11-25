@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from graphimo.application import ApplicationError, GraphimoApplication
-from graphimo.marimo_http import MarimoHttpPort
+from graphimo.marimo_http import MarimoSessionPool
 
 _LOG = logging.getLogger("graphimo.workbench")
 
@@ -32,7 +32,7 @@ class WorkbenchController:
 
     def __init__(self) -> None:
         self._lock = RLock()
-        self.port: MarimoHttpPort | None = None
+        self.port: MarimoSessionPool | None = None
         self.app: GraphimoApplication | None = None
         self.notebook_path: Path | None = None
 
@@ -49,6 +49,14 @@ class WorkbenchController:
             app = self._require_app()
             if action == "refresh_project":
                 return {"state": _jsonable(app.refresh_project())}
+            if action == "enter_group":
+                return {
+                    "state": _jsonable(
+                        app.enter_group(payload["group_path"], payload.get("session_id"))
+                    )
+                }
+            if action == "leave_scope":
+                return {"state": _jsonable(app.leave_scope())}
             if action == "select":
                 return {"state": _jsonable(app.select(payload.get("ids", [])))}
             if action == "add_palette_item":
@@ -71,7 +79,9 @@ class WorkbenchController:
                 result = app.disconnect(payload["target_cell_id"], input_name=payload["input_name"])
                 return {"result": result, "state": _jsonable(app.refresh_project())}
             if action == "set_literal":
-                result = app.set_literal(payload["cell_id"], payload["input_name"], payload["value"])
+                result = app.set_literal(
+                    payload["cell_id"], payload["input_name"], payload["value"]
+                )
                 return {"result": result, "state": _jsonable(app.refresh_project())}
             if action == "set_control_value":
                 result = app.set_control_value(payload["cell_id"], payload["value"])
@@ -80,10 +90,14 @@ class WorkbenchController:
                 result = app.run_target(payload["cell_id"])
                 state = app.refresh_project()
                 try:
-                    inspection = app.inspect_node_instance(payload["cell_id"])
+                    inspection = app.open_inspector(payload["cell_id"])
                 except ApplicationError:
                     inspection = None
-                return {"result": _jsonable(result), "inspection": inspection, "state": _jsonable(state)}
+                return {
+                    "result": _jsonable(result),
+                    "inspection": inspection,
+                    "state": _jsonable(state),
+                }
             if action == "inspect":
                 return {"inspection": app.open_inspector(payload["cell_id"])}
             if action == "inspect_artifact_store":
@@ -102,26 +116,31 @@ class WorkbenchController:
                 return {"result": result, "state": _jsonable(app.refresh_project())}
             if action == "move_elements":
                 positions = {
-                    key: tuple(value)
-                    for key, value in payload.get("positions", {}).items()
+                    key: tuple(value) for key, value in payload.get("positions", {}).items()
                 }
                 return {"state": _jsonable(app.move_elements(positions))}
             if action == "close_project":
                 app.close_project()
                 self._close_port()
                 return {"closed": True}
-            raise ApplicationError("feature_not_available", f"Workbench action '{action}' is unavailable")
+            raise ApplicationError(
+                "feature_not_available", f"Workbench action '{action}' is unavailable"
+            )
 
     def open_project(self, path_value: Any) -> dict[str, Any]:
         if not isinstance(path_value, str) or not path_value.strip():
-            raise ApplicationError("invalid_project_path", "Enter a path to a marimo Python notebook")
+            raise ApplicationError(
+                "invalid_project_path", "Enter a path to a marimo Python notebook"
+            )
         path = Path(path_value).expanduser().resolve()
         if path.suffix != ".py":
-            raise ApplicationError("invalid_project_path", "Graphimo projects are marimo Python files ending in .py")
+            raise ApplicationError(
+                "invalid_project_path", "Graphimo projects are marimo Python files ending in .py"
+            )
         with self._lock:
             self._close_port()
             try:
-                port = MarimoHttpPort(path)
+                port = MarimoSessionPool(path)
                 self.port = port
                 app = GraphimoApplication(
                     port,
@@ -143,7 +162,9 @@ class WorkbenchController:
 
     def _require_app(self) -> GraphimoApplication:
         if self.app is None:
-            raise ApplicationError("project_not_open", "Open a marimo project to start using the Workbench")
+            raise ApplicationError(
+                "project_not_open", "Open a marimo project to start using the Workbench"
+            )
         return self.app
 
     def _close_port(self) -> None:
@@ -173,7 +194,13 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         if name is None:
             self.send_error(404)
             return
-        content_type = "text/html; charset=utf-8" if name.endswith(".html") else "text/javascript; charset=utf-8" if name.endswith(".js") else "text/css; charset=utf-8"
+        content_type = (
+            "text/html; charset=utf-8"
+            if name.endswith(".html")
+            else "text/javascript; charset=utf-8"
+            if name.endswith(".js")
+            else "text/css; charset=utf-8"
+        )
         data = files("graphimo.workbench").joinpath(name).read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -229,7 +256,9 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the standalone Graphimo development Workbench")
+    parser = argparse.ArgumentParser(
+        description="Run the standalone Graphimo development Workbench"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()

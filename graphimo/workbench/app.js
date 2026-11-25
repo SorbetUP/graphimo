@@ -59,7 +59,20 @@ function setState(state) {
   ui.state = state;
   ui.selected = ui.selected.filter((id) => state.blocks.some((block) => block.id === id));
   el("project-name").textContent = state.project_id.split(/[\\/]/).pop() || state.project_id;
-  el("breadcrumbs").textContent = (state.breadcrumbs || []).map((crumb) => crumb.title).join(" / ");
+  const breadcrumbs = el("breadcrumbs");
+  breadcrumbs.replaceChildren();
+  if ((state.breadcrumbs || []).length > 1) {
+    const back = document.createElement("button");
+    back.className = "scope-back";
+    back.textContent = "←";
+    back.title = "Leave current scope";
+    back.addEventListener("click", () => act("leave_scope"));
+    breadcrumbs.append(back);
+  }
+  (state.breadcrumbs || []).forEach((crumb, index) => {
+    if (index) breadcrumbs.append(document.createTextNode(" / "));
+    breadcrumbs.append(document.createTextNode(crumb.title));
+  });
   el("canvas-empty").classList.toggle("hidden", state.blocks.length > 0);
   el("palette-search").disabled = false;
   ["refresh", "zoom-out", "zoom-in", "fit", "run-selected", "artifact-store"].forEach((id) => (el(id).disabled = false));
@@ -145,8 +158,13 @@ function renderBlocks() {
     card.style.top = `${block.y}px`;
     const head = document.createElement("div");
     head.className = "block-head";
-    head.innerHTML = `<span class="block-title-wrap"><i class="state-dot ${statusClass(block.state)}"></i><span class="block-title"></span></span><span class="block-actions"><button data-action="run" title="Run this block">▶</button><button data-action="inspect" title="Inspect outputs">ⓘ</button><button data-action="more" title="Block actions">⋯</button></span>`;
+    head.innerHTML = `<span class="block-title-wrap"><i class="state-dot ${statusClass(block.state)}"></i><span class="block-title"></span></span><span class="block-actions"><button data-action="open" title="Open Group">↗</button><button data-action="run" title="Run this block">▶</button><button data-action="inspect" title="Inspect outputs">ⓘ</button><button data-action="more" title="Block actions">⋯</button></span>`;
     head.querySelector(".block-title").textContent = block.title;
+    head.querySelector('[data-action="open"]').hidden = block.kind !== "group_instance";
+    head.querySelector('[data-action="open"]').addEventListener("click", (event) => {
+      event.stopPropagation();
+      act("enter_group", { group_path: block.body.path });
+    });
     if (block.kind === "control") {
       head.querySelector('[data-action="run"]').hidden = true;
       head.querySelector('[data-action="inspect"]').hidden = true;
@@ -173,6 +191,12 @@ function renderBlocks() {
     const body = document.createElement("div");
     body.className = "block-body";
     if (block.kind === "control") renderControlWidget(block, body);
+    if (block.kind === "group_instance" && block.body.summary) {
+      const summary = document.createElement("div");
+      summary.className = "block-summary";
+      summary.textContent = block.body.summary;
+      body.append(summary);
+    }
     for (const input of block.inputs || []) {
       const row = document.createElement("div");
       row.className = "port-row";

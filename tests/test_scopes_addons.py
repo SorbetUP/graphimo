@@ -6,8 +6,13 @@ from pathlib import Path
 import pytest
 
 from graphimo.metablocks import MetaDialectRegistration, discover_metablock_addons
-from graphimo.scopes import GraphEdge, GraphElement, GraphScope, MetaBlock
-from graphimo.controls import build_control_source, control_output_type, parse_control_source, validate_control_value
+from graphimo.scopes import GraphEdge, GraphElement, GraphScope, GroupBlock, MetaBlock
+from graphimo.controls import (
+    build_control_source,
+    control_output_type,
+    parse_control_source,
+    validate_control_value,
+)
 
 
 def test_recursive_scope_roundtrip_preserves_opaque_addon_state() -> None:
@@ -38,6 +43,29 @@ def test_recursive_scope_roundtrip_preserves_opaque_addon_state() -> None:
     assert restored.to_dict() == root.to_dict()
 
 
+def test_group_scope_roundtrip_preserves_dialect_and_reference() -> None:
+    root = GraphScope(
+        id="root",
+        dialect_id="python",
+        elements=[
+            GroupBlock(
+                id="group-instance",
+                group_path="components/pipeline.py",
+                scope=GraphScope("group-instance", "python", [GraphElement("inner", "node")]),
+            )
+        ],
+    )
+
+    restored = GraphScope.from_dict(root.to_dict())
+    group = restored.elements[0]
+
+    assert isinstance(group, GroupBlock)
+    assert group.group_path == "components/pipeline.py"
+    assert group.scope.dialect_id == root.dialect_id
+    assert group.scope.elements[0].id == "inner"
+    assert restored.to_dict() == root.to_dict()
+
+
 def test_scope_rejects_malformed_edges_without_rewriting_unknown_state() -> None:
     with pytest.raises(ValueError, match="edge requires"):
         GraphScope.from_dict(
@@ -60,8 +88,13 @@ def test_registration_validates_only_the_declared_registration_contract() -> Non
 def test_discovery_uses_graphimo_metablocks_entry_point_group_without_loading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    entry = EntryPoint(name="example", value="example_addon:registration", group="graphimo.metablocks")
-    monkeypatch.setattr("graphimo.metablocks.entry_points", lambda *, group: [entry] if group == "graphimo.metablocks" else [])
+    entry = EntryPoint(
+        name="example", value="example_addon:registration", group="graphimo.metablocks"
+    )
+    monkeypatch.setattr(
+        "graphimo.metablocks.entry_points",
+        lambda *, group: [entry] if group == "graphimo.metablocks" else [],
+    )
     result = discover_metablock_addons()
     assert result == (entry,)
 
@@ -78,8 +111,16 @@ def test_core_package_has_no_torch_or_torchlens_imports() -> None:
 @pytest.mark.parametrize(
     ("control_type", "parameters", "output_type"),
     [
-        ("slider", {"start": 0.0, "stop": 1.0, "step": 0.01, "value": 0.25, "debounce": True}, "float"),
-        ("range_slider", {"start": 0, "stop": 10, "step": 1, "value": [2, 8]}, "tuple[float, float]"),
+        (
+            "slider",
+            {"start": 0.0, "stop": 1.0, "step": 0.01, "value": 0.25, "debounce": True},
+            "float",
+        ),
+        (
+            "range_slider",
+            {"start": 0, "stop": 10, "step": 1, "value": [2, 8]},
+            "tuple[float, float]",
+        ),
         ("number", {"value": 3, "step": 1}, "int"),
         ("select", {"options": ["small", "large"], "value": "large"}, "str"),
         ("checkbox", {"value": True}, "bool"),
@@ -88,7 +129,9 @@ def test_core_package_has_no_torch_or_torchlens_imports() -> None:
         ("button", {}, "event"),
     ],
 )
-def test_control_sources_are_readable_owned_marimo_calls(control_type, parameters, output_type) -> None:
+def test_control_sources_are_readable_owned_marimo_calls(
+    control_type, parameters, output_type
+) -> None:
     source, spec = build_control_source(control_type, parameters, instance_id="a81f2c40")
     parsed = parse_control_source(source)
     assert parsed == spec

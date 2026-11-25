@@ -32,7 +32,7 @@ class GraphEdge:
 class GraphScope:
     id: str
     dialect_id: str
-    elements: list[GraphElement | MetaBlock] = field(default_factory=list)
+    elements: list[GraphElement | GroupBlock | MetaBlock] = field(default_factory=list)
     edges: list[GraphEdge] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,7 +61,12 @@ class GraphScope:
         dialect_id = value.get("dialect_id")
         elements = value.get("elements", [])
         edges = value.get("edges", [])
-        if not isinstance(scope_id, str) or not scope_id or not isinstance(dialect_id, str) or not dialect_id:
+        if (
+            not isinstance(scope_id, str)
+            or not scope_id
+            or not isinstance(dialect_id, str)
+            or not dialect_id
+        ):
             raise ValueError("graph scope requires non-empty id and dialect_id")
         if not isinstance(elements, list) or not isinstance(edges, list):
             raise ValueError("graph scope elements and edges must be arrays")
@@ -90,8 +95,29 @@ class MetaBlock:
         }
 
 
-def _element_to_dict(element: GraphElement | MetaBlock) -> dict[str, Any]:
+@dataclass
+class GroupBlock:
+    """Reusable nested scope that preserves its parent's semantic dialect."""
+
+    id: str
+    group_path: str
+    scope: GraphScope
+    state: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "element_type": "group",
+            "id": self.id,
+            "group_path": self.group_path,
+            "scope": self.scope.to_dict(),
+            "state": deepcopy(self.state),
+        }
+
+
+def _element_to_dict(element: GraphElement | GroupBlock | MetaBlock) -> dict[str, Any]:
     if isinstance(element, MetaBlock):
+        return element.to_dict()
+    if isinstance(element, GroupBlock):
         return element.to_dict()
     if not isinstance(element, GraphElement):
         raise TypeError(f"unsupported graph element: {type(element).__name__}")
@@ -113,9 +139,26 @@ def _element_from_dict(value: Any) -> GraphElement | MetaBlock:
         element_id = value.get("id")
         plugin_id = value.get("plugin_id")
         scope = GraphScope.from_dict(value.get("scope"))
-        if not isinstance(element_id, str) or not element_id or not isinstance(plugin_id, str) or not plugin_id:
+        if (
+            not isinstance(element_id, str)
+            or not element_id
+            or not isinstance(plugin_id, str)
+            or not plugin_id
+        ):
             raise ValueError("MetaBlock requires non-empty id and plugin_id")
         return MetaBlock(element_id, plugin_id, scope, deepcopy(state))
+    if value.get("element_type") == "group":
+        element_id = value.get("id")
+        group_path = value.get("group_path")
+        scope = GraphScope.from_dict(value.get("scope"))
+        if (
+            not isinstance(element_id, str)
+            or not element_id
+            or not isinstance(group_path, str)
+            or not group_path
+        ):
+            raise ValueError("Group Block requires non-empty id and group_path")
+        return GroupBlock(element_id, group_path, scope, deepcopy(state))
     element_id = value.get("id")
     kind = value.get("kind")
     if not isinstance(element_id, str) or not element_id or not isinstance(kind, str) or not kind:

@@ -36,6 +36,14 @@ Workbench remains a conformance/debug harness.
 - Fixed the PyTorch registry's single-parameter `dropout` descriptor so catalog projection and parameter validation receive a tuple consistently.
 - Verification: **30 focused MetaBlock/PyTorch host and checkpoint tests passed**; `scripts/check --full` passes with **191 passed, 1 opt-in network bootstrap skipped**, both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass. TorchLens emits its upstream `ScalarEscapeWarning` during the live inspection test; the capture and assertions pass.
 
+### U4 — generic Group Blocks
+
+- Added `GroupPort`, `GroupContract`, `GroupResult`, and static contract validation in `graphimo.groups`. A Group is an ordinary marimo `.py` app with exact Graphimo-managed input/output cells and JSON-safe metadata; project palette discovery reads the contract without importing or executing the referenced file.
+- Added `create_group_file`, `load_group_contract`, and `run_group`. The runner validates all required inputs and named outputs, imports the referenced file only when explicitly run, clones its `marimo.App`, supplies all input-cell definitions to `App.run(defs=...)`, and returns one opaque result object with mapping and attribute access. There is no Graphimo scheduler or output cache.
+- Added readable reference-based Group instance source and strict parsing. Group Blocks now appear in the application palette with named input/output ports, can connect to other Graphimo nodes or Groups, can be disconnected/duplicated, and expose bounded runtime previews through the shared application/controller API.
+- Added recursive `GroupBlock` scope records preserving the parent's dialect, application breadcrumb/session-stack navigation, and Workbench enter/back actions. The Workbench now owns a `MarimoSessionPool`: each open Group scope gets its own local marimo process, while the parent remains live and is restored on Back. Group editor sessions are opened without eagerly running cells against placeholder `None` inputs.
+- Verification: focused Group/application/scope tests pass; live marimo Workbench test creates and runs a Group instance, inspects a named output, enters the Group file and returns to the parent. `scripts/check --full` passes with **203 passed, 1 opt-in network bootstrap skipped**, both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass.
+
 ## Completed milestones
 
 ### M1 — transparent node API
@@ -100,9 +108,9 @@ Workbench remains a conformance/debug harness.
 
 This is the remaining unrelated specification discrepancy. The active expression stays `null`; the implementation does not add runtime return-path instrumentation without a defined contract.
 
-## Group Block backend — decision resolved, implementation pending U4
+## Group Block backend — decision resolved and implemented in U4
 
-The update selects a cloned marimo `App.run(defs=...)` wrapped as a callable Graphimo component, with declared named outputs and no Graphimo scheduler. Group execution, palette/import/reuse, and nested scope operations remain to be implemented in U4.
+The update selects a cloned marimo `App.run(defs=...)` wrapped as a callable Graphimo component, with declared named outputs and no Graphimo scheduler. U4 implements the runner, contracts, reference-based palette instances, named port wiring, and application/Workbench nested navigation. Group files are discovered statically and loaded only when called or opened as an editing scope.
 
 ## MetaBlock seam — independent subset
 
