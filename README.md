@@ -107,6 +107,8 @@ The host-independent MetaBlock entry-point and application contracts live in
 addon-owned sidecar state when an addon is missing. The separate PyTorch
 distribution now registers through this API; its visual graph/compiler and
 runtime capabilities are still being implemented milestone by milestone.
+The addon schema and current milestone boundary are documented in
+[`docs/pytorch-addon.md`](docs/pytorch-addon.md).
 
 ## Development
 
