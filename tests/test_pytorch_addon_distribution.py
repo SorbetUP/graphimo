@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import importlib.util
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+ADDON = ROOT / "addons" / "pytorch"
+
+
+@pytest.mark.full
+@pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None,
+    reason="install the graphimo-pytorch runtime extra for addon lifecycle tests",
+)
+def test_addon_wheel_discovers_materializes_and_preserves_state(tmp_path: Path) -> None:
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            "--wheel-dir",
+            str(wheelhouse),
+            str(ADDON),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=90,
+    )
+    assert build.returncode == 0, f"addon wheel build failed:\n{build.stdout}\n{build.stderr}"
+    wheel = next(wheelhouse.glob("graphimo_pytorch-*.whl"))
+    install_target = tmp_path / "addon-install"
+    install = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--target",
+            str(install_target),
+            str(wheel),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=90,
+    )
+    assert install.returncode == 0, (
+        f"addon wheel install failed:\n{install.stdout}\n{install.stderr}"
+    )
+
+    notebook = tmp_path / "project.py"
+    notebook.write_text("# Graphimo addon lifecycle fixture\n", encoding="utf-8")
+    code = r"""
+import json
+import sys
+from pathlib import Path
+from graphimo.application import GraphimoApplication
+from graphimo.metablocks import GraphimoHostAPI, MetaBlockAddonManager
+
+root = Path(sys.argv[1])
+host = GraphimoHostAPI("test-project", root / "project.py")
+application = GraphimoApplication(host)
+created = application.execute("metablock.create", {
+    "dialect_id": "pytorch.model", "metablock_id": "tiny", "request": {"name": "Tiny"}
+})
+edited = application.execute("metablock.apply", {
+    "metablock_id": "tiny", "intent": {"type": "set_model_parameter", "name": "hidden_size", "value": 12}
+})
+revision = edited["revision"]
+sidecar = host.sidecar_path("tiny")
+missing = MetaBlockAddonManager(host, entry_points=lambda: []).project("tiny")
+assert missing["available"] is False
+assert sidecar.is_file()
+restored = GraphimoApplication(host).execute("metablock.project", {"metablock_id": "tiny"})
+assert restored["available"] is True and restored["revision"] == revision
+materialized = GraphimoApplication(host).execute("metablock.materialize", {
+    "metablock_id": "tiny", "bindings": {}
+})
+scope = {}
+exec(materialized["source"], scope, scope)
+definition = scope[materialized["result_name"]]
+model = definition.instantiate()
+assert isinstance(model(__import__("torch").ones(2, 4)), dict)
+assert model.__graphimo_pytorch_runtime__.graph_revision == revision
+print(json.dumps({"revision": revision, "parameters": definition.total_parameters}))
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(install_target), str(ROOT), str(ROOT / "core"), str(ADDON)]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, f"addon lifecycle failed:\n{result.stdout}\n{result.stderr}"
+    assert '"parameters": 73' in result.stdout

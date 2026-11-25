@@ -33,5 +33,9 @@ state and notebook scheduling to their respective host systems.
 The current tests use a fake entry-point addon to verify lazy discovery,
 state creation/editing, atomic failure behavior, project serialization,
 missing-addon preservation, materialization revision checks, bounded events
-and the application action seam. The PyTorch package has not yet been moved
-behind this host API; that is the next U3 milestone.
+and the application action seam. The separate PyTorch wheel now registers
+through this API and returns a `PyTorchModelDefinition` from an ordinary
+marimo materialization cell. Its current semantic state is a small MLP
+specification; the complete visual element graph/compiler, reusable groups,
+runtime subscriptions, TorchLens actions and checkpoint lifecycle remain
+unfinished addon work.

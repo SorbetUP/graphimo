@@ -14,8 +14,6 @@ dependencies = []
 [project.optional-dependencies]
 notebook = ["marimo==0.25.2"]
 dev = ["pytest>=8,<9", "ruff>=0.8"]
-prototype = ["numpy", "torch"]
-inspection = ["torchlens"]
 
 [tool.setuptools]
 packages = ["adapter", "graphimo", "graphimo_core"]
@@ -26,6 +24,7 @@ cache_cells = true
 
 [tool.pytest.ini_options]
 pythonpath = [".", "core"]
+markers = ["full: requires building/installing optional distributions or heavyweight runtimes"]
 
 [tool.ruff]
 line-length = 100

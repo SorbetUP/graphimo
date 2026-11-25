@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -104,6 +104,7 @@ class GraphimoHostAPI:
     diagnose: Callable[[dict[str, Any]], None] = lambda _diagnostic: None
     update_materialization_cell: Callable[[dict[str, Any]], Any] = lambda _spec: None
     current_scope: Callable[[], str] = lambda: "root"
+    current_metablock_id: str | None = None
 
     @property
     def metablock_root(self) -> Path:
@@ -165,6 +166,10 @@ class GraphimoHostAPI:
                 path.unlink(missing_ok=True)
         legacy_path.unlink(missing_ok=True)
 
+    def for_metablock(self, metablock_id: str) -> GraphimoHostAPI:
+        self.sidecar_path(metablock_id)
+        return replace(self, current_metablock_id=metablock_id)
+
 
 def _encode_json(value: Any) -> bytes:
     try:
@@ -178,6 +183,11 @@ def _encode_json(value: Any) -> bytes:
         raise MetaBlockStateError(f"MetaBlock state must be UTF-8 JSON data: {exc}") from exc
 
 
+def state_revision(state: Any) -> str:
+    """Return the canonical content revision for addon-owned JSON state."""
+    return hashlib.sha256(_encode_json(state)).hexdigest()
+
+
 def _record_from_sidecar(value: dict[str, Any]) -> MetaBlockRecord:
     required = {"format", "metablock_id", "dialect_id", "addon_version", "api_version", "state"}
     if not required.issubset(value) or value.get("format") != 1:
@@ -188,14 +198,14 @@ def _record_from_sidecar(value: dict[str, Any]) -> MetaBlockRecord:
         raise MetaBlockStateError("MetaBlock sidecar has invalid addon version metadata")
     if not isinstance(value["metablock_id"], str) or not _ID_RE.fullmatch(value["metablock_id"]):
         raise MetaBlockStateError("MetaBlock sidecar has an invalid MetaBlock id")
-    state_bytes = _encode_json(value["state"])
+    revision = state_revision(value["state"])
     return MetaBlockRecord(
         metablock_id=value["metablock_id"],
         dialect_id=value["dialect_id"],
         addon_version=value["addon_version"],
         api_version=value["api_version"],
         state=value["state"],
-        revision=hashlib.sha256(state_bytes).hexdigest(),
+        revision=revision,
     )
 
 
@@ -229,10 +239,22 @@ class MetaBlockAddonManager:
         handler = self._handlers.get(dialect_id)
         if handler is not None:
             return handler
-        entry_point = next((item for item in self._entry_points() if item.name == dialect_id), None)
-        if entry_point is None:
+        entries = list(self._entry_points())
+        if not entries:
             raise AddonUnavailableError(f"MetaBlock addon '{dialect_id}' is not installed")
-        registration = entry_point.load()
+        exact_name = next((item for item in entries if item.name == dialect_id), None)
+        candidates = [exact_name] if exact_name is not None else entries
+        registration = None
+        for entry_point in candidates:
+            loaded = entry_point.load()
+            if isinstance(loaded, MetaDialectRegistration) and loaded.dialect_id == dialect_id:
+                registration = loaded
+                break
+            if exact_name is not None:
+                registration = loaded
+                break
+        if registration is None:
+            raise AddonUnavailableError(f"MetaBlock addon '{dialect_id}' is not installed")
         if not isinstance(registration, MetaDialectRegistration):
             raise MetaBlockError(
                 f"entry point '{dialect_id}' did not expose MetaDialectRegistration"
@@ -382,7 +404,7 @@ class MetaBlockAddonManager:
     def materialize(self, metablock_id: str, bindings: dict[str, Any]) -> dict[str, Any]:
         record = self.load(metablock_id)
         result = self._load(record.dialect_id).build_materialization(
-            record.state, bindings, self.host
+            record.state, bindings, self.host.for_metablock(metablock_id)
         )
         required = {"source", "result_name", "output_type", "bindings", "revision"}
         if not isinstance(result, dict) or not required.issubset(result):

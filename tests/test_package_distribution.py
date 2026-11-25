@@ -1,4 +1,4 @@
-"""Check that the Python distribution contains the adapter and core spike."""
+"""Check that the Graphimo Core wheel excludes renderers and addons."""
 
 from __future__ import annotations
 
@@ -72,8 +72,15 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "graphimo/__init__.py" in names
     assert "graphimo/metablocks.py" in names
     assert "graphimo_core/artifacts.py" in names
-    assert "graphimo_core/vertical_demo.py" in names
-    for excluded in ("plugin/", "components/", "examples/", "tests/", "core/"):
+    assert "graphimo_core/worker.py" in names
+    for excluded in (
+        "plugin/",
+        "components/",
+        "examples/",
+        "tests/",
+        "core/",
+        "graphimo_pytorch/",
+    ):
         assert not any(name.startswith(excluded) for name in names), excluded
 
     install_target = tmp_path / "install"

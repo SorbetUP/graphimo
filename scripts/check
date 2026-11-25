@@ -33,15 +33,12 @@ def check_dependencies(mode: str) -> None:
     except ImportError as exc:
         raise SystemExit(
             "Install Graphimo development dependencies first: "
-            "python -m pip install -e '.[dev,notebook,prototype]'"
+            "python -m pip install -e '.[dev,notebook]'"
         ) from exc
 
     if mode == "full":
         if not (ROOT / "addons" / "pytorch" / "pyproject.toml").is_file():
-            raise SystemExit(
-                "Full gate unavailable: the separately installable addons/pytorch package "
-                "has not been implemented yet."
-            )
+            raise SystemExit("Full gate requires the graphimo-pytorch addon distribution.")
         try:
             import marimo
             import torch
@@ -62,18 +59,30 @@ def check_dependencies(mode: str) -> None:
 
 
 def python_paths() -> list[str]:
-    return ["adapter", "core", "components", "examples", "graphimo", "tests"]
+    return [
+        "adapter",
+        "addons/pytorch",
+        "core",
+        "components",
+        "examples",
+        "graphimo",
+        "tests",
+    ]
 
 
 def lint_paths() -> list[str]:
     return [
         "graphimo",
+        "addons/pytorch/graphimo_pytorch",
+        "addons/pytorch/tests",
         "core/graphimo_core",
         "tests/test_core_vertical_slice.py",
-        "tests/test_optional_torchlens.py",
+        "addons/pytorch/tests/test_torchlens.py",
         "tests/test_metablock_host.py",
         "tests/test_package_distribution.py",
+        "tests/test_pytorch_addon_distribution.py",
         "scripts/check",
+        "scripts/check_dependencies.py",
     ]
 
 
@@ -104,12 +113,11 @@ def main() -> int:
     )
     if marimo_python.returncode == 0:
         env["GRAPHIMO_MARIMO_PYTHON"] = marimo_python.stdout.strip()
-    run("Python and marimo contracts", sys.executable, "-m", "pytest", "-q", "-rs", env=env)
-
     if args.full:
         require("luau", "install the Luau CLI for live Graphimo bridge tests")
-        run("Dependency consistency", sys.executable, "-m", "pip", "check")
-        with tempfile.TemporaryDirectory(prefix="graphimo-wheel-") as temporary:
+
+    with tempfile.TemporaryDirectory(prefix="graphimo-check-") as temporary:
+        if args.full:
             build_root = Path(temporary) / "source"
             shutil.copytree(
                 ROOT,
@@ -124,6 +132,8 @@ def main() -> int:
                     "*.egg-info",
                 ),
             )
+            wheelhouse = Path(temporary) / "wheels"
+            wheelhouse.mkdir()
             run(
                 "Root wheel build",
                 sys.executable,
@@ -134,9 +144,8 @@ def main() -> int:
                 "--no-build-isolation",
                 str(build_root),
                 "-w",
-                str(Path(temporary) / "wheels"),
+                str(wheelhouse),
             )
-            addon = build_root / "addons" / "pytorch"
             run(
                 "PyTorch addon wheel build",
                 sys.executable,
@@ -145,10 +154,48 @@ def main() -> int:
                 "wheel",
                 "--no-deps",
                 "--no-build-isolation",
-                str(addon),
+                str(build_root / "addons" / "pytorch"),
                 "-w",
-                str(Path(temporary) / "wheels"),
+                str(wheelhouse),
             )
+            install_target = Path(temporary) / "install"
+            install_target.mkdir()
+            for wheel in sorted(wheelhouse.glob("*.whl")):
+                run(
+                    f"Isolated install: {wheel.name}",
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-deps",
+                    "--target",
+                    str(install_target),
+                    str(wheel),
+                )
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = os.pathsep.join(
+                part
+                for part in [
+                    str(install_target),
+                    str(ROOT),
+                    str(ROOT / "core"),
+                    existing_pythonpath,
+                ]
+                if part
+            )
+            run(
+                "Graphimo dependency consistency",
+                sys.executable,
+                "scripts/check_dependencies.py",
+                "graphimo",
+                "graphimo-pytorch",
+                env=env,
+            )
+
+        pytest_args = ["-q", "-rs"]
+        if args.fast:
+            pytest_args.extend(["-m", "not full"])
+        run("Python and marimo contracts", sys.executable, "-m", "pytest", *pytest_args, env=env)
 
     print(f"\nGraphimo {mode} verification passed.", flush=True)
     return 0

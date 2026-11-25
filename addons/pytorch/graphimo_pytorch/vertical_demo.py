@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from graphimo_core.artifacts import LocalArtifactStore
+from graphimo_core.ledger import Event, WorkspaceGraph
+from graphimo_core.runtime import LocalPythonWorker
 
-from .artifacts import LocalArtifactStore
-from .ledger import Event, WorkspaceGraph
-from .pytorch import ModelSpec, load_checkpoint
-from .runtime import LocalPythonWorker
+from graphimo_pytorch.prototype import ModelSpec, load_checkpoint
 
 
 def _npz_bytes(**arrays: Any) -> bytes:
@@ -133,7 +133,7 @@ import resource
 import time
 import numpy as np
 import torch
-from graphimo_core.pytorch import ModelSpec, build_model, checkpoint_bytes, train_multihead
+from graphimo_pytorch.prototype import ModelSpec, build_model, checkpoint_bytes, train_multihead
 
 spec = ModelSpec(**model_spec)
 with graphimo.open_artifact(dataset_id) as dataset:
@@ -150,7 +150,7 @@ graphimo.event("resource", {"elapsed_seconds": time.perf_counter() - started,
                             "peak_rss_platform_units": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)})
 inspection = {"available": False}
 try:
-    from graphimo_core.pytorch import inspect_model
+    from graphimo_pytorch.prototype import inspect_model
     inspection = {"available": True, **inspect_model(model.eval(), x, "backbone.1")}
 except ModuleNotFoundError:
     pass
@@ -215,7 +215,7 @@ import time
 from pathlib import Path
 import numpy as np
 import torch
-from graphimo_core.pytorch import load_checkpoint
+from graphimo_pytorch.prototype import load_checkpoint
 
 model, _spec, checkpoint_data = load_checkpoint(graphimo.read_bytes(checkpoint_id))
 with graphimo.open_artifact(dataset_id) as dataset:
@@ -288,7 +288,7 @@ evaluation_result = {"artifact_id": artifact["artifact_id"], "elapsed_seconds": 
     fork_source = """
 import numpy as np
 import torch
-from graphimo_core.pytorch import (ModelSpec, build_model, checkpoint_bytes, load_checkpoint,
+from graphimo_pytorch.prototype import (ModelSpec, build_model, checkpoint_bytes, load_checkpoint,
                                    migrate_weights, train_multihead)
 
 parent, _, _ = load_checkpoint(graphimo.read_bytes(parent_checkpoint_id))

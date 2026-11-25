@@ -3,16 +3,19 @@ from __future__ import annotations
 import importlib.util
 
 import pytest
-from graphimo_core.pytorch import ModelSpec, build_model, inspect_model
-from graphimo_core.vertical_demo import run_vertical_demo
 
 
 @pytest.mark.skipif(
     importlib.util.find_spec("torchlens") is None,
     reason="install the optional inspection extra to run TorchLens integration",
 )
+@pytest.mark.full
 def test_targeted_torchlens_capture_validates_selected_model_module(tmp_path) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("graphimo_pytorch")
     import torch
+    from graphimo_pytorch.prototype import ModelSpec, build_model, inspect_model
+    from graphimo_pytorch.vertical_demo import run_vertical_demo
 
     model = build_model(ModelSpec(4, 8, {"a": 1, "b": 1, "c": 1})).eval()
     result = inspect_model(model, torch.randn(3, 4), "backbone.1")

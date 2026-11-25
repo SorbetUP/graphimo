@@ -18,7 +18,7 @@ continuation after the worker process is destroyed. It does not implement a UI.
 | Avoid a fixed total-event lifetime cap | Verified | Throttling is per `(run, node, kind, component_path, metric name)` series. It coalesces to the latest pending value; it does not stop after 500 events. A 600-series test verifies this. |
 | Preserve node code/config that produced each run | Verified | `add_node` appends a content-derived immutable revision. Every run stores the selected `revision_id`; later edits update the current node pointer without replacing prior revisions. `start_run` rejects missing nodes or mismatched code versions. |
 | Resume model + optimizer + RNG after process restart | Verified for deterministic CPU training | The test compares 8 uninterrupted AdamW epochs with 4 epochs, worker termination, checkpoint restore, and 4 resumed epochs. Parameters are exactly equal for the deterministic fixture. |
-| Local verification gate | Implemented for current core slice | `./scripts/check --fast` runs syntax/import sanity, Ruff format/lint and the local contract suite. `./scripts/check --full` fails clearly until the separate PyTorch addon and its full integration tests exist. Hosted GitHub Actions are intentionally not part of the current validation policy. |
+| Local verification gate | Implemented | `./scripts/check --fast` runs syntax/import sanity, Ruff format/lint and fast contracts. `./scripts/check --full` includes live marimo tests, both wheel builds, addon lifecycle integration and dependency checks. Hosted GitHub Actions are intentionally not part of the current validation policy. |
 
 ## Data node API
 
@@ -133,11 +133,10 @@ The repository's local fast gate is:
 ./scripts/check --fast
 ```
 
-On this branch it passes with 64 tests passed and one network-backed bootstrap
-test skipped. That bootstrap test was separately run in a clean temporary Python
-environment and passed. The full gate currently reports the missing
-`addons/pytorch` distribution instead of silently treating the unfinished addon
-acceptance suite as complete.
+Before the PyTorch addon migration, this slice's local gate passed with 76 tests
+passed and one network-backed bootstrap test skipped. That bootstrap test was
+separately run in a clean temporary Python environment and passed. The addon
+lifecycle acceptance is now part of the full gate.
 
 The tests include the original artifact/worker/model contracts, generic
 directory transformations through the worker, control during active training,

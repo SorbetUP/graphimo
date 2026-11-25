@@ -50,7 +50,7 @@ training, checkpoint, restart, and lineage claims with an executable path.
 - Throttles events per series (20 events/second by default, at most 500 per
   node), coalesces rapid updates, and flushes the latest value for each series
   when a node finishes. Each execution reports emitted and dropped counts.
-- Exposes `inspect_model` through an optional TorchLens adapter. The selected
+- Exposes `inspect_model` through the separate PyTorch addon. The selected
   `backbone.1` activation is captured and the trace is replay-validated; this
   heavier diagnostic stays separate from the lightweight per-epoch hook.
 
@@ -96,7 +96,7 @@ training, checkpoint, restart, and lineage claims with an executable path.
 Run the demo with:
 
 ```sh
-PYTHONPATH=core python -m graphimo_core.vertical_demo /tmp/graphimo-workspace
+PYTHONPATH=core python -m graphimo_pytorch.vertical_demo /tmp/graphimo-workspace
 ```
 
 Install the optional prototype dependencies with `python -m pip install -e

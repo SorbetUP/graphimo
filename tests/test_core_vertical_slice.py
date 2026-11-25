@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import random
 import sqlite3
@@ -11,17 +10,7 @@ from pathlib import Path
 import pytest
 from graphimo_core.artifacts import LocalArtifactStore
 from graphimo_core.ledger import Event, WorkspaceGraph
-from graphimo_core.pytorch import (
-    ModelSpec,
-    build_model,
-    checkpoint_bytes,
-    compile_fx,
-    load_checkpoint,
-    restore_rng,
-    train_multihead,
-)
 from graphimo_core.runtime import LocalPythonWorker
-from graphimo_core.vertical_demo import run_vertical_demo
 
 
 def test_local_store_deduplicates_and_materializes_isolated_branches(tmp_path: Path) -> None:
@@ -181,7 +170,7 @@ def test_telemetry_series_include_component_path_and_have_no_lifetime_cap() -> N
             {
                 "run_id": "run",
                 "node_id": "train",
-                "kind": "model_probe",
+                "kind": "extension.activation",
                 "component_path": f"layer.{index}",
                 "payload": {"name": "activation", "value": index},
             },
@@ -193,8 +182,17 @@ def test_telemetry_series_include_component_path_and_have_no_lifetime_cap() -> N
 
 
 def test_checkpoint_saves_and_restores_rng_state() -> None:
+    pytest.importorskip("graphimo_pytorch.prototype")
+    pytest.importorskip("torch")
     import numpy as np
     import torch
+    from graphimo_pytorch.prototype import (
+        ModelSpec,
+        build_model,
+        checkpoint_bytes,
+        load_checkpoint,
+        restore_rng,
+    )
 
     random.seed(17)
     np.random.seed(17)
@@ -217,7 +215,10 @@ def test_checkpoint_saves_and_restores_rng_state() -> None:
 
 
 def test_model_spec_compiles_to_fx_and_infers_each_head_shape() -> None:
+    pytest.importorskip("graphimo_pytorch.prototype")
+    pytest.importorskip("torch")
     import torch
+    from graphimo_pytorch.prototype import ModelSpec, compile_fx
 
     spec = ModelSpec(4, 8, {"class_a": 2, "class_b": 3, "class_c": 1})
     graph_module, shapes = compile_fx(spec, batch_size=5)
@@ -310,6 +311,8 @@ result = {"artifact_id": artifact["artifact_id"]}
 
 
 def test_worker_accepts_live_probe_control_during_training(tmp_path: Path) -> None:
+    pytest.importorskip("graphimo_pytorch.prototype")
+    pytest.importorskip("torch")
     worker = LocalPythonWorker(tmp_path)
     events = []
     ready = threading.Event()
@@ -317,7 +320,7 @@ def test_worker_accepts_live_probe_control_during_training(tmp_path: Path) -> No
     source = """
 import time
 import torch
-from graphimo_core.pytorch import ModelSpec, build_model, train_multihead
+from graphimo_pytorch.prototype import ModelSpec, build_model, train_multihead
 spec = ModelSpec(4, 8, {"task": 1})
 model = build_model(spec)
 x = torch.ones(32, 4)
@@ -361,8 +364,16 @@ answer = "done"
 def test_training_checkpoint_resumes_same_optimizer_trajectory_across_worker_restart(
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip("graphimo_pytorch.prototype")
+    pytest.importorskip("torch")
     import numpy as np
     import torch
+    from graphimo_pytorch.prototype import (
+        ModelSpec,
+        build_model,
+        load_checkpoint,
+        train_multihead,
+    )
 
     spec = ModelSpec(3, 6, {"task": 2})
     x = torch.arange(48, dtype=torch.float32).reshape(16, 3) / 20
@@ -385,7 +396,7 @@ def test_training_checkpoint_resumes_same_optimizer_trajectory_across_worker_res
     partial_source = """
 import numpy as np
 import torch
-from graphimo_core.pytorch import ModelSpec, build_model, checkpoint_bytes, train_multihead
+from graphimo_pytorch.prototype import ModelSpec, build_model, checkpoint_bytes, train_multihead
 torch.manual_seed(seed)
 spec = ModelSpec(**model_spec)
 with graphimo.open_artifact(dataset_id) as directory:
@@ -413,7 +424,7 @@ partial_result = {"checkpoint_id": checkpoint["artifact_id"]}
     resume_source = """
 import numpy as np
 import torch
-from graphimo_core.pytorch import checkpoint_bytes, load_training_checkpoint, train_multihead
+from graphimo_pytorch.prototype import checkpoint_bytes, load_training_checkpoint, train_multihead
 model, spec, optimizer, checkpoint = load_training_checkpoint(graphimo.read_bytes(checkpoint_id))
 with graphimo.open_artifact(dataset_id) as directory:
     with np.load(directory / "data.npz") as data:
@@ -483,6 +494,12 @@ def test_worker_timeout_and_external_cancel_restart_the_process(tmp_path: Path) 
 
 
 def test_vertical_slice_trains_checkpoints_restarts_and_forks(tmp_path: Path) -> None:
+    pytest.importorskip("graphimo_pytorch.prototype")
+    pytest.importorskip("torch")
+    import importlib.util
+
+    from graphimo_pytorch.vertical_demo import run_vertical_demo
+
     report = run_vertical_demo(tmp_path / "workspace")
 
     assert report["graph_survived_close_reopen"]

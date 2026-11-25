@@ -104,8 +104,9 @@ or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
 The host-independent MetaBlock entry-point and application contracts live in
 [`graphimo/application.py`](graphimo/application.py) and
 [`docs/metablock-host-api.md`](docs/metablock-host-api.md). Core preserves
-addon-owned sidecar state when an addon is missing; the PyTorch addon has not
-yet been migrated behind this API.
+addon-owned sidecar state when an addon is missing. The separate PyTorch
+distribution now registers through this API; its visual graph/compiler and
+runtime capabilities are still being implemented milestone by milestone.
 
 ## Development
 
@@ -116,16 +117,15 @@ Install the pinned notebook runtime and development tools, then run the local
 verification gate:
 
 ```bash
-python3 -m pip install -e '.[notebook,dev,prototype,inspection]'
+python3 -m pip install -e '.[notebook,dev]'
+python3 -m pip install -e addons/pytorch
 ./scripts/check --fast
 ```
 
-Use `./scripts/check --full` before a pre-push once the independent
-`graphimo-pytorch` addon has been implemented and installed. Until then, the
-full gate exits with a clear missing-addon message instead of silently
-skipping addon packaging and integration requirements. `./scripts/install-hooks`
-optionally installs a local pre-push hook that runs the full gate. No hosted
-GitHub Actions workflow is required by the current project validation policy.
+Use `./scripts/check --full` before a pre-push after installing the addon and
+its pinned dependencies. `./scripts/install-hooks` optionally installs a local
+pre-push hook that runs the full gate. No hosted GitHub Actions workflow is
+required by the current project validation policy.
 
 The pytest suite exercises `adapter.graphimo_adapter` through a fake marimo
 port. It does not replace an end-to-end run inside Zeron with a live marimo
@@ -140,9 +140,15 @@ run, resumes optimizer/RNG state after worker restart, and records immutable
 node revisions. The core is not wired into the Zeron canvas or marimo bridge.
 See the [first](docs/core-vertical-slice.md) and
 [second](docs/core-second-vertical-slice.md) validation reports.
-Run it with `PYTHONPATH=core python -m graphimo_core.vertical_demo /path/to/workspace`
-after installing `.[prototype]`. Install `.[prototype,inspection]` to enable the
-optional TorchLens model-inspection helper.
+Run the local prototype with:
+
+```bash
+PYTHONPATH=core python -m graphimo_pytorch.vertical_demo /path/to/workspace
+```
+
+Install the separate `addons/pytorch` package first for the PyTorch vertical
+slice. PyTorch and TorchLens dependencies belong to that addon; Graphimo Core
+does not import them.
 
 For a live marimo integration check of the production Luau bridge's generated
 requests (inspect, component discovery/insertion, connect, and Run dispatch), install

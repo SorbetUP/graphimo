@@ -9,6 +9,7 @@ import json
 import keyword
 import math
 import queue
+import re
 import sys
 import threading
 import time
@@ -141,8 +142,8 @@ class _GraphimoAPI:
         component_path: str | None = None,
         durable: bool = True,
     ) -> None:
-        if kind not in {"progress", "metric", "log", "resource", "model_probe", "warning"}:
-            raise ValueError("unsupported Graphimo event kind")
+        if not isinstance(kind, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,99}", kind):
+            raise ValueError("event kind must be a lower-case dotted identifier")
         if not isinstance(payload, dict) or len(json.dumps(payload, allow_nan=False)) > 8_000:
             raise ValueError("event payload must be a JSON object no larger than 8 KB")
         self._emit(

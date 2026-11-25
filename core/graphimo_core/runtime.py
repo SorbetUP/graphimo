@@ -13,7 +13,7 @@ from typing import Any
 
 
 class LocalPythonWorker:
-    """Persistent local worker; it receives artifact IDs, never live tensors."""
+    """Persistent local worker; it receives artifact IDs, never live objects."""
 
     def __init__(self, workspace: str | os.PathLike[str]):
         self.workspace = Path(workspace).resolve()
