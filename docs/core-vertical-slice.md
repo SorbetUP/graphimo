@@ -50,9 +50,9 @@ training, checkpoint, restart, and lineage claims with an executable path.
 - Throttles events per series (20 events/second by default, at most 500 per
   node), coalesces rapid updates, and flushes the latest value for each series
   when a node finishes. Each execution reports emitted and dropped counts.
-- Exposes `inspect_model` through an optional TorchLens adapter. The selected
-  `backbone.1` activation is captured and the trace is replay-validated; this
-  heavier diagnostic stays separate from the lightweight per-epoch hook.
+- The historical optional TorchLens adapter has been removed from this prototype.
+  Deep inspection belongs to the separately installed `graphimo-pytorch` addon;
+  the prototype no longer imports or declares TorchLens.
 
 ## Change and debugging log
 
@@ -82,13 +82,11 @@ training, checkpoint, restart, and lineage claims with an executable path.
   references, retaining parent lineage. Added timeout and external-cancel
   tests; a killed worker restarts successfully. Since cancellation kills the
   process, side effects made before the kill are not rolled back.
-- TorchLens was absent from the base environment. Installed TorchLens 3.0.3 to
-  a temporary `--target` directory, traced only `backbone.1`, and confirmed
-  `tl.validate` succeeds on the actual three-head model. Re-ran the complete
-  vertical demo with that optional target: the training worker also captured
-  and validated the targeted activation. Added an optional adapter and a
-  skip-aware integration test; the base dependencies remain unchanged. The project's docs state support for Python 3.10–3.13 and PyTorch
-  2.1 or later ([TorchLens install/runtime notes](https://github.com/johnmarktaylor91/torchlens)).
+- An earlier experiment installed TorchLens 3.0.3 into a temporary target and
+  called it from the prototype. This crossed the Core/addon boundary and used
+  an API that changed in later TorchLens releases. The Core adapter, dependency
+  extra, and test have now been removed; P7 implements the pinned 2.34.1
+  integration in `addons/pytorch/graphimo_pytorch/inspection.py` instead.
 - Existing uncommitted edits to the Zeron plugin skill and API guide were left
   in place. No notebook source or Zeron plugin source was changed by this
   vertical-slice work.
@@ -105,21 +103,26 @@ Install the optional prototype dependencies with `python -m pip install -e
 ## Validation results
 
 Verified on 2026-11-23 with Python 3.13.2, PyTorch 2.7.1, and marimo 0.25.2.
-The machine has no CUDA device. TorchLens 3.0.3 was installed only in a
-temporary target directory for its optional integration check; it is not
-installed in the base environment. The APFS `clonefile` path succeeded for
+The machine has no CUDA device. The TorchLens 3.0.3 run below was a historical
+prototype experiment. Its direct Core adapter has since been removed; current
+deep-inspection validation is in the separately installable PyTorch addon and
+uses the pinned TorchLens 2.34.1 API. The APFS `clonefile` path succeeded for
 both files in each derived dataset branch.
 
-- Full suite with TorchLens enabled and live Luau/marimo checks unlocked:
-  **58 passed, 1 skipped**. The remaining bootstrap test skipped because this
-  test interpreter already had marimo.
+- Historical full-suite snapshot with the optional Core TorchLens adapter:
+  **58 passed, 1 skipped**. This result predates the Core/addon boundary
+  correction below and is not evidence for current TorchLens integration.
 - The bootstrap path was then run from a temporary clean virtual environment:
   **1 passed**. It installed pinned marimo 0.25.2 into the test's temporary
   home, started a managed session, and cleaned up the process.
 - `ruff check adapter core examples components tests`: **no issues**.
-- Optional TorchLens integration using the temporary target directory:
-  **1 passed**; `backbone.1` activation shape `[3, 8]`, trace replay validation
-  true.
+- Historical Core-adapter check: **1 passed** with TorchLens 3.0.3; removed
+  because it called TorchLens from Core and relied on an API no longer present
+  in the required 2.34.1 release.
+- Current conformance and addon suite with the exact TorchLens 2.34.1 wheel
+  available: **166 passed, 4 skipped**; `ruff check .`: **no issues**. This
+  includes the new addon P7 capture, gradient, intervention, artifact-export,
+  and Core-boundary tests.
 - Standalone vertical demo: **PASS**. It trained three heads and reduced total
   loss, retained 30 events after telemetry coalescing, saved optimizer and RNG
   state, restored the checkpoint in a fresh worker process with matching
@@ -143,7 +146,7 @@ environment-specific behavior remains visible.
 | Persistent worker and durable checkpoint restore | PASS for demo path | Training, evaluation, and fork training execute in the worker. The worker is killed after evaluation and a new process restores the checkpoint and produces matching predictions. Timeout and cancel restart tests also pass. |
 | Multi-head training and distinct losses | PASS | Three regression heads, per-head loss events, and global loss are emitted. |
 | Live progress, metrics, and resource/activation events | PARTIAL | Events are persisted; selected activation uses a normal PyTorch forward hook. Throttling is configurable and reports suppression, but overhead is not benchmarked and CUDA was unavailable here. |
-| Targeted TorchLens inspection | PASS, optional adapter | The isolated integration test traced `backbone.1` in the real three-head model and replay-validated the trace. The complete demo also passes with TorchLens enabled. TorchLens is not a mandatory base dependency. |
+| Targeted TorchLens inspection | Moved to PyTorch addon | The old Core adapter was removed. P7 tests in the separate addon exercise explicit-input activation/gradient capture, interventions, and ArtifactStore export against pinned TorchLens 2.34.1. |
 | Checkpoint after process destruction and re-evaluation | PASS for demo path | Optimizer and model state are stored; evaluation runs in a separate process after the training model is discarded. |
 | Fork and explicit weight migration report | PASS for demo path | Width change yields both compatible and incompatible keys. Optimizer state is reset and disclosed. |
 | End-to-end experience inside one Graphimo canvas | NOT IMPLEMENTED | This spike is a CLI/library proof. It is not connected to the Zeron UI, notebook editor, or marimo session. |
@@ -169,8 +172,8 @@ required work is:
    non-JSON values. The spike currently runs in the host's Python environment.
 3. Benchmark telemetry overhead and reflink/copy storage, and test CUDA metrics
    on a CUDA host. Event suppression was tested here, but only CPU was available.
-4. Persist TorchLens traces as bounded artifacts and expose them in an on-demand
-   model inspector; the current adapter returns a summary only.
+4. Wire the P7 TorchLens API to the on-demand Workbench inspector after Core
+   §31's addon handler API is fixed; the full trace is now explicitly exportable.
 5. Add a minimal Graphimo canvas adapter and exercise the complete slice in
    Zeron. The current deliverable remains a CLI/library proof.
 

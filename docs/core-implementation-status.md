@@ -147,3 +147,8 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Full traces remain transient by default. `save_torchlens_inspection(result, store)` is the explicit export action; it stores a TorchLens trace plus a JSON provenance report as `pytorch-torchlens-trace`, including MetaBlock/revision/materialization/runtime/element/path and Torch/PyTorch versions.
 - Tested the actual addon against the exact TorchLens 2.34.1 wheel with CPU activation, loss-gradient, zero/scale intervention, unchanged weight, and ArtifactStore round-trip tests. The pinned package remains lazy-loaded; importing the addon does not import TorchLens.
 - The Workbench inspector controls and generic host event/action route remain deferred under Core §31's unfrozen addon handler API. This does not create a separate PyTorch canvas or Zeron-only logic.
+
+### Core/addon boundary correction
+
+- Removed the historical optional TorchLens adapter from `graphimo_core.pytorch`, its vertical-slice demo path, and the Core distribution's `inspection` extra. TorchLens deep inspection is now owned by the separately installed PyTorch addon only.
+- Replaced the old Core integration test with a conformance test that checks the Core package source and dependency metadata for TorchLens leakage. The addon P7 integration test exercises the pinned API instead.

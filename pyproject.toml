@@ -15,7 +15,6 @@ dependencies = []
 notebook = ["marimo==0.25.2"]
 dev = ["pytest>=8,<9", "ruff>=0.8"]
 prototype = ["numpy", "torch"]
-inspection = ["torchlens"]
 workbench = ["marimo==0.25.2", "websockets>=15"]
 
 [project.scripts]

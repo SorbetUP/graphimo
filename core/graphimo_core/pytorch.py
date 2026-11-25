@@ -175,16 +175,3 @@ def restore_rng(checkpoint: dict[str, Any]) -> None:
         torch.cuda.set_rng_state_all(state["torch_cuda"])
 
 
-def inspect_model(model: Any, inputs: Any, module_path: str) -> dict[str, Any]:
-    """Capture and validate selected operations with the optional TorchLens adapter."""
-    import torchlens
-
-    if not isinstance(module_path, str) or not module_path:
-        raise ValueError("module_path must be a non-empty string")
-    trace = torchlens.trace(model, inputs, save=torchlens.in_module(module_path))
-    record = trace[module_path]
-    activation = record.out.detach()
-    valid = torchlens.validate(model, inputs)
-    return {"module_path": module_path, "shape": list(activation.shape),
-            "mean": float(activation.mean()), "std": float(activation.std()),
-            "operation_count": len(trace), "validated": bool(valid)}

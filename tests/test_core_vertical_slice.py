@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import random
 import threading
@@ -238,10 +237,7 @@ def test_vertical_slice_trains_checkpoints_restarts_and_forks(tmp_path: Path) ->
     assert report["worker_pids"][0] != report["worker_pids"][1]
     assert report["three_heads_trained"]
     assert report["loss_improved"]
-    has_torchlens = importlib.util.find_spec("torchlens") is not None
-    assert report["torchlens_inspection"]["available"] is has_torchlens
-    if has_torchlens:
-        assert report["torchlens_inspection"]["validated"]
+    assert "torchlens_inspection" not in report
     assert report["migration"]["loaded"]
     assert report["migration"]["incompatible"]
     assert report["event_count"] >= 12

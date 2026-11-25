@@ -95,23 +95,10 @@ started = time.perf_counter()
 metrics, optimizer = train_multihead(model, x, targets, epochs=8, emit=publish)
 graphimo.event('resource', {'elapsed_seconds': time.perf_counter() - started,
                             'peak_rss_platform_units': int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)})
-inspection = {'available': False}
-try:
-    from graphimo_core.pytorch import inspect_model
-    inspection = {'available': True, **inspect_model(model.eval(), x, 'backbone.1')}
-    graphimo.event('model_probe', {'torchlens_validated': inspection['validated'],
-                                   'operation_count': inspection['operation_count'],
-                                   'shape': inspection['shape']}, component_path='backbone.1')
-except ModuleNotFoundError:
-    pass
-except Exception as exc:
-    inspection = {'available': True, 'error': str(exc)[:500]}
-    graphimo.event('warning', {'message': 'TorchLens inspection failed: ' + str(exc)[:500]})
 blob = checkpoint_bytes(model, optimizer, spec,
                         metadata={'train_run_id': run_id, 'metrics': metrics})
 checkpoint = graphimo.put_bytes(blob, kind='checkpoint', parent_id=dataset_id)
-training_result = {'metrics': metrics, 'checkpoint_id': checkpoint['artifact_id'],
-                   'torchlens_inspection': inspection}
+training_result = {'metrics': metrics, 'checkpoint_id': checkpoint['artifact_id']}
 """
     training = worker.request({
         "op": "execute_node", "source": train_source,
@@ -121,7 +108,6 @@ training_result = {'metrics': metrics, 'checkpoint_id': checkpoint['artifact_id'
     }, on_event=lambda event: ledger.emit(Event(**event)))
     training_result = training["outputs"]["training_result"]
     metrics = training_result["metrics"]
-    torchlens_inspection = training_result["torchlens_inspection"]
     checkpoint = store.get(training_result["checkpoint_id"])
     ledger.add_node("checkpoint", "checkpoint", {"artifact_id": checkpoint.artifact_id}, checkpoint.artifact_id)
     ledger.add_edge("train", "checkpoint", "checkpoint", "checkpoint")
@@ -226,7 +212,6 @@ fork_result = {'metrics': metrics, 'migration': migration,
         "train_metrics": metrics,
         "fork_metrics": fork_metrics,
         "migration": migration,
-        "torchlens_inspection": torchlens_inspection,
         "checkpoint_optimizer_saved": checkpoint_optimizer_saved,
         "checkpoint_rng_saved": checkpoint_rng_saved,
         "graph_survived_close_reopen": True,
