@@ -287,6 +287,18 @@ local Page = ui.component(function()
 		return summaries
 	end)
 
+	local function rendered_rows(values, render)
+		local children = {}
+		for _, value in values or {} do table.insert(children, render(value)) end
+		return ui.column(children)
+	end
+
+	local function reactive_rows(values, render)
+		return ui.presence(function() return values:get() end, function()
+			return rendered_rows(values:get(), render)
+		end)
+	end
+
 	local function log(message, level)
 		level = level or "info"
 		local entry = tostring(os.time()) .. " [" .. string.upper(level) .. "] " .. tostring(message)
@@ -1216,7 +1228,7 @@ local Page = ui.component(function()
 				return meta_scope:get() ~= nil and cell ~= nil and cell.meta_card ~= nil and #(cell.meta_card.parameters or {}) > 0
 			end, ui.column { w_full = true, gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.primary.bg",
 				Text { function() local cell = selected_cell(); return "Parameters · " .. tostring(cell and cell.name or "") end, style = "caption", tone = "secondary", wrap = true },
-				ui.each(function() local cell = selected_cell(); return cell and cell.meta_card and cell.meta_card.parameters or {} end, function(parameter)
+				reactive_rows(ui.computed(function() local cell = selected_cell(); return cell and cell.meta_card and cell.meta_card.parameters or {} end), function(parameter)
 					return Button {
 						function() return tostring(parameter.name) .. " = " .. tostring(parameter.value) end,
 						tone = "secondary", size = "sm", w_full = true,
@@ -1252,7 +1264,7 @@ local Page = ui.component(function()
 				Button { "Inspect selected element", tone = "secondary", size = "sm", w_full = true, disabled = function() return runtime_instance_id:get() == "" or selected_meta_element() == nil end, on_click = inspect_selected_element },
 				Text { function() return "Subscription: " .. (runtime_subscription_id:get() ~= "" and runtime_subscription_id:get() or "none") end, style = "caption", tone = "secondary", wrap = true },
 				Text { "Recent live events · open Logs for full payloads", style = "caption", tone = "secondary" },
-				ui.each(function()
+				reactive_rows(ui.computed(function()
 					local active = meta_scope:get()
 					local result = {}
 					for _, event in runtime_events:get() do
@@ -1260,17 +1272,17 @@ local Page = ui.component(function()
 						if #result >= 8 then break end
 					end
 					return result
-				end, function(event)
+				end), function(event)
 					return Text { event.kind .. " · " .. event.detail, style = "caption", tone = "secondary", wrap = true }
 				end),
 			}),
 			ui.show(function() return #groups:get() == 0 end, Text { function()
 				return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"
 			end, style = "caption", tone = "secondary", wrap = true }),
-			ui.each(groups, function(group)
+			reactive_rows(groups, function(group)
 				return ui.column { w_full = true, gap = "$space.1",
 					Text { group.category, style = "caption", tone = "secondary" },
-					ui.each(group.components, function(item)
+					rendered_rows(group.components, function(item)
 						return ui.column { w_full = true, gap = "$space.1",
 							Button {
 								function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
@@ -1282,7 +1294,7 @@ local Page = ui.component(function()
 								end,
 							},
 							ui.show(function() return expanded_component:get() == item.id end, ui.column { w_full = true, gap = "$space.1",
-								ui.each(item.callables or {}, function(callable)
+								rendered_rows(item.callables, function(callable)
 									return ui.row { w_full = true, items = "center", gap = "$space.1",
 										Text { (callable.name or "") .. (callable.signature or ""), style = "caption", tone = "secondary", grow = 1, wrap = true },
 										Button { "Add", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = function() add_selected_component(item, callable) end },
@@ -1336,10 +1348,10 @@ local Page = ui.component(function()
 				local crumb = context and context.breadcrumbs and context.breadcrumbs[#context.breadcrumbs]
 				return crumb and crumb.title or "MetaBlock"
 			end, style = "caption", tone = "secondary", grow = 1 },
-			ui.each(meta_method_tabs, function(method)
+			reactive_rows(meta_method_tabs, function(method)
 				return Button { method, tone = "secondary", size = "sm", on_click = function() select_meta_method(method) end }
 			end),
-			ui.each(meta_groups, function(group)
+			reactive_rows(meta_groups, function(group)
 				return Button { "Group · " .. tostring(group.name), tone = "secondary", size = "sm", on_click = function() enter_meta_group(group) end }
 			end),
 		}),
