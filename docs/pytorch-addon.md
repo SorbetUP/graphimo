@@ -25,6 +25,33 @@ model materializer. Core §31 says the stable host handler API is not frozen;
 the factory remains a private registration marker until that interface is
 specified. P1 does not add handler methods to Core.
 
+## P2 delivered: element registry and shape validation
+
+The addon now exposes its internal V1 catalog through
+`graphimo_pytorch.element_kinds()`, `ELEMENT_REGISTRY`, and
+`get_element_kind(kind)`. Descriptors declare ports and parameter types,
+defaults, bounds, choices, and required values. This registry belongs only to
+the PyTorch dialect; it is not the Graphimo Core addon-handler interface.
+
+`validate_model_graph(state, external_values={})` returns a
+`ValidationReport` containing all safely discoverable diagnostics. Its
+`valid` property is false when any diagnostic has error severity. Validation
+covers known element kinds and ports, connected required inputs, IDs and
+module names, parameter bindings/ranges, method boundaries, Group references
+and cycles, multiple incoming edges and dataflow cycles.
+
+`infer_model_shapes(state, external_values={})` first runs graph validation,
+then returns `ShapeInferenceResult` with element output specs, edge specs and
+diagnostics. `TensorSpec` contains symbolic/concrete `Dim` values plus dtype
+and semantic labels. Static known incompatibilities are errors; distinct
+unresolved symbols remain unresolved in V1 rather than being treated as a
+proven mismatch. Shape inference does not run PyTorch or call model forward.
+
+The V1 registry and shape rules cover the full catalog in addon contract
+§§12–16. Tests include MLP/attention paths, batched matmul, broadcasting,
+tensor transforms, RoPE checks, recursive Groups and diagnostic behavior.
+The compiler and visual Workbench projection are still later milestones.
+
 ## Open normative conflict
 
 Core §32 marks the exported PyTorch model value as a human decision among an

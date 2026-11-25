@@ -97,3 +97,12 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Unknown element-kind strings and their schema fields round-trip without a registry; later validation/compiler stages decide whether they can materialize.
 - P1 tests cover state round-trip, repeat validation, deterministic revisions, semantic changes, unknown schema non-mutation, wheel metadata and an import guard forbidding `torch`/`torchlens`.
 - Core §31 explicitly leaves the stable addon handler API unfrozen. The P1 registration factory is therefore a private marker only; it does not advertise a usable PyTorch canvas/editor yet.
+
+### PyTorch addon P2 — registry, validation and shape inference
+
+- Added an addon-owned registry for every required V1 element kind, with declared input/output ports, parameter types/defaults/ranges/choices and structural metadata. Registry imports remain Torch-free.
+- Added `validate_model_graph` / `ValidationReport` to collect duplicate IDs, unknown kinds/ports, missing endpoints, multiple incoming edges, unconnected required inputs, invalid method declarations, generated Python name collisions, bad parameter values/bindings, invalid Group references/repetitions, graph cycles and recursive Group definitions.
+- Added frozen `Dim` and `TensorSpec` values plus `infer_model_shapes`. It propagates through methods, declared element inputs/outputs, and nested/repeated Group definitions without executing a model forward.
+- Implemented V1 shape rules for all catalog kinds: embedding/linear/norm, activation and dropout, tensor transforms, split/merge heads, concat, broadcast add/multiply, batched matmul, RoPE, causal masks and cross entropy. Static concrete incompatibilities are errors; unresolved symbolic compatibility remains unresolved rather than falsely blocking compilation.
+- The P2 suite covers the exact registry catalog, MLP propagation, embedding/attention matmul shapes, dimension failures, invalid ports/cycles/parameters, broadcast and loss shapes, reshape/transpose/flatten/unflatten, RoPE parity, recursive Groups and unresolved external bindings.
+- P2 does not create a compiler, PyTorch module instances, Workbench editing surface, or addon host handler methods; those belong to later milestones and the Core handler contract remains unfrozen.
