@@ -226,3 +226,26 @@ source for the Llama template. This renderer-independent acceptance is in
 place. The live standalone Workbench insertion/edit/run workflow still cannot
 invoke addon operations until Core §31's host handler API is specified; the
 documents explicitly forbid implementing a private UI action route instead.
+
+## P9 packaging and runtime hardening
+
+The P9 lifecycle test serializes a real addon-owned MetaBlock and layout,
+opens the project while the addon entry point is absent, and verifies that
+Core presents an opaque placeholder without changing either file. It then
+builds the addon wheel, installs it under a temporary target directory, checks
+the registered `pytorch` entry point, imports its registration with Torch and
+TorchLens imports guarded, reloads the semantic state, and verifies the same
+IDs, values and graph revision. This exercises installation in isolation and
+does not alter the developer environment.
+
+`EventQueue` enforces a positive finite capacity and drops events when full
+using non-blocking `put_nowait`. Its dropped-event counter is observable. The
+addon exposes `default_subscription_rate_hz`: 10 Hz for summary and 2 Hz for
+histogram/sample detail; the subscription manager rate-limits before enqueuing.
+The P5 and P9 tests cover rate enforcement, queue saturation and invalid
+unbounded capacities.
+
+The Graphimo Core and PyTorch package boundary remains import-safe when the
+addon is absent. The standalone Workbench's visible P8/P9 addon controls and
+state restoration still need the Core §31 handler contract to be specified;
+these renderer actions have not been routed around the application layer.

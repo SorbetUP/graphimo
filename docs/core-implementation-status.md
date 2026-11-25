@@ -161,3 +161,10 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Extended Group shape projection so the Workbench view can inspect inner element and edge shapes within a repeated Group. The projected view also exposes the collapsed repetition count, method tabs and generated source.
 - The scaled `vocab=128, d=32, heads=4, ff=64, layers=2, sequence=8` graph is numerically compared to a direct PyTorch reference with copied state dictionaries for logits, next-token loss and prediction probabilities. Tests also verify repeated binding paths and internal Group shape labels. The full-size fixture is compiled but not instantiated.
 - The addon APIs and Workbench view projection are tested, but the end-to-end visual insertion/edit/run scenario remains blocked by Core §31: its normative handler API is explicitly unfrozen, and the contract forbids inventing addon host action methods. No separate PyTorch canvas or Zeron-only insertion path was added.
+
+### PyTorch addon P9 — isolation, reinstall, and bounded delivery
+
+- Added an integration lifecycle test that saves a real PyTorch MetaBlock sidecar and layout, opens it with the addon absent, verifies the opaque placeholder and byte-for-byte preservation, builds/installs the exact addon wheel into an isolated target, discovers its entry point, imports registration without Torch/TorchLens, then reloads the same state and graph revision.
+- The isolated wheel check verifies the template and TorchLens inspection modules are packaged. It does not modify the active Python environment or install addon dependencies.
+- `EventQueue` now rejects non-positive/non-integral capacities so a caller cannot accidentally disable its bound. Saturation is verified to drop new UI events without waiting; defaults for summary versus histogram/sample subscriptions are exposed at 10 Hz and 2 Hz respectively. Existing P5 tests verify subscription rate limiting.
+- The full P9 package/isolation and rate tests are independent of any frozen addon host handler. The P9 visual Workbench reopen/edit scenario remains unavailable for the previously documented Core §31/§32 reasons.

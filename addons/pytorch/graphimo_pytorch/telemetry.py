@@ -73,10 +73,21 @@ class SubscriptionSpec:
             raise GraphimoPytorchError("pytorch_subscription_repetition_invalid", "repetition_index must be a non-negative integer")
 
 
+def default_subscription_rate_hz(detail: str = "summary") -> float:
+    """Return the contract default event rate for a visible inspection mode."""
+    if detail == "summary":
+        return 10.0
+    if detail in {"histogram", "sample"}:
+        return 2.0
+    raise GraphimoPytorchError("pytorch_subscription_detail_invalid", f"Unsupported detail {detail!r}")
+
+
 class EventQueue:
     """Non-blocking bounded queue; producers never wait for the UI consumer."""
 
     def __init__(self, maxsize: int = 2048):
+        if type(maxsize) is not int or maxsize < 1:
+            raise ValueError("EventQueue maxsize must be a positive integer")
         self._queue: queue.Queue[PyTorchEvent] = queue.Queue(maxsize=maxsize)
         self._dropped = 0
         self._lock = Lock()
