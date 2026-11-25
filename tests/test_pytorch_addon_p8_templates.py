@@ -170,6 +170,10 @@ def test_p8_workbench_projection_exposes_repeated_decoder_group_without_expandin
     }
     assert inner_by_name["q_proj"].output_shapes[0][1].shape[-1].value == 32
     assert inner_by_name["q_proj"].input_shapes[0][1].shape[1].value == 8
+    split_shape = inner_by_name["q_proj_split"].output_shapes[0][1].shape
+    assert tuple(dim.value for dim in split_shape) == (None, 4, 8, 8)
+    score_shape = inner_by_name["attention_scores"].output_shapes[0][1].shape
+    assert tuple(dim.value for dim in score_shape) == (None, 4, 8, 8)
     assert any(edge.tensor is not None for edge in inner.edges)
 
     loss_view = project_workbench(state, method_name="loss")
