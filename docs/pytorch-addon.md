@@ -75,6 +75,25 @@ trusted addon code; this path does not accept arbitrary Python source.
 The definition remains inside the addon until the Core/addon parent-port
 contract conflict described above is resolved.
 
+## P4 independent projection/editor subset
+
+`graphimo_pytorch.workbench_projection.project_workbench(...)` returns
+renderer-safe data for the contextual PyTorch palette, MetaBlock summary and
+external parameters, method tabs, group scope cards, parameter inspectors,
+edge shape labels/errors, Group navigation/repeat counts, generated source,
+runtime instances and binding paths. It derives this information from
+semantic records and compiler outputs; it does not inspect a raw model.
+
+The addon also exposes immutable `set_element_parameter`,
+`promote_parameter`, and `demote_parameter` operations so the application can
+own user actions without putting semantic edits in UI code. These operations
+are covered by pure tests. The Workbench cannot yet render these views or
+invoke the addon through the stable host API: Core §31 explicitly says that
+API is not frozen and forbids inventing public handler methods. Parent-port
+materialization also waits for the Core §32 human choice among an instantiated
+module, class/factory, or `PyTorchModelDefinition` handle (the addon spec fixes
+the last option, so those requirements conflict).
+
 ## Open normative conflict
 
 Core §32 marks the exported PyTorch model value as a human decision among an

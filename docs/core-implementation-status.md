@@ -115,3 +115,10 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added stable `RuntimeBindingMap` records for visual module sites and repeated Group paths. `PyTorchModelDefinition.instantiate()` creates a fresh real module, applies optional device/dtype, attaches private runtime metadata, and registers the model weakly; metadata does not enter `state_dict()`.
 - P3 tests execute an MLP, an attention/mask graph and a repeated Group; they verify readable generated source, external-parameter materialization changes, stable binding paths, invalid-graph refusal and weak registry cleanup.
 - P3 compiles to the addon-local definition handle. It does not expose that handle as a parent Graphimo port because Core §32 and addon §7 still conflict on that boundary.
+
+### PyTorch addon P4 — independent projection/editor subset
+
+- Added `graphimo_pytorch.workbench_projection.project_workbench`, a renderer-independent projection for contextual PyTorch palette entries, MetaBlock summary/ports, method tabs, scope cards, parameter descriptors, edge shapes/diagnostics, Group navigation/repetition, generated source/bindings, and available runtime instances. It never inspects raw `nn.Module` objects.
+- Added immutable semantic edit operations for scalar parameter changes, parameter promotion to an external MetaBlock input, and demotion when safe. Promotion/demotion preserves external bindings and only removes an external parameter after its last binding is removed.
+- Automated tests cover projection data and edits without invoking a renderer.
+- The actual Workbench presentation/intent wiring and marimo parent materialization remain deferred. Core §31 says the stable addon handler API is not frozen and forbids inventing public handler methods. Core §32 marks the parent model value as **HUMAN DECISION REQUIRED**; the addon contract §7 selects `PyTorchModelDefinition`, so the two documents conflict. The exact decision is whether the parent cell exposes an instantiated `nn.Module`, a class/factory, or the explicit `PyTorchModelDefinition` handle. No UI-only bypass was added.
