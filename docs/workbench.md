@@ -43,6 +43,10 @@ uses a separate local marimo session, and Group execution itself uses a cloned
 catalogs and PyTorch editing remain outstanding. The application returns its
 supported action list so the renderer can keep unavailable operations hidden.
 
+U5 adds a separate persistent local service and Python client. The Workbench
+continues to call the same `GraphimoApplication` directly until the ordered U6
+migration; service/client semantics are tested independently of Zeron.
+
 ## Verification
 
 `tests/test_marimo_http_workbench.py` launches the pinned marimo server and checks notebook node discovery, repeated instance insertion, connection/reconnection, execution, bounded output inspection, and one-time import of a library node. `tests/test_workbench_server.py` checks that the standalone renderer assets are served. The broader repository suite also checks package resources in the built wheel.

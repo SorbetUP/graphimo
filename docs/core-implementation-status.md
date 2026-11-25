@@ -44,6 +44,13 @@ Workbench remains a conformance/debug harness.
 - Added recursive `GroupBlock` scope records preserving the parent's dialect, application breadcrumb/session-stack navigation, and Workbench enter/back actions. The Workbench now owns a `MarimoSessionPool`: each open Group scope gets its own local marimo process, while the parent remains live and is restored on Back. Group editor sessions are opened without eagerly running cells against placeholder `None` inputs.
 - Verification: focused Group/application/scope tests pass; live marimo Workbench test creates and runs a Group instance, inspects a named output, enters the Group file and returns to the parent. `scripts/check --full` passes with **203 passed, 1 opt-in network bootstrap skipped**, both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass.
 
+### U5 — persistent local Graphimo service
+
+- Added `graphimo.service` with a persistent loopback-only HTTP+JSON server, project/session manager, bounded request/response sizes, structured errors, bearer token, private discovery file, port `0`, background startup and explicit shutdown. Service sessions reuse open project files and own their marimo session pools.
+- Added atomic `execute` and sequential `batch` routes over `GraphimoApplication`; batch references resolve fields from earlier results, successful prior edits remain after a later failure, and default behavior stops at the first error. Added a bounded cursor journal with long polling, dropped-event reporting, operation lifecycle events, and addon-event pumping.
+- Added `graphimo.client.GraphimoClient`, project helpers for palette insertion, connections, run/inspect, Python expression marking, batching and event reads. `connect_local()` discovers or starts the persistent service. The Workbench remains directly backed by the same application until the ordered U6 transport migration.
+- Verification: **11 focused service/client tests pass**, covering loopback/token bounds, create/reuse/close, batch references and stop-on-error, cursor drops/long polling during a running operation, addon-event pumping and payload/response bounds, discovery, autostart/shutdown, malformed JSON/request limits, and a real marimo node execute/inspect round trip without Zeron. `scripts/check --full` passes with **215 passed, 1 opt-in network bootstrap skipped**; both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass.
+
 ## Completed milestones
 
 ### M1 — transparent node API
