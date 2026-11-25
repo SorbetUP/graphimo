@@ -4,6 +4,8 @@ import ast
 import importlib.util
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -325,11 +327,37 @@ def test_live_metablock_runtime_actions_and_events_run_in_marimo_kernel(tmp_path
 
         forward_cell = port.add_cell(
             port.session_id,
-            "live_model(__import__('torch').ones(1, 2))",
+            "import time\nfor _ in range(8):\n    live_model(__import__('torch').ones(1, 2))\n    time.sleep(0.15)",
         )
-        port.run_cell(port.session_id, forward_cell)
-        events = app.drain_metablock_events("live-runtime", cursor=0, limit=20)
-        assert any(event["kind"] == "activation.summary" for event in events["events"])
+        run_errors = []
+
+        def run_training_cell():
+            try:
+                port.run_cell(port.session_id, forward_cell)
+            except Exception as exc:
+                run_errors.append(exc)
+
+        runner = threading.Thread(target=run_training_cell, daemon=True)
+        runner.start()
+        observed_while_running = False
+        received_events = []
+        event_cursor = 0
+        deadline = time.monotonic() + 5
+        while runner.is_alive() and time.monotonic() < deadline:
+            page = app.drain_metablock_events("live-runtime", cursor=event_cursor, limit=20)
+            event_cursor = page["cursor"]
+            received_events.extend(page["events"])
+            if any(event["kind"] == "activation.summary" for event in received_events):
+                observed_while_running = runner.is_alive()
+                break
+            time.sleep(0.02)
+        runner.join(timeout=10)
+        assert not runner.is_alive()
+        assert not run_errors
+        assert observed_while_running, (
+            "activation events should arrive before the training cell ends"
+        )
+        assert any(event["kind"] == "activation.summary" for event in received_events)
 
         removed = app.invoke_metablock(
             "live-runtime",

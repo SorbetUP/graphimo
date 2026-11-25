@@ -182,6 +182,7 @@ def _format_changed_python() -> None:
     # behavior lives in formatted mixins/handlers.
     format_exemptions = {
         ROOT / "graphimo/application.py",
+        ADDON / "graphimo_pytorch/telemetry.py",
         ADDON / "graphimo_pytorch/checkpoints.py",
         ADDON / "graphimo_pytorch/registry.py",
     }

@@ -17,6 +17,7 @@ from threading import RLock
 from typing import Any
 
 from graphimo.artifacts import default_store
+from graphimo.event_spool import get_project_event_spool
 from graphimo.metablocks import (
     MAX_EVENTS_PER_DRAIN,
     MetaBlockAddonHost,
@@ -145,6 +146,7 @@ def _make_context(
     metablock_id: str,
     sidecar_path: Path,
 ) -> MetaBlockContext:
+    spool = get_project_event_spool(project_path, metablock_id)
     navigation = (
         {"id": "root", "title": project_path.name},
         {"id": metablock_id, "title": dialect_id},
@@ -192,6 +194,12 @@ def _make_context(
                 os.unlink(temporary)
         return normalized
 
+    def emit_event(event: dict[str, Any]) -> None:
+        host.emit_event(event)
+        record = dict(event)
+        record.setdefault("metablock_id", metablock_id)
+        spool.submit(record)
+
     return MetaBlockContext(
         project_id=project_id,
         project_path=str(project_path),
@@ -199,7 +207,7 @@ def _make_context(
         artifact_store=default_store(),
         scope_id=metablock_id,
         navigation=navigation,
-        _event_sink=host.emit_event,
+        _event_sink=emit_event,
         _event_drain=host.drain_local_events,
         _sidecar_load=lambda: _load_state(sidecar_path),
         _sidecar_save=save_sidecar,

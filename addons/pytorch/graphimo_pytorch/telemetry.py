@@ -91,6 +91,7 @@ class EventQueue:
         self._queue: queue.Queue[PyTorchEvent] = queue.Queue(maxsize=maxsize)
         self._dropped = 0
         self._lock = Lock()
+        self._sinks: list[Callable[[PyTorchEvent], None]] = []
 
     @property
     def dropped_count(self) -> int:
@@ -98,6 +99,14 @@ class EventQueue:
             return self._dropped
 
     def put(self, event: PyTorchEvent) -> bool:
+        with self._lock:
+            sinks = tuple(self._sinks)
+        for sink in sinks:
+            try:
+                sink(event)
+            except Exception:
+                with self._lock:
+                    self._dropped += 1
         try:
             self._queue.put_nowait(event)
             return True
@@ -105,6 +114,14 @@ class EventQueue:
             with self._lock:
                 self._dropped += 1
             return False
+
+    def add_nonblocking_sink(self, sink: Callable[[PyTorchEvent], None]) -> None:
+        """Fan out events to a callback that must perform non-blocking work."""
+        if not callable(sink):
+            raise TypeError("event sink must be callable")
+        with self._lock:
+            if sink not in self._sinks:
+                self._sinks.append(sink)
 
     def get_nowait(self) -> PyTorchEvent | None:
         try:
@@ -256,6 +273,28 @@ class SubscriptionManager:
 
 event_queue = EventQueue()
 subscription_manager = SubscriptionManager(event_queue)
+_event_relay_projects: set[str] = set()
+_event_relay_lock = Lock()
+
+
+def configure_project_event_relay(project_path: str, metablock_id: str) -> None:
+    """Install one non-blocking relay from this kernel's telemetry queue."""
+    from pathlib import Path
+
+    from graphimo.event_spool import get_project_event_spool
+
+    project = str(Path(project_path).expanduser().resolve())
+    get_project_event_spool(project, metablock_id)
+    with _event_relay_lock:
+        if project in _event_relay_projects:
+            return
+
+        def forward(event: PyTorchEvent) -> None:
+            spool = get_project_event_spool(project, event.metablock_id)
+            spool.submit(event.to_dict())
+
+        event_queue.add_nonblocking_sink(forward)
+        _event_relay_projects.add(project)
 
 
 def subscribe(model: object, spec: SubscriptionSpec) -> tuple[RuntimeSite, ...]:

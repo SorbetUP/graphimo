@@ -317,7 +317,7 @@ class PyTorchMetaBlockDialect:
         state_path = str(context.sidecar_path.resolve())
         args = [
             "from graphimo_pytorch import materialize_definition as _graphimo_materialize_definition",
-            f"{result_var} = _graphimo_materialize_definition(\n    state_path={state_path!r},\n    external_values={{",
+            f"{result_var} = _graphimo_materialize_definition(\n    state_path={state_path!r},\n    project_path={context.project_path!r},\n    external_values={{",
         ]
         args.extend(f"        {key!r}: {expression}," for key, expression in parameters.items())
         args.append("    },\n)")
@@ -534,10 +534,17 @@ def _torch_inputs(value: Any) -> Any:
 
 
 def materialize_definition(
-    *, state_path: str | Path, external_values: dict[str, Any] | None = None
+    *,
+    state_path: str | Path,
+    project_path: str | Path | None = None,
+    external_values: dict[str, Any] | None = None,
 ):
     """Load persisted addon state and create its definition in the marimo kernel."""
     from .serialization import load_state
 
     state = load_state(Path(state_path))
+    if project_path is not None:
+        from .telemetry import configure_project_event_relay
+
+        configure_project_event_relay(str(project_path), state.metablock_id)
     return compile_model(state, external_values or {}).definition

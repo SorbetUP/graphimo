@@ -153,9 +153,17 @@ class MetaBlockApplicationMixin:
                 "invalid_event_cursor", "Event cursor must be a non-negative integer"
             )
         dialect_id, state = self._load_metablock_state(metablock_id)
+        context = self._metablock_context(dialect_id, metablock_id)
+        from graphimo.event_spool import drain_project_event_spool, project_event_spool_exists
+
+        if project_event_spool_exists(context.project_path, metablock_id):
+            result = drain_project_event_spool(
+                context.project_path, metablock_id, cursor=cursor, limit=limit
+            )
+            if result is not None:
+                return result
         kernel_drain = getattr(self.marimo, "drain_metablock_events", None)
         if callable(kernel_drain):
-            context = self._metablock_context(dialect_id, metablock_id)
             result = _json_safe(
                 kernel_drain(
                     self._require_session(),
