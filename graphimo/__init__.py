@@ -8,6 +8,8 @@ from .metablocks import (
     MetaBlockDialect,
     MetaDialectRegistration,
 )
+from .node import inspect_node, is_node, node
+from .preview import describe_result, preview_value
 
 __all__ = [
     "AddonUnavailableError",
@@ -16,4 +18,9 @@ __all__ = [
     "MetaBlockAddonManager",
     "MetaBlockDialect",
     "MetaDialectRegistration",
+    "describe_result",
+    "inspect_node",
+    "is_node",
+    "node",
+    "preview_value",
 ]
