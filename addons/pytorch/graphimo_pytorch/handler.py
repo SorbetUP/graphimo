@@ -16,7 +16,14 @@ from graphimo.metablocks import MaterializationSpec, MetaBlockContext
 from .checkpoints import load_checkpoint, save_checkpoint
 from .compiler import compile_model
 from .diagnostics import GraphimoPytorchError
-from .editing import demote_parameter, promote_parameter, set_element_parameter
+from .editing import (
+    add_element,
+    connect_elements,
+    demote_parameter,
+    disconnect_edge,
+    promote_parameter,
+    set_element_parameter,
+)
 from .inspection import (
     TorchLensIntervention,
     TorchLensRequest,
@@ -132,6 +139,7 @@ class PyTorchMetaBlockDialect:
                     "input_ports": [asdict(port) for port in kind.input_ports],
                     "output_ports": [asdict(port) for port in kind.output_ports],
                     "parameters": [asdict(parameter) for parameter in parameters],
+                    "required_parameters": list(kind.required_parameters),
                     "description": None,
                     "search_terms": [kind.kind],
                     "enabled": True,
@@ -191,11 +199,59 @@ class PyTorchMetaBlockDialect:
     ) -> dict[str, Any]:
         model = state_from_dict(state)
         kind = intent.get("kind")
-        if kind not in {"set_parameter", "promote_parameter", "demote_parameter"}:
+        if kind not in {
+            "set_parameter",
+            "promote_parameter",
+            "demote_parameter",
+            "add_element",
+            "connect_elements",
+            "disconnect_edge",
+        }:
             raise GraphimoPytorchError(
                 "pytorch_intent_unsupported", f"Unsupported PyTorch edit intent {kind!r}"
             )
         scope_id = _required_string(intent, "scope_id")
+        if kind == "add_element":
+            params = intent.get("params", {})
+            if not isinstance(params, dict):
+                raise GraphimoPytorchError(
+                    "pytorch_element_parameters_invalid", "params must be an object"
+                )
+            model = add_element(
+                model,
+                scope_id,
+                _required_string(intent, "element_id"),
+                _required_string(intent, "element_kind"),
+                _required_string(intent, "name"),
+                params,
+            )
+            return {
+                "state": state_to_dict(model),
+                "diagnostics": [],
+                "projection_invalidated": True,
+            }
+        if kind == "connect_elements":
+            model = connect_elements(
+                model,
+                scope_id,
+                _required_string(intent, "edge_id"),
+                _required_string(intent, "source_element_id"),
+                _required_string(intent, "source_port"),
+                _required_string(intent, "target_element_id"),
+                _required_string(intent, "target_port"),
+            )
+            return {
+                "state": state_to_dict(model),
+                "diagnostics": [],
+                "projection_invalidated": True,
+            }
+        if kind == "disconnect_edge":
+            model = disconnect_edge(model, scope_id, _required_string(intent, "edge_id"))
+            return {
+                "state": state_to_dict(model),
+                "diagnostics": [],
+                "projection_invalidated": True,
+            }
         element_id = _required_string(intent, "element_id")
         parameter_name = _required_string(intent, "parameter_name")
         if kind == "set_parameter":

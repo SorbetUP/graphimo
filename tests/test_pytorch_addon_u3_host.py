@@ -93,6 +93,43 @@ def test_pytorch_dialect_adapts_immutable_parameter_edits_and_rejects_unknown_in
         )
 
 
+def test_pytorch_addon_apply_creates_scoped_elements_and_connects_ports(tmp_path):
+    context = _context(tmp_path)
+    dialect = PyTorchMetaBlockDialect(context)
+    state = state_to_dict(
+        mlp_template(input_size=8, hidden=4, output_size=2, metablock_id="model-edit-graph")
+    )
+    added = dialect.apply(
+        state,
+        {
+            "kind": "add_element",
+            "scope_id": "forward",
+            "element_id": "relu-extra",
+            "element_kind": "relu",
+            "name": "Extra activation",
+            "params": {},
+        },
+        context,
+    )
+    connected = dialect.apply(
+        added["state"],
+        {
+            "kind": "connect_elements",
+            "scope_id": "forward",
+            "edge_id": "input-extra",
+            "source_element_id": "input",
+            "source_port": "out",
+            "target_element_id": "relu-extra",
+            "target_port": "x",
+        },
+        context,
+    )
+    model = connected["state"]
+    assert any(item["id"] == "relu-extra" for item in model["entrypoints"][0]["elements"])
+    assert any(item["id"] == "input-extra" for item in model["entrypoints"][0]["edges"])
+    assert connected["projection_invalidated"] is True
+
+
 def test_pytorch_materialization_recreates_definition_inside_consumer_process(tmp_path):
     context = _context(tmp_path, "model-materialize")
     state_obj = mlp_template(

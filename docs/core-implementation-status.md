@@ -51,6 +51,16 @@ Workbench remains a conformance/debug harness.
 - Added `graphimo.client.GraphimoClient`, project helpers for palette insertion, connections, run/inspect, Python expression marking, batching and event reads. `connect_local()` discovers or starts the persistent service. The Workbench remains directly backed by the same application until the ordered U6 transport migration.
 - Verification: **11 focused service/client tests pass**, covering loopback/token bounds, create/reuse/close, batch references and stop-on-error, cursor drops/long polling during a running operation, addon-event pumping and payload/response bounds, discovery, autostart/shutdown, malformed JSON/request limits, and a real marimo node execute/inspect round trip without Zeron. `scripts/check --full` passes with **215 passed, 1 opt-in network bootstrap skipped**; both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass.
 
+### U6 — existing Zeron plugin migration (in progress)
+
+- U6a routes the existing Graphimo page's project bootstrap, refresh, block creation, connections, run and delete intents through `GraphimoClient` and the persistent local service. Luau keeps the existing page/canvas and presentation; its service module contains HTTP/bootstrap transport only. The service connection token remains in ephemeral page state, and curl receives it through stdin rather than process arguments.
+- U6b exposes import-free addon discovery in the root palette. Creating an addon entry opens a PyTorch template chooser (MLP, Llama layer, or Llama causal LM), creates its sidecar through `GraphimoApplication`, and materializes the `PyTorchModelDefinition` in a managed marimo cell. Root projection renders that cell as a normal Graphimo block with one typed output, and Core can connect that output to an ordinary Graphimo node.
+- Opening the block projects its active PyTorch method or Group into the same Graphimo canvas. A renderer-only Luau adapter maps addon cards, named ports, edges, parameter shapes and contextual catalog items into the existing canvas data shape. The scope bar provides method/Group navigation and return to the parent graph; no second canvas or addon-specific app was introduced.
+- PyTorch `apply_metablock` now accepts addon-owned `add_element`, `connect_elements`, and `disconnect_edge` edits. The addon validates element kinds, declared ports, duplicate IDs/inputs and graph cycles; the canvas routes palette insertion, parameter edits and wire drops through the service. Required parameters may be filled incrementally while the projection reports incomplete model diagnostics.
+- The existing log panel polls the shared service event cursor while the page is mounted. It records structured addon telemetry payloads and service events, bounds retries and stops its poll loop in the page cleanup hook.
+- Verification: focused MetaBlock/application/PyTorch/service tests pass (**40 passed**); Luau syntax compilation passes for the page and the renderer projection driver passes. `scripts/check --full` passes with **223 passed, 1 opt-in network bootstrap skipped**, isolated root and PyTorch wheels, Ruff checks, package-content checks and generated-artifact hygiene. A live Zeron-host interaction was not run in this milestone; the plugin source is compiled and renderer projections are exercised by Luau tests.
+- Remaining U6 work is limited to finishing the migration and host-level UX checks; agent tool parity and batch/component authoring remain U7, while runtime subscription and explicit TorchLens controls remain U8.
+
 ## Completed milestones
 
 ### M1 — transparent node API
@@ -143,7 +153,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 
 - W3 layout persistence and disable/enable are implemented by M4/M6. Group Block navigation/execution is pending U4 under the resolved marimo `App.run(defs=...)` backend.
 - W4 addon entry-point discovery and opaque missing-addon placeholders are implemented. Create/open/edit, scope navigation and materialization are pending U2.
-- W5 addon registry, shape/source/runtime projections, templates and standalone numerical execution are available. Connecting them to the shared application, Zeron renderer and parent marimo cell is pending U3/U6; the parent value is fixed as `PyTorchModelDefinition`.
+- W5 addon registry, shape/source/runtime projections, templates and standalone numerical execution are available. U3/U6 now connect addon state to the service, parent marimo cell and existing Zeron canvas; runtime controls and host-level inspection remain U8.
 
 ### PyTorch addon P1 — package and semantic schema
 
@@ -185,7 +195,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added bounded tensor summaries, opt-in histogram/sample detail (maximum 4096 sample values), safe tensor-tree summaries, scalar metric emission, and CUDA resource events that make no CUDA calls for CPU models.
 - Model creation/release emits runtime lifecycle events. Runtime instances are weakly registered and carry Graphimo provenance separately from `state_dict()`.
 - P5 tests exercise activation/gradient events, unsubscribe/release, rate limiting, empty/non-finite tensors, bounded histogram/sample payloads, metrics and CPU resource handling.
-- The generic application event route and visible runtime controls remain pending U3/U6. The addon exposes queued events and structured runtime data without a private Workbench or Luau/Zeron bypass.
+- U6 exposes the generic application event route in the Zeron log panel. Dedicated subscription controls for activation/gradient and resource signals remain U8; the addon emits structured runtime data without a private canvas or Luau semantic bypass.
 
 ### PyTorch addon P6 — checkpoints and conservative migration
 
@@ -201,7 +211,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Zero ablation and scalar scaling use TorchLens 2.34.1's capture-time intervention selector. Results label these as experimental, report the modified activation, and leave model weights unchanged. Inspection restores pre-existing parameter gradients and module buffers after the explicit replay.
 - Full traces remain transient by default. `save_torchlens_inspection(result, store)` is the explicit export action; it stores a TorchLens trace plus a JSON provenance report as `pytorch-torchlens-trace`, including MetaBlock/revision/materialization/runtime/element/path and Torch/PyTorch versions.
 - Tested the actual addon against the exact TorchLens 2.34.1 wheel with CPU activation, loss-gradient, zero/scale intervention, unchanged weight, and ArtifactStore round-trip tests. The pinned package remains lazy-loaded; importing the addon does not import TorchLens.
-- Workbench inspector controls and the generic host event/action route are pending U3/U6. Deep inspection remains addon-owned and does not create a separate PyTorch canvas or Zeron-only logic.
+- The generic host event/action route is available through U3/U6. Dedicated Workbench/Zeron inspector controls for TorchLens remain U8; deep inspection stays addon-owned and does not create a separate PyTorch canvas or Zeron-only logic.
 
 ### Core/addon boundary correction
 
@@ -215,7 +225,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added an internal `method_call` semantic record so `predict -> forward -> softmax` remains explicit and reconstructible. It is supported by validation, shape propagation and generated Python but intentionally excluded from the exact user-insertable V1 element catalog and palette.
 - Extended Group shape projection so the Workbench view can inspect inner element and edge shapes within a repeated Group. The projected view also exposes the collapsed repetition count, method tabs and generated source.
 - The scaled `vocab=128, d=32, heads=4, ff=64, layers=2, sequence=8` graph is numerically compared to a direct PyTorch reference with copied state dictionaries for logits, next-token loss and prediction probabilities. Tests also verify repeated binding paths and internal Group shape labels. The full-size fixture is compiled but not instantiated.
-- The addon APIs and Workbench view projection are tested. The end-to-end visual insertion/edit/run scenario is now specified and is pending the ordered U2/U3/U6 host integration; no separate PyTorch canvas was added.
+- The addon APIs and Workbench view projection are tested. U6 now provides Zeron template insertion, same-canvas projection, parameter edits and scoped port connections. Runtime subscription/TorchLens interactions and host-level visual verification remain U8; no separate PyTorch canvas was added.
 
 ### PyTorch addon P9 — isolation, reinstall, and bounded delivery
 

@@ -29,14 +29,44 @@ class MetaBlockApplicationMixin:
     def _close_metablocks(self) -> None:
         self._metablock_handlers.clear()
 
+    def list_metablock_addons(self) -> list[dict[str, str | None]]:
+        """List installed entry points without importing addon code."""
+        result = []
+        from graphimo.metablocks import discover_metablock_addons
+
+        entries = discover_metablock_addons()
+        for entry in entries:
+            distribution = getattr(entry, "dist", None)
+            result.append(
+                {
+                    "entry_point": entry.name,
+                    "distribution": getattr(distribution, "name", None),
+                    "version": getattr(distribution, "version", None),
+                }
+            )
+        return result
+
     def create_metablock(
         self, dialect_id: str, request: dict[str, Any], metablock_id: str
     ) -> dict[str, Any]:
-        handler, context = self._metablock_handler(dialect_id, metablock_id)
+        try:
+            registration = load_metablock_registration(dialect_id)
+            if registration.api_version != 1:
+                raise ValueError(f"Unsupported MetaBlock API version: {registration.api_version}")
+            canonical_dialect = getattr(registration, "dialect_id", dialect_id)
+            handler = self._metablock_handlers.get(canonical_dialect)
+            context = self._metablock_context(canonical_dialect, metablock_id)
+            if handler is None:
+                handler = registration.factory(context)
+                if not isinstance(handler, MetaBlockDialect):
+                    raise TypeError("Addon handler does not implement the Graphimo MetaBlock API")
+                self._metablock_handlers[canonical_dialect] = handler
+        except (LookupError, ImportError, TypeError, ValueError, RuntimeError) as exc:
+            raise ApplicationError("metablock_addon_unavailable", str(exc)) from exc
         if context.sidecar_path.exists():
             raise ApplicationError("metablock_exists", f"MetaBlock {metablock_id!r} already exists")
         state = handler.create_state({**request, "metablock_id": metablock_id}, context)
-        return self._save_metablock_state(dialect_id, metablock_id, state)
+        return self._save_metablock_state(canonical_dialect, metablock_id, state)
 
     def metablock_catalog(self, metablock_id: str, scope: dict[str, Any] | None = None) -> Any:
         dialect_id, state = self._load_metablock_state(metablock_id)

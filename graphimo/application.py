@@ -47,7 +47,7 @@ from graphimo.groups import (
 )
 from graphimo.node import InputPort, NodeSpec, OutputPort
 from graphimo.metablock_application import MetaBlockApplicationMixin
-from graphimo.metablocks import discover_metablock_addons
+from graphimo.metablocks import discover_metablock_addons, load_metablock_registration
 
 
 class MarimoApplicationPort(Protocol):
@@ -193,6 +193,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             "reconnect", "disconnect", "set_literal", "run_target", "open_inspector",
             "disable_instance", "enable_instance", "inspect_artifact_store",
             "set_control_value",
+            "list_metablock_addons",
             "create_metablock", "metablock_catalog", "project_metablock", "apply_metablock",
             "build_metablock_materialization", "materialize_metablock", "invoke_metablock",
             "drain_metablock_events",
@@ -432,7 +433,8 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         source_group = parse_group_instance_source(source_cell.get("source", ""))
         target_group = parse_group_instance_source(target_cell.get("source", ""))
         source_control = parse_control_source(source_cell.get("source", ""))
-        if (source_instance is None and source_group is None and source_control is None) or (target_instance is None and target_group is None):
+        source_metablock = _parse_managed_metablock_source(source_cell.get("source", ""))
+        if (source_instance is None and source_group is None and source_control is None and source_metablock is None) or (target_instance is None and target_group is None):
             raise ApplicationError("unsafe_edit", "Connections require a Graphimo output and target Graphimo instance")
         if target_instance is not None:
             target_spec = self._node_spec(None, target_instance.node_name)
@@ -447,6 +449,15 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                 if output_index != 0:
                     raise ValueError("Control Blocks have exactly one output")
                 expression = source_control.output_expression
+            elif source_metablock is not None:
+                if output_index != 0:
+                    raise ValueError("MetaBlocks expose one external definition output")
+                materialization = self.build_metablock_materialization(
+                    source_metablock["metablock_id"], {}
+                )
+                if materialization.result_var not in _assigned_global_names(source_cell.get("source", "")):
+                    raise ValueError("MetaBlock materialization result is stale")
+                expression = materialization.result_var
             elif source_group is not None:
                 if not 0 <= output_index < len(source_group.outputs):
                     raise ValueError("Group output index is outside the declared output range")
@@ -807,6 +818,21 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             )
             for control_type, defaults in CONTROL_DEFAULTS.items()
         ]
+        for entry in discover_metablock_addons():
+            distribution = getattr(entry, "dist", None)
+            title = getattr(distribution, "name", None) or entry.name
+            items.append(
+                PaletteItem(
+                    id=f"metablock:{entry.name}",
+                    title=title,
+                    category="MetaBlocks",
+                    kind="metablock",
+                    description="Specialized Graphimo scope",
+                    search_terms=(entry.name, title, "metablock", "addon"),
+                    source_provider="addon",
+                    icon_hint="metablock",
+                )
+            )
         live_nodes = getattr(self.marimo, "list_graphimo_nodes", None)
         if callable(live_nodes) and self._session_id is not None:
             try:
@@ -938,6 +964,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         )
         blocks = []
         diagnostics = []
+        managed_metablocks: set[str] = set()
         for index, cell in enumerate(snapshot.get("cells", [])):
             if not isinstance(cell, dict) or not isinstance(cell.get("id"), str):
                 continue
@@ -949,6 +976,73 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             ):
                 continue
             if raw_source == "# Graphimo control runtime\nimport marimo as mo":
+                continue
+            managed_meta = _parse_managed_metablock_source(raw_source)
+            if managed_meta is not None:
+                metablock_id = managed_meta["metablock_id"]
+                dialect_id = managed_meta["dialect_id"]
+                try:
+                    materialization = self.build_metablock_materialization(metablock_id, {})
+                    if materialization.result_var not in _assigned_global_names(raw_source):
+                        raise ApplicationError(
+                            "metablock_materialization_stale",
+                            "Managed MetaBlock cell does not define its declared result variable",
+                        )
+                    projection = self.project_metablock(
+                        metablock_id, {"id": "forward", "method_name": "forward"}
+                    )
+                    state_path = self._metablock_sidecar_path(metablock_id, dialect_id)
+                    title = materialization.output_label
+                    try:
+                        serialized = json.loads(state_path.read_text(encoding="utf-8"))
+                        if isinstance(serialized, dict) and isinstance(serialized.get("name"), str):
+                            title = serialized["name"]
+                    except (OSError, UnicodeError, json.JSONDecodeError):
+                        pass
+                    saved_block = saved.get(cell_id, {})
+                    outputs = (
+                        PortView(
+                            id=f"{cell_id}:output:0",
+                            name=materialization.output_label,
+                            direction="output",
+                            declared_type=materialization.output_type,
+                            runtime_type=materialization.output_type,
+                            expression=materialization.result_var,
+                            preview=materialization.output_label,
+                        ),
+                    )
+                    blocks.append(
+                        BlockView(
+                            id=cell_id,
+                            kind="metablock_instance",
+                            title=title,
+                            subtitle=dialect_id,
+                            x=float(saved_block.get("x", 80 + (index % 4) * 280)),
+                            y=float(saved_block.get("y", 80 + (index // 4) * 190)),
+                            width=float(saved_block.get("width", 240)),
+                            height=float(saved_block.get("height", 150)),
+                            state=str(cell.get("status", "unknown")),
+                            inputs=(),
+                            outputs=outputs,
+                            body={
+                                "metablock_id": metablock_id,
+                                "dialect_id": dialect_id,
+                                "result_var": materialization.result_var,
+                                "output_type": materialization.output_type,
+                                "projection": projection,
+                                "needs_materialization": False,
+                            },
+                            badges=("MetaBlock",),
+                            can_open=True,
+                            can_edit_source=False,
+                            can_disable=False,
+                        )
+                    )
+                    managed_metablocks.add(metablock_id)
+                except ApplicationError as exc:
+                    if exc.code == "metablock_addon_unavailable":
+                        continue
+                    diagnostics.append(DiagnosticView(exc.code, str(exc), cell_id))
                 continue
             disabled_instance = parse_disabled_instance_source(raw_source)
             instance = parse_instance_source(raw_source)
@@ -1121,7 +1215,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                     can_enable=is_disabled,
                 )
             )
-        for opaque in self._opaque_metablock_views(saved):
+        for opaque in self._opaque_metablock_views(saved, managed_metablocks):
             blocks.append(opaque["block"])
             if opaque["diagnostic"] is not None:
                 diagnostics.append(opaque["diagnostic"])
@@ -1147,7 +1241,11 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             available_actions=self.available_actions,
         )
 
-    def _opaque_metablock_views(self, saved_positions: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+    def _opaque_metablock_views(
+        self,
+        saved_positions: dict[str, dict[str, float]],
+        managed_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         if self._project_path is None:
             return []
         root = Path(self._project_path).parent / ".graphimo" / "metablocks"
@@ -1157,16 +1255,16 @@ class GraphimoApplication(MetaBlockApplicationMixin):
             addons = discover_metablock_addons()
         except (ImportError, RuntimeError, ValueError):
             addons = ()
-        installed_ids = {item.name for item in addons}
+        managed_ids = managed_ids or set()
         result = []
         for index, path in enumerate(sorted(root.glob("*.json"))):
             filename_stem = path.stem
-            pieces = filename_stem.rsplit(".", 1)
-            plugin_id = pieces[-1] if len(pieces) == 2 else "unknown"
-            fallback_id = pieces[0] if len(pieces) == 2 else filename_stem
+            fallback_id = filename_stem.split(".", 1)[0]
             diagnostic = None
+            serialized: dict[str, Any] = {}
             try:
-                serialized = json.loads(path.read_text(encoding="utf-8"))
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                serialized = loaded if isinstance(loaded, dict) else {}
                 if not isinstance(serialized, dict):
                     raise ValueError("MetaBlock state root must be an object")
                 metablock_id = serialized.get("metablock_id")
@@ -1183,20 +1281,77 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                     f"Opaque MetaBlock state was preserved but could not be read: {exc}",
                     f"metablock:{metablock_id}",
                 )
-            installed = plugin_id in installed_ids
-            reason = (
-                "Addon host is not available in this Graphimo build"
-                if installed
-                else f"MetaBlock addon '{plugin_id}' is not installed"
-            )
+            if metablock_id in managed_ids:
+                continue
+            prefix = f"{metablock_id}."
+            inferred_dialect = filename_stem[len(prefix) :] if filename_stem.startswith(prefix) else "unknown"
+            dialect_id = serialized.get("dialect_id")
+            if not isinstance(dialect_id, str) or not dialect_id:
+                dialect_id = inferred_dialect
+            installed = False
+            if addons:
+                try:
+                    load_metablock_registration(dialect_id)
+                    installed = True
+                except (ImportError, LookupError, TypeError, ValueError, RuntimeError):
+                    installed = False
             position = saved_positions.get(metablock_id, {})
+            if installed:
+                try:
+                    materialization = self.build_metablock_materialization(metablock_id, {})
+                    projection = self.project_metablock(
+                        metablock_id, {"id": "forward", "method_name": "forward"}
+                    )
+                    result.append(
+                        {
+                            "block": BlockView(
+                                id=f"metablock:{metablock_id}",
+                                kind="metablock_instance",
+                                title=str(name),
+                                subtitle=dialect_id,
+                                x=float(position.get("x", 80 + (index % 4) * 280)),
+                                y=float(position.get("y", 80 + (index // 4) * 190)),
+                                width=float(position.get("width", 240)),
+                                height=float(position.get("height", 150)),
+                                state="idle",
+                                inputs=(),
+                                outputs=(
+                                    PortView(
+                                        id=f"metablock:{metablock_id}:output:0",
+                                        name=materialization.output_label,
+                                        direction="output",
+                                        declared_type=materialization.output_type,
+                                        expression=materialization.result_var,
+                                        preview=materialization.output_label,
+                                    ),
+                                ),
+                                body={
+                                    "metablock_id": metablock_id,
+                                    "dialect_id": dialect_id,
+                                    "result_var": materialization.result_var,
+                                    "output_type": materialization.output_type,
+                                    "projection": projection,
+                                    "needs_materialization": True,
+                                },
+                                badges=("MetaBlock", "Not materialized"),
+                                can_open=True,
+                                can_edit_source=False,
+                                can_disable=False,
+                            ),
+                            "diagnostic": diagnostic,
+                        }
+                    )
+                    continue
+                except ApplicationError as exc:
+                    diagnostic = DiagnosticView(exc.code, str(exc), f"metablock:{metablock_id}")
+            reason = f"MetaBlock addon '{dialect_id}' is not installed"
             result.append(
                 {
                     "block": BlockView(
                         id=f"metablock:{metablock_id}",
                         kind="metablock_opaque",
                         title=str(name),
-                        subtitle=f"Unavailable · {plugin_id}",
+                        subtitle=f"Unavailable · {dialect_id}",
                         x=float(position.get("x", 80 + (index % 4) * 280)),
                         y=float(position.get("y", 80 + (index // 4) * 190)),
                         width=float(position.get("width", 240)),
@@ -1207,7 +1362,7 @@ class GraphimoApplication(MetaBlockApplicationMixin):
                         body={
                             "opaque": True,
                             "metablock_id": metablock_id,
-                            "plugin_id": plugin_id,
+                            "plugin_id": dialect_id,
                             "addon_installed": installed,
                             "unavailable_reason": reason,
                         },
@@ -1268,6 +1423,23 @@ class GraphimoApplication(MetaBlockApplicationMixin):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+
+
+def _parse_managed_metablock_source(source: Any) -> dict[str, str] | None:
+    if not isinstance(source, str):
+        return None
+    lines = source.splitlines()
+    if len(lines) < 3:
+        return None
+    dialect_prefix = "# Graphimo metablock: "
+    instance_prefix = "# Graphimo instance: "
+    if not lines[0].startswith(dialect_prefix) or not lines[1].startswith(instance_prefix):
+        return None
+    dialect_id = lines[0][len(dialect_prefix) :]
+    metablock_id = lines[1][len(instance_prefix) :]
+    if not dialect_id or not metablock_id or any(char in dialect_id + metablock_id for char in "/\\\0\r\n"):
+        return None
+    return {"dialect_id": dialect_id, "metablock_id": metablock_id}
 
 
 def _literal_expression(value: Any, depth: int = 0) -> str:

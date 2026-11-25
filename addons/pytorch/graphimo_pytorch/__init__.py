@@ -25,7 +25,14 @@ from .inspection import (
     save_torchlens_inspection,
 )
 from .definition import PyTorchModelDefinition
-from .editing import demote_parameter, promote_parameter, set_element_parameter
+from .editing import (
+    add_element,
+    connect_elements,
+    demote_parameter,
+    disconnect_edge,
+    promote_parameter,
+    set_element_parameter,
+)
 from .revision import graph_revision
 from .registry import (
     ELEMENT_REGISTRY,
@@ -134,6 +141,9 @@ __all__ = [
     "mlp_template",
     "self_attention_template",
     "set_element_parameter",
+    "add_element",
+    "connect_elements",
+    "disconnect_edge",
     "promote_parameter",
     "demote_parameter",
     "PyTorchMetaBlockState",

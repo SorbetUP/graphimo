@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from graphimo.application import ApplicationError, GraphimoApplication
+from graphimo.instance import build_instance_source
 from graphimo.metablocks import MaterializationSpec, MetaBlockAddonHost
 
 
@@ -142,6 +143,60 @@ def test_metablock_materialization_updates_existing_or_adds_cell(project, host, 
     )
     assert host.marimo.replaced[-1][1] == "existing-cell"
     assert "value = 2" in host.marimo.replaced[-1][2]
+
+
+def test_metablock_materialization_projects_as_canvas_block_and_connects_to_node(
+    project, host, monkeypatch
+):
+    app = _opened_app(project, host)
+    monkeypatch.setattr(
+        "graphimo.metablock_application.load_metablock_registration",
+        lambda _dialect: SimpleNamespace(
+            api_version=1,
+            dialect_id="test.dialect",
+            factory=lambda _ctx: FakeDialect(),
+        ),
+    )
+    app.create_metablock("test.dialect", {"name": "Model scope"}, "meta-canvas")
+    materialization = app.build_metablock_materialization("meta-canvas", {})
+    source = (
+        "# Graphimo metablock: test.dialect\n"
+        "# Graphimo instance: meta-canvas\n"
+        f"{materialization.source}\n"
+    )
+    host.marimo.snapshot["cells"].append({"id": "meta-cell", "source": source, "status": "idle"})
+
+    projected = app.refresh_project()
+    meta_block = next(block for block in projected.blocks if block.id == "meta-cell")
+    assert meta_block.kind == "metablock_instance"
+    assert meta_block.body["projection"]["name"] == "Model scope"
+    assert meta_block.outputs[0].expression == "model"
+
+    target_source, _ = build_instance_source(
+        "normalize", {"image": "other"}, instance_id="f0f0f0f0"
+    )
+    host.marimo.snapshot["cells"].append(
+        {"id": "consumer", "source": target_source, "status": "idle"}
+    )
+    app.connect("meta-cell", "consumer", input_name="image")
+    assert "image=model" in host.marimo.replaced[-1][2]
+
+
+def test_metablock_palette_discovery_does_not_import_addon(project, host, monkeypatch):
+    app = _opened_app(project, host)
+    loads = []
+    entry = SimpleNamespace(
+        name="example-addon",
+        dist=SimpleNamespace(name="example-distribution"),
+        load=lambda: loads.append("loaded"),
+    )
+    monkeypatch.setattr("graphimo.application.discover_metablock_addons", lambda: (entry,))
+
+    item = next(item for item in app._palette().items if item.kind == "metablock")
+
+    assert item.id == "metablock:example-addon"
+    assert item.title == "example-distribution"
+    assert loads == []
 
 
 def test_metablock_context_rejects_unsafe_sidecar_ids(project, host):
