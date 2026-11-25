@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import ast
 import contextlib
 import io
+import json
 import keyword
 import math
 import queue
@@ -51,7 +51,7 @@ class _GraphimoAPI:
             }
         )
 
-    def metric(self, name: str, value: int | float, *, step: int | None = None) -> None:
+    def metric(self, name: str, value: float, *, step: int | None = None) -> None:
         if not isinstance(name, str) or not name or len(name) > 200:
             raise ValueError("metric name must be a non-empty string of at most 200 characters")
         if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
@@ -234,7 +234,7 @@ def _execute_node(
     started = time.perf_counter()
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            exec(code, namespace, namespace)
+            exec(code, namespace, namespace)  # noqa: S102 - node source is the worker's purpose
         stdout.flush()
         stderr.flush()
         throttle.flush(emit)
@@ -248,7 +248,7 @@ def _execute_node(
             "elapsed_seconds": time.perf_counter() - started,
             "telemetry": throttle.report(),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - report user-node errors over the worker protocol
         stdout.flush()
         stderr.flush()
         throttle.flush(emit)
@@ -333,7 +333,7 @@ def main() -> int:
                         send({"type": "event", "event": event})
 
                     result = _execute_node(node_request, store, send_event, controls)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - preserve worker after node failure
                     result = {
                         "ok": False,
                         "error": str(exc)[:2000],
@@ -349,7 +349,7 @@ def main() -> int:
                 name="graphimo-node-execution",
                 daemon=True,
             ).start()
-        except Exception as exc:  # keep the worker alive after one bad request
+        except Exception as exc:  # noqa: BLE001 - keep the worker alive after a bad request
             send(
                 {
                     "type": "result",

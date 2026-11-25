@@ -9,7 +9,6 @@ import threading
 from pathlib import Path
 
 import pytest
-
 from graphimo_core.artifacts import LocalArtifactStore
 from graphimo_core.ledger import Event, WorkspaceGraph
 from graphimo_core.pytorch import (
@@ -165,9 +164,11 @@ def test_workspace_graph_requires_nodes_and_preserves_immutable_revisions(tmp_pa
         "value = 2",
     }
     assert ledger.get_run(run.run_id).revision_id == first
-    with sqlite3.connect(tmp_path / "workspace.sqlite3") as db:
-        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
-            db.execute("UPDATE node_revisions SET definition='{}' WHERE revision_id=?", (first,))
+    with (
+        sqlite3.connect(tmp_path / "workspace.sqlite3") as db,
+        pytest.raises(sqlite3.IntegrityError, match="immutable"),
+    ):
+        db.execute("UPDATE node_revisions SET definition='{}' WHERE revision_id=?", (first,))
 
 
 def test_telemetry_series_include_component_path_and_have_no_lifetime_cap() -> None:
@@ -336,7 +337,7 @@ answer = "done"
                 on_event=lambda event: (events.append(event), ready.set()),
             )
             assert result["outputs"]["answer"] == "done"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - forward thread failures to the test thread
             failure.append(exc)
 
     thread = threading.Thread(target=run)
@@ -462,7 +463,7 @@ def test_worker_timeout_and_external_cancel_restart_the_process(tmp_path: Path) 
                     },
                     on_event=lambda event: event_seen.set() if event["kind"] == "log" else None,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - forward thread failures to the test thread
                 failure.append(exc)
 
         thread = threading.Thread(target=long_request)

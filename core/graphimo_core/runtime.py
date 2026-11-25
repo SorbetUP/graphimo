@@ -108,7 +108,7 @@ class LocalPythonWorker:
                     if on_event is not None:
                         try:
                             on_event(frame.get("event", {}))
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 - drain the response before surfacing callback errors
                             callback_error = exc
                     continue
                 if frame.get("type") == "control_ack":

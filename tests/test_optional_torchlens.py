@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 
 import pytest
-
 from graphimo_core.pytorch import ModelSpec, build_model, inspect_model
 from graphimo_core.vertical_demo import run_vertical_demo
 

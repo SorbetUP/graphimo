@@ -317,13 +317,13 @@ class LocalArtifactStore:
     def read_bytes(self, ref: ArtifactRef) -> bytes:
         digest = ref.manifest.get("blob")
         if not isinstance(digest, str):
-            raise ValueError("artifact is not a byte artifact")
+            raise ValueError("artifact is not a byte artifact")  # noqa: TRY004
         data = self._verified_blob(digest).read_bytes()
         return data
 
     def read_file(self, ref: ArtifactRef, relative_path: str) -> bytes:
         if not isinstance(relative_path, str):
-            raise ValueError("artifact file path must be a string")
+            raise TypeError("artifact file path must be a string")
         path = PurePosixPath(relative_path)
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise ValueError("invalid artifact file path")
@@ -348,7 +348,7 @@ class LocalArtifactStore:
         total = 0
         files = ref.manifest.get("files")
         if not isinstance(files, dict):
-            raise ValueError("invalid directory artifact manifest")
+            raise ValueError("invalid directory artifact manifest")  # noqa: TRY004
         for rel, item in files.items():
             rel_path = PurePosixPath(rel)
             if rel_path.is_absolute() or ".." in rel_path.parts:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -18,7 +19,7 @@ class ModelSpec:
 
 
 def build_model(spec: ModelSpec):
-    import torch.nn as nn
+    from torch import nn
 
     class MultiHeadMLP(nn.Module):
         def __init__(self):
@@ -196,6 +197,7 @@ def checkpoint_bytes(
 ) -> bytes:
     import io
     import random
+
     import numpy as np
     import torch
 
@@ -231,6 +233,7 @@ def checkpoint_bytes(
 
 def load_checkpoint(data: bytes):
     import io
+
     import torch
 
     checkpoint = torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
@@ -259,12 +262,13 @@ def load_training_checkpoint(data: bytes, *, lr: float = 0.03):
 def restore_rng(checkpoint: dict[str, Any]) -> None:
     """Restore saved Python, NumPy, and PyTorch RNG states after a checkpoint load."""
     import random
+
     import numpy as np
     import torch
 
     state = checkpoint.get("rng_state")
     if not isinstance(state, dict):
-        raise ValueError("checkpoint does not contain RNG state")
+        raise ValueError("checkpoint does not contain RNG state")  # noqa: TRY004
     python_state = state["python"]
     random.setstate((int(python_state[0]), tuple(python_state[1]), python_state[2]))
     numpy_state = state["numpy"]
