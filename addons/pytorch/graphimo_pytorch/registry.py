@@ -121,10 +121,12 @@ _KINDS = (
     _kind("rope", (_p("base", "float", 10000.0, 0),)),
     _kind("causal_mask"),
     _kind("cross_entropy", (_p("mode", "str", "generic", choices=("generic", "next_token")),), inputs=(PortSpec("logits"), PortSpec("target"))),
+    _kind("method_call", (_p("method", "str", None), _p("output", "str", None)), inputs=(PortSpec("x"),), required=("method", "output")),
     _kind("group_instance", (_p("group_id", "str", None), _p("repeat", "int", 1, 1))),
 )
 
 ELEMENT_REGISTRY: Mapping[str, ElementKind] = {item.kind: item for item in _KINDS}
+_INTERNAL_KINDS = frozenset({"method_call"})
 
 
 def get_element_kind(kind: str) -> ElementKind | None:
@@ -132,5 +134,6 @@ def get_element_kind(kind: str) -> ElementKind | None:
 
 
 def element_kinds() -> tuple[ElementKind, ...]:
-    return tuple(ELEMENT_REGISTRY.values())
+    """Return only user-insertable V1 elements, excluding compiler semantics."""
+    return tuple(item for item in ELEMENT_REGISTRY.values() if item.kind not in _INTERNAL_KINDS)
 

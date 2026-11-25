@@ -131,6 +131,8 @@ def _render_model_class(
         ))
     for method in state.entrypoints:
         lines.append("")
+        if method.name == "predict":
+            lines.append("    @torch.no_grad()")
         lines.extend(_render_scope_method(
             method.name, method.elements, method.edges, method.group_instances, method.inputs, method.outputs,
             (), (), group_classes, state.groups, shapes, external, method_prefix="" if method.name == "forward" else f"{method.name}_",
@@ -172,7 +174,7 @@ def _render_scope_initializers(
         else:
             lines.append(f"{indent}self.{attribute} = nn.ModuleList([{class_name}() for _ in range({instance.repeat})])")
     for element in elements:
-        if element.kind in {"input", "output", "group_instance"}:
+        if element.kind in {"input", "output", "group_instance", "method_call"}:
             continue
         params = _params_for(element, external)
         expression = _module_constructor(element, params, shapes, edges)
@@ -236,6 +238,11 @@ def _render_scope_method(
             refs = _incoming_expressions(element.kind, node_id, edges, expressions, boundary_values)
             args = ", ".join(refs)
             temp = _temp(node_id)
+            if element.kind == "method_call":
+                method_name = _python_name(str(element.params["method"]), "method")
+                body.append(f"{temp} = self.{method_name}({args})")
+                expressions[(node_id, "out")] = temp
+                continue
             body.append(f"{temp} = self.{method_prefix}{_python_name(element.name, 'layer')}({args})")
             expressions[(node_id, "out")] = temp
             continue
@@ -382,7 +389,7 @@ def _binding_sites(state: PyTorchMetaBlockState, group_classes: Mapping[str, str
 def _walk_sites(elements: tuple[ElementRecord, ...], instances: tuple[GroupInstance, ...], prefix: str,
                 group_path: tuple[GroupRuntimeIndex, ...], groups: Mapping[str, GroupDefinition], output: list[RuntimeSite]) -> None:
     for element in elements:
-        if element.kind not in {"input", "output"}:
+        if element.kind not in {"input", "output", "method_call"}:
             output.append(RuntimeSite(element.id, prefix + _python_name(element.name, "layer"), group_path, True))
     for instance in instances:
         group = groups.get(instance.group_id)

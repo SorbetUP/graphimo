@@ -187,7 +187,42 @@ instantiated module, class/factory or explicit handle. This addon contract
 §7 fixes the value as `PyTorchModelDefinition`. Those instructions conflict.
 No parent model port or materializer dependent on that choice is implemented.
 
-For implementation order, use P1 through P8 in
-`Graphimo_PYTORCH_PLUGIN_IMPLEMENTATION.md` after resolving only the
-decisions each stage depends on. The addon remains independent from the
-Graphimo Core scheduler and contains all Torch-specific semantics.
+P1 through P8 addon APIs and independent tests are implemented as far as the
+current Core/addon boundary permits. The Core §31 host-handler contract and
+Core §32 parent-port choice remain unresolved, so Workbench actions routed to
+addon semantics and parent model-definition materialization remain deferred.
+The addon remains independent from the Graphimo Core scheduler and contains
+all Torch-specific semantics.
+
+## P8 attention and Llama templates
+
+The addon exports `mlp_template`, `self_attention_template`,
+`llama_decoder_layer_template`, and `llama_causal_lm_template`, together with
+`LlamaTemplateConfig`, `estimate_llama_parameters`, and `ParameterEstimate`.
+Each template returns normal `PyTorchMetaBlockState` graph records that can be
+serialized, edited and compiled. The full default Llama dimensions are safe to
+insert or compile for source/shape inspection: creating the template does not
+allocate an `nn.Module`; only an explicit `definition.instantiate()` allocates
+weights.
+
+The causal LM has a repeated `LlamaDecoderLayer` Group, `forward`, next-token
+`loss`, and `predict` methods. An internal `method_call` record makes the
+`predict -> forward -> softmax` relationship explicit in saved graph state and
+generated Python. It is compiler semantics, not an insertable V1 palette item,
+so the exact public element catalog remains unchanged. Static parameter and
+parameter-byte estimates are available without constructing the model.
+
+The scaled acceptance model (`vocab_size=128`, `d=32`, `n_head=4`, `ff=64`,
+`n_layers=2`, sequence length 8) is compared against a direct PyTorch
+implementation after copying identical state dictionaries. Tests compare
+forward logits, next-token loss and prediction probabilities, and check
+repeated `q_proj` bindings and internal Group shape projections. A full-size
+32-layer graph is compiled for generated-source validation only; it is not
+instantiated in routine tests.
+
+`project_workbench(...)` exposes the repeated Group card, repetition count,
+method tabs, Group-internal element/edge shapes and optionally generated
+source for the Llama template. This renderer-independent acceptance is in
+place. The live standalone Workbench insertion/edit/run workflow still cannot
+invoke addon operations until Core §31's host handler API is specified; the
+documents explicitly forbid implementing a private UI action route instead.

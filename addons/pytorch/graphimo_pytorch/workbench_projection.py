@@ -127,6 +127,7 @@ def project_workbench(
         scope_elements = scope.elements if scope else ()
         scope_edges = scope.edges if scope else ()
         scope_instances = scope.group_instances if scope else ()
+    shape_prefix = f"group:{active_group_id}:" if active_group_id is not None else ""
 
     ext_values = {item.id: item.default for item in state.external_parameters}
     ext_values.update(external_values or {})
@@ -149,14 +150,15 @@ def project_workbench(
         if specs is None:
             continue
         incoming = tuple(
-            (edge.target.port, shape_result.edge_specs.get(_edge_shape_key(shape_result, edge.id)))
+            (edge.target.port, shape_result.edge_specs.get(_edge_shape_key(shape_result, edge.id, shape_prefix)))
             for edge in scope_edges if edge.target.element_id == element.id
         )
         incoming_shapes = tuple((name, tensor) for name, tensor in incoming if tensor is not None)
         output_shapes = tuple(
-            (port.name, shape_result.output_specs[key])
+            (port.name, shape_result.output_specs[shape_prefix + key])
             for port in specs.output_ports
-            if (key := f"{element.id}.{port.name}") in shape_result.output_specs
+            if (key := f"{element.id}.{port.name}") is not None
+            and shape_prefix + key in shape_result.output_specs
         )
         parameters = []
         for descriptor in specs.parameters:
@@ -182,12 +184,12 @@ def project_workbench(
         input_shapes = tuple(
             (edge.target.port, tensor)
             for edge in scope_edges if edge.target.element_id == instance.id
-            if (tensor := shape_result.edge_specs.get(_edge_shape_key(shape_result, edge.id))) is not None
+            if (tensor := shape_result.edge_specs.get(_edge_shape_key(shape_result, edge.id, shape_prefix))) is not None
         )
         output_shapes = tuple(
-            (port.name, shape_result.output_specs[f"{instance.id}.{port.name}"])
+            (port.name, shape_result.output_specs[shape_prefix + f"{instance.id}.{port.name}"])
             for port in (definition.outputs if definition else ())
-            if f"{instance.id}.{port.name}" in shape_result.output_specs
+            if shape_prefix + f"{instance.id}.{port.name}" in shape_result.output_specs
         )
         cards.append(ElementCard(
             instance.id, "group_instance", instance.name, input_shapes, output_shapes, (),
@@ -196,7 +198,7 @@ def project_workbench(
 
     edge_views = []
     for edge in scope_edges:
-        tensor = shape_result.edge_specs.get(_edge_shape_key(shape_result, edge.id))
+        tensor = shape_result.edge_specs.get(_edge_shape_key(shape_result, edge.id, shape_prefix))
         relevant = tuple(item for item in shape_result.diagnostics if item.element_id in {edge.source.element_id, edge.target.element_id})
         edge_views.append(EdgeProjection(edge.id, edge.source.element_id, edge.source.port,
                                          edge.target.element_id, edge.target.port, tensor, relevant))
@@ -222,7 +224,7 @@ def project_workbench(
     palette = tuple(
         PaletteItem(kind.kind, _CATEGORIES[kind.kind], tuple(port.name for port in kind.input_ports),
                     tuple(port.name for port in kind.output_ports), kind.parameters)
-        for kind in ELEMENT_REGISTRY.values()
+        for kind in ELEMENT_REGISTRY.values() if kind.kind != "method_call"
         if kind.kind != "group_instance" or bool(state.groups)
     )
     return PyTorchWorkbenchProjection(
@@ -235,7 +237,10 @@ def project_workbench(
     )
 
 
-def _edge_shape_key(result: ShapeInferenceResult, edge_id: str) -> str | None:
+def _edge_shape_key(result: ShapeInferenceResult, edge_id: str, prefix: str = "") -> str | None:
     suffix = f":{edge_id}"
-    return next((key for key in result.edge_specs if key.endswith(suffix)), None)
+    return next((
+        key for key in result.edge_specs
+        if key.endswith(suffix) and (prefix in key if prefix else "group:" not in key)
+    ), None)
 

@@ -53,6 +53,15 @@ from .telemetry import (
     unsubscribe,
 )
 from .workbench_projection import PyTorchWorkbenchProjection, project_workbench
+from .templates import (
+    LlamaTemplateConfig,
+    ParameterEstimate,
+    estimate_llama_parameters,
+    llama_causal_lm_template,
+    llama_decoder_layer_template,
+    mlp_template,
+    self_attention_template,
+)
 from .shapes import Dim, ShapeInferenceResult, TensorSpec, infer_model_shapes, tensor_spec
 from .validation import ValidationReport, validate_model_graph
 
@@ -93,6 +102,13 @@ __all__ = [
     "emit_cuda_resources",
     "PyTorchWorkbenchProjection",
     "project_workbench",
+    "LlamaTemplateConfig",
+    "ParameterEstimate",
+    "estimate_llama_parameters",
+    "llama_causal_lm_template",
+    "llama_decoder_layer_template",
+    "mlp_template",
+    "self_attention_template",
     "set_element_parameter",
     "promote_parameter",
     "demote_parameter",

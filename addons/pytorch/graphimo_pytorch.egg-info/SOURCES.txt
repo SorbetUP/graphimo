@@ -16,6 +16,7 @@ graphimo_pytorch/schema.py
 graphimo_pytorch/serialization.py
 graphimo_pytorch/shapes.py
 graphimo_pytorch/telemetry.py
+graphimo_pytorch/templates.py
 graphimo_pytorch/validation.py
 graphimo_pytorch/version.py
 graphimo_pytorch/workbench_projection.py

@@ -61,6 +61,81 @@ def validate_model_graph(
             state, external_values, method.inputs, method.outputs,
             scope_name=f"method {method.name}",
         ))
+    methods_by_name = {method.name: method for method in state.entrypoints}
+    for method in state.entrypoints:
+        for element in method.elements:
+            if element.kind != "method_call":
+                continue
+            target_name = element.params.get("method")
+            output_name = element.params.get("output")
+            target = methods_by_name.get(str(target_name))
+            if target is None:
+                diagnostics.append(Diagnostic(
+                    "pytorch_method_call_target_invalid",
+                    f"Method call references missing method {target_name!r}",
+                    element_id=element.id,
+                ))
+                continue
+            if len(target.inputs) != 1:
+                diagnostics.append(Diagnostic(
+                    "pytorch_method_call_arity_unsupported",
+                    "V1 method-call elements support target methods with exactly one input",
+                    element_id=element.id,
+                ))
+            if len(target.outputs) != 1:
+                diagnostics.append(Diagnostic(
+                    "pytorch_method_call_output_arity_unsupported",
+                    "V1 method-call elements support target methods with exactly one output",
+                    element_id=element.id,
+                ))
+            if not any(output.id == output_name for output in target.outputs):
+                diagnostics.append(Diagnostic(
+                    "pytorch_method_call_output_invalid",
+                    f"Method {target.name!r} has no output {output_name!r}",
+                    element_id=element.id,
+                ))
+            connected_inputs = sum(
+                edge.target.element_id == element.id and edge.target.port == "x"
+                for edge in method.edges
+            )
+            if connected_inputs != len(target.inputs):
+                diagnostics.append(Diagnostic(
+                    "pytorch_method_call_arity_invalid",
+                    f"Method {target.name!r} expects {len(target.inputs)} input(s), got {connected_inputs}",
+                    element_id=element.id,
+                ))
+    method_calls = {
+        method.name: [
+            str(element.params.get("method"))
+            for element in method.elements
+            if element.kind == "method_call" and str(element.params.get("method")) in methods_by_name
+        ]
+        for method in state.entrypoints
+    }
+    complete: set[str] = set()
+    active: list[str] = []
+    reported_cycles: set[tuple[str, ...]] = set()
+
+    def visit_method(name: str) -> None:
+        if name in active:
+            cycle = tuple(active[active.index(name):] + [name])
+            if cycle not in reported_cycles:
+                reported_cycles.add(cycle)
+                diagnostics.append(Diagnostic(
+                    "pytorch_method_call_recursive",
+                    f"Recursive method calls are unsupported: {' -> '.join(cycle)}",
+                ))
+            return
+        if name in complete:
+            return
+        active.append(name)
+        for target_name in method_calls.get(name, ()):
+            visit_method(target_name)
+        active.pop()
+        complete.add(name)
+
+    for method_name in method_calls:
+        visit_method(method_name)
     for group in state.groups:
         diagnostics.extend(_validate_scope(
             group.elements, group.edges, group.group_instances, groups_by_id,

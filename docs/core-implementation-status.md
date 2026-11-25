@@ -152,3 +152,12 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 
 - Removed the historical optional TorchLens adapter from `graphimo_core.pytorch`, its vertical-slice demo path, and the Core distribution's `inspection` extra. TorchLens deep inspection is now owned by the separately installed PyTorch addon only.
 - Replaced the old Core integration test with a conformance test that checks the Core package source and dependency metadata for TorchLens leakage. The addon P7 integration test exercises the pinned API instead.
+
+### PyTorch addon P8 — editable attention and Llama templates
+
+- Added `mlp_template`, `self_attention_template`, `llama_decoder_layer_template`, and `llama_causal_lm_template`. Each returns ordinary editable schema records; the default 32-layer configuration is compiled to a factory/source only and is never instantiated during insertion or projection.
+- The Llama graph uses one reusable `LlamaDecoderLayer` Group repeated by `n_layers`, keeps the documented semantic module names, exposes `forward`, next-token `loss`, and no-gradient `predict`, and produces static parameter/memory estimates.
+- Added an internal `method_call` semantic record so `predict -> forward -> softmax` remains explicit and reconstructible. It is supported by validation, shape propagation and generated Python but intentionally excluded from the exact user-insertable V1 element catalog and palette.
+- Extended Group shape projection so the Workbench view can inspect inner element and edge shapes within a repeated Group. The projected view also exposes the collapsed repetition count, method tabs and generated source.
+- The scaled `vocab=128, d=32, heads=4, ff=64, layers=2, sequence=8` graph is numerically compared to a direct PyTorch reference with copied state dictionaries for logits, next-token loss and prediction probabilities. Tests also verify repeated binding paths and internal Group shape labels. The full-size fixture is compiled but not instantiated.
+- The addon APIs and Workbench view projection are tested, but the end-to-end visual insertion/edit/run scenario remains blocked by Core §31: its normative handler API is explicitly unfrozen, and the contract forbids inventing addon host action methods. No separate PyTorch canvas or Zeron-only insertion path was added.

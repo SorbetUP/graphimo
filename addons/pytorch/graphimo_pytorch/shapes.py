@@ -52,17 +52,26 @@ def infer_model_shapes(
     all_outputs: dict[str, TensorSpec] = {}
     all_edges: dict[str, TensorSpec] = {}
     visiting: set[str] = set()
+    method_outputs: dict[tuple[str, str], TensorSpec] = {}
     for method in state.entrypoints:
-        specs, edge_specs, found = _infer_scope(method, (), (), groups, external, visiting, f"method:{method.name}")
+        specs, edge_specs, found = _infer_scope(
+            method, (), (), groups, external, visiting, f"method:{method.name}", method_outputs
+        )
         all_outputs.update(specs)
         all_edges.update({f"{method.name}:{key}": value for key, value in edge_specs.items()})
         diagnostics.extend(found)
+        for output in method.outputs:
+            spec = specs.get(f"method_output:{output.id}")
+            if spec is not None:
+                method_outputs[(method.name, output.id)] = spec
     return ShapeInferenceResult(all_outputs, all_edges, tuple(_unique_diagnostics(diagnostics)))
 
 
 def _infer_scope(scope: MethodGraph | None, group_inputs: tuple[object, ...], group_outputs: tuple[object, ...],
                  groups: Mapping[str, GroupDefinition], external: Mapping[str, object], visiting: set[str],
-                 scope_key: str) -> tuple[dict[str, TensorSpec], dict[str, TensorSpec], list[Diagnostic]]:
+                 scope_key: str,
+                 method_outputs: Mapping[tuple[str, str], TensorSpec] | None = None,
+                 ) -> tuple[dict[str, TensorSpec], dict[str, TensorSpec], list[Diagnostic]]:
     if scope is None:
         return {}, {}, []
     diagnostics: list[Diagnostic] = []
@@ -117,6 +126,25 @@ def _infer_scope(scope: MethodGraph | None, group_inputs: tuple[object, ...], gr
                         edge_specs[edge.id] = spec
             ordered_inputs = _ordered_inputs(element.kind, specs_by_port)
             params = _resolved_params(element, external)
+            if element.kind == "method_call":
+                method_name = params.get("method")
+                output_name = params.get("output")
+                called = (method_outputs or {}).get((str(method_name), str(output_name)))
+                if called is None:
+                    diagnostics.append(Diagnostic(
+                        "pytorch_method_call_output_unresolved",
+                        f"Method call {method_name!r} output {output_name!r} has no previously inferred shape",
+                        element_id=node_id,
+                    ))
+                elif len(ordered_inputs) != 1:
+                    diagnostics.append(Diagnostic(
+                        "pytorch_method_call_inputs_invalid",
+                        "V1 method calls require exactly one tensor input",
+                        element_id=node_id,
+                    ))
+                else:
+                    outputs[f"{node_id}.out"] = called
+                continue
             try:
                 inferred = _infer_element(element.kind, ordered_inputs, params)
                 for index, spec in enumerate(inferred):
@@ -151,7 +179,8 @@ def _infer_scope(scope: MethodGraph | None, group_inputs: tuple[object, ...], gr
                     for p in definition.inputs
                 )
                 nested, nested_edges, repetition_diagnostics = _infer_scope(
-                    nested_method, nested_group_inputs, definition.outputs, groups, external, visiting, f"group:{definition.id}"
+                    nested_method, nested_group_inputs, definition.outputs, groups, external, visiting,
+                    f"group:{definition.id}", method_outputs,
                 )
                 nested_diagnostics.extend(repetition_diagnostics)
                 output_by_name = {port.name: port for port in definition.outputs}
@@ -164,6 +193,17 @@ def _infer_scope(scope: MethodGraph | None, group_inputs: tuple[object, ...], gr
                         repetition_inputs[input_port.name] = nested[f"group_output:{output_port.id}"]
             visiting.remove(definition.id)
             diagnostics.extend(nested_diagnostics)
+            # Preserve one logical Group-scope shape projection for its editor.
+            # The repeated instances share the same declared internal graph, so
+            # the last repetition has the same semantic shape as its peers.
+            outputs.update({
+                f"group:{definition.id}:{key}": value
+                for key, value in nested.items()
+                if not key.startswith("group_output:")
+            })
+            edge_specs.update({
+                f"group:{definition.id}:{key}": value for key, value in nested_edges.items()
+            })
             outputs.update({f"{node_id}.{key}": value for key, value in nested.items() if key.startswith("group_output:")})
             for port in definition.outputs:
                 value = nested.get(f"group_output:{port.id}")
