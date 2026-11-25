@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
+import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -9,6 +12,7 @@ import torch
 from graphimo.application import GraphimoApplication
 from graphimo.metablocks import MaterializationSpec, MetaBlockContext, MetaBlockDialect
 from graphimo.artifacts import LocalArtifactStore
+from graphimo.marimo_http import MarimoHttpPort
 from graphimo_pytorch import (
     PyTorchMetaBlockDialect,
     materialize_definition,
@@ -250,3 +254,88 @@ def test_pytorch_subscriptions_and_torchlens_use_generic_invoke_and_event_method
             state_to_dict(state), "unsubscribe", {"subscription_id": "subscription-u3"}, context
         )
         release_runtime_model(model)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("marimo") is None or importlib.util.find_spec("websockets") is None,
+    reason="live MetaBlock kernel routing requires marimo and websockets",
+)
+def test_live_metablock_runtime_actions_and_events_run_in_marimo_kernel(tmp_path, monkeypatch):
+    dist_info = tmp_path / "graphimo_pytorch-0.1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: graphimo-pytorch\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[graphimo.metablocks]\npytorch.model = graphimo_pytorch.registration:registration\n",
+        encoding="utf-8",
+    )
+    project_root = Path(__file__).resolve().parents[1]
+    addon_root = project_root / "addons" / "pytorch"
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(
+            str(path)
+            for path in (tmp_path, project_root, addon_root, os.environ.get("PYTHONPATH", ""))
+            if str(path)
+        ),
+    )
+    notebook = tmp_path / "live_metablock_runtime.py"
+    notebook.write_text(
+        "import marimo\napp = marimo.App()\nif __name__ == '__main__': app.run()\n",
+        encoding="utf-8",
+    )
+    port = MarimoHttpPort(notebook)
+    try:
+        app = GraphimoApplication(
+            port, tmp_path / "components", layout_path=tmp_path / ".graphimo.json"
+        )
+        app.open_project(notebook, port.session_id)
+        app.create_metablock(
+            "pytorch.model",
+            {"template": "mlp", "input_size": 2, "hidden": 3, "output_size": 1},
+            "live-runtime",
+        )
+        materialized = app.materialize_metablock("live-runtime", {})
+        port.run_cell(port.session_id, materialized["cell_id"])
+        result_var = materialized["materialization"].result_var
+        model_cell = port.add_cell(
+            port.session_id,
+            f"import torch\nlive_model = {result_var}.instantiate()",
+        )
+        port.run_cell(port.session_id, model_cell)
+
+        runtimes = app.invoke_metablock("live-runtime", "runtime.list", {})
+        assert len(runtimes) == 1
+        runtime_id = runtimes[0]["runtime_instance_id"]
+        subscription = app.invoke_metablock(
+            "live-runtime",
+            "subscribe",
+            {
+                "subscription_id": "live-test-subscription",
+                "runtime_instance_id": runtime_id,
+                "logical_element_id": "linear-a",
+                "signal": "activation",
+                "detail": "summary",
+            },
+        )
+        assert subscription["subscription_id"] == "live-test-subscription"
+
+        forward_cell = port.add_cell(
+            port.session_id,
+            "live_model(__import__('torch').ones(1, 2))",
+        )
+        port.run_cell(port.session_id, forward_cell)
+        events = app.drain_metablock_events("live-runtime", cursor=0, limit=20)
+        assert any(event["kind"] == "activation.summary" for event in events["events"])
+
+        removed = app.invoke_metablock(
+            "live-runtime",
+            "unsubscribe",
+            {"subscription_id": "live-test-subscription"},
+        )
+        assert removed["removed"] is True
+    finally:
+        port.close()

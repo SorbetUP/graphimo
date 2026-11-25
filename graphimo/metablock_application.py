@@ -125,6 +125,21 @@ class MetaBlockApplicationMixin:
         self, metablock_id: str, action: str, args: dict[str, Any] | None = None
     ) -> Any:
         dialect_id, state = self._load_metablock_state(metablock_id)
+        kernel_invoke = getattr(self.marimo, "invoke_metablock", None)
+        if callable(kernel_invoke):
+            context = self._metablock_context(dialect_id, metablock_id)
+            return _json_safe(
+                kernel_invoke(
+                    self._require_session(),
+                    project_path=context.project_path,
+                    project_id=context.project_id,
+                    dialect_id=dialect_id,
+                    metablock_id=metablock_id,
+                    sidecar_path=str(context.sidecar_path),
+                    action=action,
+                    args=args or {},
+                )
+            )
         handler, context = self._metablock_handler(dialect_id, metablock_id)
         return _json_safe(handler.invoke(state, action, args or {}, context))
 
@@ -138,6 +153,32 @@ class MetaBlockApplicationMixin:
                 "invalid_event_cursor", "Event cursor must be a non-negative integer"
             )
         dialect_id, state = self._load_metablock_state(metablock_id)
+        kernel_drain = getattr(self.marimo, "drain_metablock_events", None)
+        if callable(kernel_drain):
+            context = self._metablock_context(dialect_id, metablock_id)
+            result = _json_safe(
+                kernel_drain(
+                    self._require_session(),
+                    project_path=context.project_path,
+                    project_id=context.project_id,
+                    dialect_id=dialect_id,
+                    metablock_id=metablock_id,
+                    sidecar_path=str(context.sidecar_path),
+                    cursor=cursor,
+                    limit=limit,
+                )
+            )
+            if (
+                not isinstance(result, dict)
+                or type(result.get("cursor")) is not int
+                or result["cursor"] < cursor
+                or not isinstance(result.get("events"), list)
+                or len(result["events"]) > limit
+            ):
+                raise ApplicationError(
+                    "invalid_metablock_events", "Addon returned an invalid event batch"
+                )
+            return result
         handler, context = self._metablock_handler(dialect_id, metablock_id)
         result = _json_safe(handler.drain_events(cursor, limit, context))
         if (

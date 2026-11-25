@@ -255,6 +255,11 @@ local Page = ui.component(function()
 	local meta_template = ui.use_state("mlp")
 	local meta_parameter_name = ui.use_state("")
 	local meta_parameter_text = ui.use_state("")
+	local runtime_instances = ui.use_state({})
+	local runtime_instance_id = ui.use_state("")
+	local runtime_subscription_id = ui.use_state("")
+	local inspection_inputs = ui.use_state("")
+	local runtime_events = ui.use_state({})
 	local event_cursor = ui.use_state(0)
 	local event_poll_generation = ui.use_state(0)
 	local zoom = ui.use_state(0.85)
@@ -405,6 +410,14 @@ local Page = ui.component(function()
 							if event.type == "addon.event" and type(event.event) == "table" then
 								kind = event.event.kind or kind
 								detail = tostring(event.metablock_id or "MetaBlock") .. " · " .. string.sub(ui.json.encode(event.event), 1, 1500)
+								local recent = table.clone(runtime_events:peek())
+								table.insert(recent, 1, {
+									metablock_id = event.metablock_id,
+									kind = tostring(kind),
+									detail = string.sub(ui.json.encode(event.event), 1, 900),
+								})
+								while #recent > 30 do table.remove(recent) end
+								runtime_events:set(recent)
 							end
 							local severity = if event.type == "addon.event_stream_error" then "error" else "info"
 							log(tostring(kind) .. (detail and detail ~= "" and (": " .. tostring(detail)) or ""), severity)
@@ -1094,6 +1107,91 @@ local Page = ui.component(function()
 		end)
 	end
 
+	local function selected_meta_element()
+		local cell = selected_cell()
+		return if cell and cell.meta_card then cell.meta_card.element_id else nil
+	end
+
+	local function invoke_pytorch_action(action, args, on_success, label)
+		local active_meta = meta_scope:peek()
+		local connection = service_connection:peek()
+		if not active_meta or type(connection) ~= "table" then
+			notice:set("Open a PyTorch MetaBlock first")
+			return
+		end
+		observe(label or action, function()
+			return Service.execute(zeron, connection, "invoke_metablock", {
+				metablock_id = active_meta.metablock_id,
+				action = action,
+				args = args or {},
+			})
+		end, function(response)
+			if on_success then on_success(response.result) end
+		end, function(err)
+			notice:set(tostring(label or action) .. " failed: " .. tostring(err))
+		end)
+	end
+
+	local function refresh_runtime_instances()
+		invoke_pytorch_action("runtime.list", {}, function(result)
+			local values = if type(result) == "table" then result else {}
+			runtime_instances:set(values)
+			local active_id = runtime_instance_id:peek()
+			local found = false
+			for _, item in values do
+				if item.runtime_instance_id == active_id then found = true; break end
+			end
+			if not found then runtime_instance_id:set(if values[1] then values[1].runtime_instance_id or "" else "") end
+			notice:set("Found " .. tostring(#values) .. " live model instance(s)")
+		end, "List live PyTorch models")
+	end
+
+	local function subscribe_selected_element(signal)
+		local element_id = selected_meta_element()
+		local runtime_id = runtime_instance_id:peek()
+		if not element_id then notice:set("Select a PyTorch model element first"); return end
+		if runtime_id == "" then notice:set("Refresh and select a live model instance first"); return end
+		local subscription_id = "ui-" .. tostring(os.time()) .. "-" .. tostring(output_counter:peek())
+		output_counter:set(output_counter:peek() + 1)
+		invoke_pytorch_action("subscribe", {
+			runtime_instance_id = runtime_id,
+			subscription_id = subscription_id,
+			logical_element_id = element_id,
+			signal = signal,
+			detail = "summary",
+		}, function(result)
+			runtime_subscription_id:set(result and result.subscription_id or subscription_id)
+			notice:set("Subscribed to " .. signal .. " events for " .. element_id)
+		end, "Subscribe to " .. signal)
+	end
+
+	local function unsubscribe_runtime_events()
+		local subscription_id = runtime_subscription_id:peek()
+		if subscription_id == "" then notice:set("There is no active UI subscription"); return end
+		invoke_pytorch_action("unsubscribe", { subscription_id = subscription_id }, function(result)
+			runtime_subscription_id:set("")
+			notice:set(if result and result.removed then "Runtime event subscription stopped" else "Runtime subscription was already stopped")
+		end, "Stop runtime subscription")
+	end
+
+	local function inspect_selected_element()
+		local element_id = selected_meta_element()
+		local runtime_id = runtime_instance_id:peek()
+		if not element_id then notice:set("Select a PyTorch model element first"); return end
+		if runtime_id == "" then notice:set("Refresh and select a live model instance first"); return end
+		local ok, inputs = pcall(ui.json.decode, inspection_inputs:peek())
+		if not ok or type(inputs) ~= "table" then notice:set("Enter model inputs as a JSON array or object"); return end
+		invoke_pytorch_action("torchlens.inspect", {
+			runtime_instance_id = runtime_id,
+			logical_element_id = element_id,
+			inputs = inputs,
+		}, function(result)
+			local encoded = ui.json.encode(result or {})
+			log("TorchLens inspection · " .. string.sub(encoded, 1, 5000))
+			notice:set("TorchLens inspection complete; details added to Logs")
+		end, "Inspect selected model element")
+	end
+
 	local function component_library_panel()
 		local groups = ui.computed(function()
 			return Library.project(components:get(), library_query:get())
@@ -1134,6 +1232,37 @@ local Page = ui.component(function()
 				end),
 				SearchField { value = meta_parameter_text, placeholder = "Select a parameter, then enter a value", name = "Model parameter value", size = "sm", quiet = true, w_full = true },
 				Button { "Apply parameter", tone = "secondary", size = "sm", disabled = function() return meta_parameter_name:get() == "" end, on_click = apply_meta_parameter },
+			}),
+			ui.show(function() return meta_scope:get() ~= nil end, ui.column { w_full = true, gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.primary.bg",
+				Text { "Live model inspection", style = "caption" },
+				Button { "Refresh live models", tone = "secondary", size = "sm", w_full = true, on_click = refresh_runtime_instances },
+				ui.each(runtime_instances, function(runtime)
+					return Button {
+						function() return (runtime_instance_id:get() == runtime.runtime_instance_id and "● " or "○ ") .. tostring(runtime.runtime_instance_id or "runtime") end,
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function() runtime_instance_id:set(runtime.runtime_instance_id or "") end,
+					}
+				end),
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					Button { "Activation", tone = "secondary", size = "sm", disabled = function() return runtime_instance_id:get() == "" or selected_meta_element() == nil end, on_click = function() subscribe_selected_element("activation") end },
+					Button { "Gradient", tone = "secondary", size = "sm", disabled = function() return runtime_instance_id:get() == "" or selected_meta_element() == nil end, on_click = function() subscribe_selected_element("gradient") end },
+				},
+				Button { "Stop subscription", tone = "secondary", size = "sm", w_full = true, disabled = function() return runtime_subscription_id:get() == "" end, on_click = unsubscribe_runtime_events },
+				SearchField { value = inspection_inputs, placeholder = "TorchLens inputs as JSON, e.g. [[0.1, 0.2]]", name = "TorchLens model inputs", size = "sm", quiet = true, w_full = true },
+				Button { "Inspect selected element", tone = "secondary", size = "sm", w_full = true, disabled = function() return runtime_instance_id:get() == "" or selected_meta_element() == nil end, on_click = inspect_selected_element },
+				Text { function() return "Subscription: " .. (runtime_subscription_id:get() ~= "" and runtime_subscription_id:get() or "none") end, style = "caption", tone = "secondary", wrap = true },
+				Text { "Recent live events · open Logs for full payloads", style = "caption", tone = "secondary" },
+				ui.each(function()
+					local active = meta_scope:get()
+					local result = {}
+					for _, event in runtime_events:get() do
+						if not active or event.metablock_id == active.metablock_id then table.insert(result, event) end
+						if #result >= 8 then break end
+					end
+					return result
+				end, function(event)
+					return Text { event.kind .. " · " .. event.detail, style = "caption", tone = "secondary", wrap = true }
+				end),
 			}),
 			ui.show(function() return #groups:get() == 0 end, Text { function()
 				return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"

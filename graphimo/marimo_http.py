@@ -413,6 +413,66 @@ print("GRAPHIMO_RESULT:" + json.dumps(result, default=str, separators=(",", ":")
             "Raw Python values never cross the Workbench marimo boundary; use describe_node_result"
         )
 
+    def invoke_metablock(
+        self,
+        session_id: str,
+        *,
+        project_path: str,
+        project_id: str,
+        dialect_id: str,
+        metablock_id: str,
+        sidecar_path: str,
+        action: str,
+        args: dict[str, Any],
+    ) -> Any:
+        """Run an addon action in the kernel that owns its live Python values."""
+        payload = {
+            "project_path": project_path,
+            "project_id": project_id,
+            "dialect_id": dialect_id,
+            "metablock_id": metablock_id,
+            "sidecar_path": sidecar_path,
+            "action": action,
+            "args": args,
+        }
+        return self._run_metablock_rpc(session_id, "invoke_metablock", payload)
+
+    def drain_metablock_events(
+        self,
+        session_id: str,
+        *,
+        project_path: str,
+        project_id: str,
+        dialect_id: str,
+        metablock_id: str,
+        sidecar_path: str,
+        cursor: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Drain addon events in the kernel process that produced them."""
+        payload = {
+            "project_path": project_path,
+            "project_id": project_id,
+            "dialect_id": dialect_id,
+            "metablock_id": metablock_id,
+            "sidecar_path": sidecar_path,
+            "cursor": cursor,
+            "limit": limit,
+        }
+        return self._run_metablock_rpc(session_id, "drain_metablock_events", payload)
+
+    def _run_metablock_rpc(self, session_id: str, function: str, payload: dict[str, Any]) -> Any:
+        self._check_session(session_id)
+        encoded = self._literal(json.dumps(payload, allow_nan=False, separators=(",", ":")))
+        code = (
+            "import json\nimport marimo._code_mode as cm\n"
+            "import graphimo.metablock_kernel as _graphimo_metablock_kernel\n"
+            "async with cm.get_context() as ctx:\n"
+            f"    result = _graphimo_metablock_kernel.{function}(marimo_context=ctx, **json.loads({encoded}))\n"
+            "print('GRAPHIMO_RESULT:' + json.dumps(result, default=str, allow_nan=False, separators=(',', ':')))"
+        )
+        return self._execute(code)
+
     def _check_session(self, session_id: str) -> None:
         if session_id != self.session_id:
             raise KeyError(session_id)
@@ -459,6 +519,8 @@ class MarimoSessionPool:
             "describe_node_result",
             "describe_group_result",
             "get_variable",
+            "invoke_metablock",
+            "drain_metablock_events",
         }
     )
 
