@@ -35,6 +35,11 @@ def _store() -> LocalArtifactStore:
     return _default_store
 
 
+def default_store() -> LocalArtifactStore:
+    """Return the configured process-wide store for trusted host integrations."""
+    return _store()
+
+
 def put(
     path: str | os.PathLike[str],
     *,
@@ -79,6 +84,7 @@ __all__ = [
     "GarbageCollectionReport",
     "LocalArtifactStore",
     "configure_default_store",
+    "default_store",
     "put",
     "put_bytes",
     "materialize",

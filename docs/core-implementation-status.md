@@ -20,6 +20,14 @@ Workbench remains a conformance/debug harness.
 - The wheel tests now build from temporary source copies. The optional `.githooks/pre-push` runs the full gate and is enabled with `scripts/install-hooks`.
 - Local verification: fast gate **97 passed, 1 deselected**; full gate **181 passed, 1 opt-in network bootstrap skipped**; both wheels build and include expected package files; Ruff and hygiene checks pass.
 
+### U2 — generic MetaBlock addon host API
+
+- Replaced the empty experimental placeholder with `MetaBlockContext`, `MetaBlockDialect`, and validated `MaterializationSpec`. The context exposes project identity/path, an `ArtifactStore`, sidecar load/atomic-save helpers, bounded event and diagnostic methods, a logger, marimo materialization-cell updates, and current scope/navigation metadata. It contains no PyTorch concepts.
+- Entry-point discovery remains import-free. A registration and handler are loaded only for an explicit MetaBlock operation; API version and handler protocol are validated then.
+- `GraphimoApplication` now exposes create, catalog, project, apply, materialization, invoke, and bounded cursor event methods. Addon state is JSON-only, sidecar writes use temp-file + atomic replace, and a failed apply leaves the previous state untouched. Missing/unreadable addon states continue through the existing opaque projection path without rewriting their bytes.
+- Added fake-addon lifecycle tests for catalog/projection, state edits and persistence, materialization-cell insertion/update, invoke/events, artifact access and path validation. Core source stays free of PyTorch imports.
+- Verification: **21 MetaBlock/scopes regression tests passed**; `scripts/check --full` passes with **186 passed, 1 opt-in network bootstrap skipped**, both wheels build and pass package-content checks, Ruff lint/format and generated-artifact hygiene pass. The legacy `application.py` controller remains outside formatter checks to avoid a broad unrelated reformat; its new behavior is delegated to formatted `metablock_application.py`.
+
 ## Completed milestones
 
 ### M1 — transparent node API

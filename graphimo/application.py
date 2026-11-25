@@ -24,6 +24,7 @@ from graphimo.controls import (
     parse_control_source,
     validate_control_value,
 )
+from graphimo.errors import ApplicationError
 from graphimo.instance import (
     build_instance_source,
     disable_instance_source,
@@ -34,6 +35,7 @@ from graphimo.instance import (
     reconnect_instance_source,
 )
 from graphimo.node import InputPort, NodeSpec, OutputPort
+from graphimo.metablock_application import MetaBlockApplicationMixin
 from graphimo.metablocks import discover_metablock_addons
 
 
@@ -145,7 +147,7 @@ class GraphimoViewState:
     available_actions: tuple[str, ...]
 
 
-class GraphimoApplication:
+class GraphimoApplication(MetaBlockApplicationMixin):
     """Application/controller that exposes Graphimo operations over marimo."""
 
     def __init__(
@@ -161,6 +163,7 @@ class GraphimoApplication:
         self._session_id: str | None = None
         self._project_path: str | None = None
         self._selection: tuple[str, ...] = ()
+        self._init_metablocks()
 
     @property
     def session_id(self) -> str | None:
@@ -178,6 +181,8 @@ class GraphimoApplication:
             "reconnect", "disconnect", "set_literal", "run_target", "open_inspector",
             "disable_instance", "enable_instance", "inspect_artifact_store",
             "set_control_value",
+            "create_metablock", "metablock_catalog", "project_metablock", "apply_metablock",
+            "build_metablock_materialization", "invoke_metablock", "drain_metablock_events",
         )
 
     def inspect_artifact_store(self) -> Any:
@@ -188,6 +193,7 @@ class GraphimoApplication:
         self._session_id = None
         self._project_path = None
         self._selection = ()
+        self._close_metablocks()
 
     def open_project(self, path: str | os.PathLike[str], session_id: str | None = None) -> GraphimoViewState:
         requested_path = str(Path(path).expanduser().resolve())
@@ -1014,14 +1020,6 @@ class GraphimoApplication:
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-
-
-class ApplicationError(Exception):
-    """A typed, renderer-safe application failure."""
-
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
 
 
 def _literal_expression(value: Any, depth: int = 0) -> str:
