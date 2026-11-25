@@ -1,6 +1,7 @@
 pyproject.toml
 graphimo_pytorch/__init__.py
 graphimo_pytorch/bindings.py
+graphimo_pytorch/checkpoints.py
 graphimo_pytorch/compiler.py
 graphimo_pytorch/definition.py
 graphimo_pytorch/diagnostics.py

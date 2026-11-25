@@ -105,6 +105,23 @@ Workbench subscription selector is wired while Core §31's public handler
 interface remains unfrozen. The addon does not add a separate live UI or
 Zeron-only execution path.
 
+## P6 delivered: checkpoint artifacts and migration reports
+
+`save_checkpoint(model, optimizer=None, scheduler=None, metadata={})` saves a
+state dictionary and provenance into a temporary `.pt` file, then stores it
+as a `pytorch-checkpoint` through `graphimo.artifacts`. It records the
+MetaBlock/revision/materialization, external parameter values, PyTorch/addon
+versions, optional optimizer/scheduler state dictionaries and finite JSON
+metadata. It never saves a whole Python model object.
+
+`load_checkpoint(definition, artifact, strict=True)` checks graph revision and
+materialization key before creating/loading the target. With `strict=False`,
+`migrate_state_dict` copies only exact-name, exact-shape tensors and the
+returned model carries a `WeightMigrationReport` at
+`__graphimo_pytorch_migration_report__`. The report lists copied keys, keys
+missing on each side and shape mismatches. Weight resizing and optimizer
+migration are not automatic.
+
 ## P4 independent projection/editor subset
 
 `graphimo_pytorch.workbench_projection.project_workbench(...)` returns

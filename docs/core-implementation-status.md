@@ -131,3 +131,10 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Model creation/release emits runtime lifecycle events. Runtime instances are weakly registered and carry Graphimo provenance separately from `state_dict()`.
 - P5 tests exercise activation/gradient events, unsubscribe/release, rate limiting, empty/non-finite tensors, bounded histogram/sample payloads, metrics and CPU resource handling.
 - The generic Graphimo application event-routing adapter and visible Workbench live selector remain deferred with Core §31's unfrozen handler API. The addon exposes queued events and structured runtime data without creating a private Workbench or Luau/Zeron bypass.
+
+### PyTorch addon P6 — checkpoints and conservative migration
+
+- Added `save_checkpoint` / `load_checkpoint` using a temporary `torch.save` state-dict file and the native `graphimo.artifacts` API. The checkpoint contains provenance, external parameter values, versions, user JSON metadata, and optional optimizer/scheduler `state_dict`s; it never stores a pickled model object.
+- Strict loading checks both graph revision and materialization key before instantiating/loading a model. A structural graph change raises `pytorch_checkpoint_revision_mismatch`; changed resolved external values/compiler materialization raises `pytorch_checkpoint_materialization_mismatch`.
+- `strict=False` uses the explicit `migrate_state_dict` helper and attaches a `WeightMigrationReport` to the returned model. It copies only same-name, same-shape tensors and reports missing/extra keys and shape mismatches; it does not resize weights or migrate optimizer state.
+- Tests cover artifact round-trip, exact weight restoration, optimizer/scheduler payloads, revision/materialization refusals, exact-copy migration, size mismatch reports and invalid provenance/metadata.

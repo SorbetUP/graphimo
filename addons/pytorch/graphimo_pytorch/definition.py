@@ -34,6 +34,7 @@ class PyTorchModelDefinition:
             self.metablock_id, self.graph_revision, self.materialization_key, self.bindings
         )
         setattr(model, "__graphimo_pytorch_runtime__", info)
+        setattr(model, "__graphimo_pytorch_external_parameters__", dict(self.external_parameters))
         runtime_registry.register(model, info)
         from .telemetry import emit_runtime_created
 

@@ -8,6 +8,7 @@ implemented and used.
 from .diagnostics import Diagnostic, GraphimoPytorchError
 from .bindings import GroupRuntimeIndex, RuntimeBindingMap, RuntimeSite
 from .compiler import CompileResult, compile_model
+from .checkpoints import ShapeMismatch, WeightMigrationReport, load_checkpoint, migrate_state_dict, save_checkpoint
 from .definition import PyTorchModelDefinition
 from .editing import demote_parameter, promote_parameter, set_element_parameter
 from .revision import graph_revision
@@ -52,6 +53,11 @@ __all__ = [
     "GraphimoPytorchError",
     "CompileResult",
     "compile_model",
+    "save_checkpoint",
+    "load_checkpoint",
+    "migrate_state_dict",
+    "ShapeMismatch",
+    "WeightMigrationReport",
     "PyTorchModelDefinition",
     "RuntimeSite",
     "GroupRuntimeIndex",
