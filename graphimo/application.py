@@ -34,6 +34,7 @@ from graphimo.instance import (
     reconnect_instance_source,
 )
 from graphimo.node import InputPort, NodeSpec, OutputPort
+from graphimo.metablocks import discover_metablock_addons
 
 
 class MarimoApplicationPort(Protocol):
@@ -866,6 +867,10 @@ class GraphimoApplication:
                     can_enable=is_disabled,
                 )
             )
+        for opaque in self._opaque_metablock_views(saved):
+            blocks.append(opaque["block"])
+            if opaque["diagnostic"] is not None:
+                diagnostics.append(opaque["diagnostic"])
         project = snapshot.get("notebook", {})
         project_id = str(project.get("path") or self._project_path or "marimo") if isinstance(project, dict) else self._project_path or "marimo"
         block_states = [block.state.lower() for block in blocks]
@@ -887,6 +892,80 @@ class GraphimoApplication:
             diagnostics=tuple(diagnostics),
             available_actions=self.available_actions,
         )
+
+    def _opaque_metablock_views(self, saved_positions: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+        if self._project_path is None:
+            return []
+        root = Path(self._project_path).parent / ".graphimo" / "metablocks"
+        if not root.is_dir():
+            return []
+        try:
+            addons = discover_metablock_addons()
+        except (ImportError, RuntimeError, ValueError):
+            addons = ()
+        installed_ids = {item.name for item in addons}
+        result = []
+        for index, path in enumerate(sorted(root.glob("*.json"))):
+            filename_stem = path.stem
+            pieces = filename_stem.rsplit(".", 1)
+            plugin_id = pieces[-1] if len(pieces) == 2 else "unknown"
+            fallback_id = pieces[0] if len(pieces) == 2 else filename_stem
+            diagnostic = None
+            try:
+                serialized = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(serialized, dict):
+                    raise ValueError("MetaBlock state root must be an object")
+                metablock_id = serialized.get("metablock_id")
+                if not isinstance(metablock_id, str) or not metablock_id:
+                    metablock_id = fallback_id
+                name = serialized.get("name")
+                if not isinstance(name, str) or not name:
+                    name = metablock_id
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                metablock_id = fallback_id
+                name = fallback_id
+                diagnostic = DiagnosticView(
+                    "metablock_state_unreadable",
+                    f"Opaque MetaBlock state was preserved but could not be read: {exc}",
+                    f"metablock:{metablock_id}",
+                )
+            installed = plugin_id in installed_ids
+            reason = (
+                "Addon host is not available in this Graphimo build"
+                if installed
+                else f"MetaBlock addon '{plugin_id}' is not installed"
+            )
+            position = saved_positions.get(metablock_id, {})
+            result.append(
+                {
+                    "block": BlockView(
+                        id=f"metablock:{metablock_id}",
+                        kind="metablock_opaque",
+                        title=str(name),
+                        subtitle=f"Unavailable · {plugin_id}",
+                        x=float(position.get("x", 80 + (index % 4) * 280)),
+                        y=float(position.get("y", 80 + (index // 4) * 190)),
+                        width=float(position.get("width", 240)),
+                        height=float(position.get("height", 120)),
+                        state="unavailable",
+                        inputs=(),
+                        outputs=(),
+                        body={
+                            "opaque": True,
+                            "metablock_id": metablock_id,
+                            "plugin_id": plugin_id,
+                            "addon_installed": installed,
+                            "unavailable_reason": reason,
+                        },
+                        badges=("Addon unavailable",),
+                        can_open=False,
+                        can_edit_source=False,
+                        can_disable=False,
+                    ),
+                    "diagnostic": diagnostic,
+                }
+            )
+        return result
 
     def _try_resolve_node(self, node_name: str) -> Any | None:
         try:

@@ -72,6 +72,7 @@ h2 { margin: 0; font-size: 15px; font-weight: 650; }
 .state-dot.running { background: var(--blue); box-shadow: 0 0 8px #72b7fa; }
 .state-dot.error { background: var(--red); }
 .state-dot.stale, .state-dot.disabled { background: #d9ad66; }
+.state-dot.unavailable { background: #c48cff; }
 .block-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 680; }
 .block-actions { display: flex; gap: 4px; }
 .block-actions button { border: 0; padding: 2px 5px; background: transparent; color: #aab2be; font-size: 12px; }

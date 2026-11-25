@@ -151,6 +151,11 @@ function renderBlocks() {
       head.querySelector('[data-action="run"]').hidden = true;
       head.querySelector('[data-action="inspect"]').hidden = true;
     }
+    if (block.kind === "metablock_opaque") {
+      head.querySelector('[data-action="run"]').hidden = true;
+      head.querySelector('[data-action="inspect"]').hidden = true;
+      head.querySelector('[data-action="more"]').hidden = true;
+    }
     head.querySelector('[data-action="run"]').addEventListener("click", (event) => {
       event.stopPropagation();
       act("run_target", { cell_id: block.id });
@@ -213,7 +218,7 @@ function renderBlocks() {
   applyWorldTransform();
   requestAnimationFrame(renderEdges);
   const selectedBlock = ui.state.blocks.find((item) => item.id === ui.selected.at(-1));
-  el("run-selected").disabled = !selectedBlock || selectedBlock.kind === "control";
+  el("run-selected").disabled = !selectedBlock || selectedBlock.kind !== "node_instance";
 }
 
 function escapeHtml(value) {
@@ -289,6 +294,20 @@ function renderInspector() {
   el("inspector-title").textContent = selected?.title || "Inspector";
   el("status-pill").textContent = selected?.state || "Idle";
   el("status-pill").classList.toggle("error", statusClass(selected?.state) === "error");
+  if (selected?.kind === "metablock_opaque") {
+    el("inspector-title").textContent = selected.title;
+    panel.className = "inspector-content";
+    panel.replaceChildren(sectionLabel("Unavailable MetaBlock"));
+    const message = document.createElement("div");
+    message.className = "output-preview";
+    message.textContent = selected.body.unavailable_reason;
+    panel.append(message);
+    const preserved = document.createElement("div");
+    preserved.className = "output-preview";
+    preserved.textContent = "Its serialized state remains in the project and is not modified.";
+    panel.append(preserved);
+    return;
+  }
   if (ui.showArtifacts && ui.artifactStats) {
     const stats = ui.artifactStats;
     el("inspector-title").textContent = "ArtifactStore";

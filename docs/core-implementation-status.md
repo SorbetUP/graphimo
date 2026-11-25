@@ -74,6 +74,7 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 
 - Added generic recursive `GraphScope`, `GraphElement`, `GraphEdge`, and `MetaBlock` records. Addon-owned state remains opaque JSON and round-trips without interpreting element kinds.
 - Added `MetaDialectRegistration` and entry-point discovery from `graphimo.metablocks`. Discovery returns metadata entries without importing or invoking optional addons.
+- Workbench opening scans generic `.graphimo/metablocks/*.json` sidecars and shows missing/unavailable addons as opaque cards. The sidecar bytes are never rewritten; unreadable files remain preserved with a diagnostic. Entering/editing still requires the unfrozen addon host interface.
 - Core source has a conformance test forbidding direct `torch`/`torchlens` imports.
 - The stable addon host/handler API remains explicitly unfrozen in Core §31. Core does not instantiate factories, create addon elements, or claim Workbench missing-addon placeholders yet. Those dependent operations remain deferred until the contract is fixed; no handler methods were invented.
 

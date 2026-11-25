@@ -18,6 +18,7 @@ Python 3.11+ (the current Graphimo Core floor), `torch>=2.6`, and
 - Unknown element kinds keep their JSON schema fields and remain serializable.
   The later registry/compiler milestone will diagnose them as unmaterializable.
 - Schema and registration imports do not import `torch` or `torchlens`.
+- When a semantic JSON file is present but the plugin is absent, the Core Workbench displays its generic opaque placeholder and leaves the file byte-for-byte unchanged.
 
 The first schema milestone does not claim an interactive PyTorch editor or
 model materializer. Core §31 says the stable host handler API is not frozen;
