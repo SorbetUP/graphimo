@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import random
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -11,7 +12,15 @@ import pytest
 
 from graphimo_core.artifacts import LocalArtifactStore
 from graphimo_core.ledger import Event, WorkspaceGraph
-from graphimo_core.pytorch import ModelSpec, build_model, checkpoint_bytes, compile_fx, load_checkpoint, restore_rng
+from graphimo_core.pytorch import (
+    ModelSpec,
+    build_model,
+    checkpoint_bytes,
+    compile_fx,
+    load_checkpoint,
+    restore_rng,
+    train_multihead,
+)
 from graphimo_core.runtime import LocalPythonWorker
 from graphimo_core.vertical_demo import run_vertical_demo
 
@@ -35,7 +44,21 @@ def test_local_store_deduplicates_and_materializes_isolated_branches(tmp_path: P
     assert store.materialize(original, tmp_path / "restored")["files"] == 2
     assert (tmp_path / "restored" / "value.txt").read_text(encoding="utf-8") == "original"
     assert report["method"] in {"copy", "reflink", "mixed"}
-    assert branch.manifest["files"]["shared.txt"]["blob"] == original.manifest["files"]["shared.txt"]["blob"]
+    assert (
+        branch.manifest["files"]["shared.txt"]["blob"]
+        == original.manifest["files"]["shared.txt"]["blob"]
+    )
+
+
+def test_local_store_streams_single_file_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "large.bin"
+    path.write_bytes(bytes(range(256)) * 8192)
+    store = LocalArtifactStore(tmp_path / "store")
+    artifact = store.put_file(path, parent_id=None)
+    destination = tmp_path / "restored.bin"
+    store.materialize(artifact, destination)
+    assert destination.read_bytes() == path.read_bytes()
+    assert artifact.manifest["size"] == path.stat().st_size
 
 
 def test_artifact_store_rejects_symlinks_and_manifest_traversal(tmp_path: Path) -> None:
@@ -56,7 +79,11 @@ def test_artifact_store_rejects_symlinks_and_manifest_traversal(tmp_path: Path) 
     with pytest.raises(ValueError, match="checksum"):
         store.get(ref.artifact_id)
 
-    unsafe = {"format": 1, "kind": "dataset", "files": {"../outside": {"blob": "0" * 64, "size": 1}}}
+    unsafe = {
+        "format": 1,
+        "kind": "dataset",
+        "files": {"../outside": {"blob": "0" * 64, "size": 1}},
+    }
     encoded = json.dumps(unsafe, sort_keys=True, separators=(",", ":")).encode()
     unsafe_id = hashlib.sha256(encoded).hexdigest()
     (store.manifests / f"{unsafe_id}.json").write_bytes(encoded)
@@ -120,6 +147,50 @@ def test_workspace_graph_rejects_cycles(tmp_path: Path) -> None:
         ledger.add_edge("c", "a", "out", "in")
 
 
+def test_workspace_graph_requires_nodes_and_preserves_immutable_revisions(tmp_path: Path) -> None:
+    ledger = WorkspaceGraph(tmp_path / "workspace.sqlite3")
+    with pytest.raises(ValueError, match="unknown node"):
+        ledger.start_run("missing", "v1", "local")
+
+    first = ledger.add_node("transform", "python", {"source": "value = 1"}, "v1")
+    run = ledger.start_run("transform", "v1", "local")
+    second = ledger.add_node("transform", "python", {"source": "value = 2"}, "v2")
+    ledger.finish_run(run.run_id)
+
+    revisions = ledger.node_revisions("transform")
+    assert first != second
+    assert len(revisions) == 2
+    assert {revision["definition"]["source"] for revision in revisions} == {
+        "value = 1",
+        "value = 2",
+    }
+    assert ledger.get_run(run.run_id).revision_id == first
+    with sqlite3.connect(tmp_path / "workspace.sqlite3") as db:
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            db.execute("UPDATE node_revisions SET definition='{}' WHERE revision_id=?", (first,))
+
+
+def test_telemetry_series_include_component_path_and_have_no_lifetime_cap() -> None:
+    from graphimo_core.telemetry import TelemetryThrottle
+
+    throttle = TelemetryThrottle(max_events_per_second=1000)
+    events = []
+    for index in range(600):
+        throttle.emit(
+            {
+                "run_id": "run",
+                "node_id": "train",
+                "kind": "model_probe",
+                "component_path": f"layer.{index}",
+                "payload": {"name": "activation", "value": index},
+            },
+            events.append,
+        )
+    assert len(events) == 600
+    assert throttle.report()["dropped"] == 0
+    assert throttle.report()["series"] == 600
+
+
 def test_checkpoint_saves_and_restores_rng_state() -> None:
     import numpy as np
     import torch
@@ -174,16 +245,27 @@ answer = {'sum': sum(values), 'artifact_id': artifact['artifact_id']}
         ledger.emit(Event(**event))
 
     try:
-        result = worker.request({"op": "execute_node", "source": source, "inputs": {"values": [1, 2, 3]},
-                                "outputs": ["answer"], "run_id": run.run_id, "node_id": "normalize",
-                                "telemetry_hz": 1}, on_event=save_event)
+        result = worker.request(
+            {
+                "op": "execute_node",
+                "source": source,
+                "inputs": {"values": [1, 2, 3]},
+                "outputs": ["answer"],
+                "run_id": run.run_id,
+                "node_id": "normalize",
+                "telemetry_hz": 1,
+            },
+            on_event=save_event,
+        )
         process_id = worker.process.pid
         assert result["outputs"]["answer"]["sum"] == 6
         assert result["telemetry"]["emitted"] == len(events)
         assert result["telemetry"]["dropped"] >= 18
         assert {event.kind for event in ledger.events(run.run_id)} >= {"progress", "metric", "log"}
         assert any(event["kind"] == "metric" and event["payload"]["value"] == 9 for event in events)
-        assert (tmp_path / "store" / "manifests" / f"{result['outputs']['answer']['artifact_id']}.json").is_file()
+        assert (
+            tmp_path / "store" / "manifests" / f"{result['outputs']['answer']['artifact_id']}.json"
+        ).is_file()
 
         with pytest.raises(RuntimeError, match="invalid Python source"):
             worker.request({"op": "execute_node", "source": "if:", "outputs": []})
@@ -192,10 +274,176 @@ answer = {'sum': sum(values), 'artifact_id': artifact['artifact_id']}
         worker.close()
 
 
+def test_generic_node_materializes_and_publishes_directory_artifacts(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "dataset.txt").write_text("immutable input", encoding="utf-8")
+    store = LocalArtifactStore(tmp_path / "store")
+    original = store.put_directory(source)
+    worker = LocalPythonWorker(tmp_path)
+    code = """
+from pathlib import Path
+import tempfile
+with graphimo.open_artifact(dataset_id) as input_dir:
+    with tempfile.TemporaryDirectory() as temporary:
+        output = Path(temporary) / "result"
+        graphimo.materialize(dataset_id, output)
+        (output / "derived.txt").write_text((input_dir / "dataset.txt").read_text() + " + derived")
+        artifact = graphimo.put_directory(output, parent_id=dataset_id)
+result = {"artifact_id": artifact["artifact_id"]}
+"""
+    try:
+        result = worker.request(
+            {
+                "op": "execute_node",
+                "source": code,
+                "inputs": {"dataset_id": original.artifact_id},
+                "outputs": ["result"],
+            }
+        )
+    finally:
+        worker.close()
+    derived = store.get(result["outputs"]["result"]["artifact_id"])
+    assert derived.parent_id == original.artifact_id
+    assert store.read_file(derived, "derived.txt") == b"immutable input + derived"
+
+
+def test_worker_accepts_live_probe_control_during_training(tmp_path: Path) -> None:
+    worker = LocalPythonWorker(tmp_path)
+    events = []
+    ready = threading.Event()
+    failure: list[Exception] = []
+    source = """
+import time
+import torch
+from graphimo_core.pytorch import ModelSpec, build_model, train_multihead
+spec = ModelSpec(4, 8, {"task": 1})
+model = build_model(spec)
+x = torch.ones(32, 4)
+targets = {"task": torch.zeros(32, 1)}
+graphimo.progress(0.0, "ready")
+time.sleep(0.25)
+def publish(kind, payload, step, component_path, durable):
+    graphimo.event(kind, payload, step=step, component_path=component_path, durable=durable)
+train_multihead(model, x, targets, epochs=3, emit=publish, poll_controls=graphimo.poll_controls)
+answer = "done"
+"""
+
+    def run():
+        try:
+            result = worker.request(
+                {"op": "execute_node", "source": source, "outputs": ["answer"]},
+                on_event=lambda event: (events.append(event), ready.set()),
+            )
+            assert result["outputs"]["answer"] == "done"
+        except Exception as exc:
+            failure.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert ready.wait(5)
+        ack = worker.control({"op": "subscribe_probe", "module_path": "backbone.0"})
+        assert ack["accepted"]
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert not failure
+        probes = [event for event in events if event["kind"] == "model_probe"]
+        assert {event["payload"]["phase"] for event in probes} >= {"activation", "gradient"}
+        assert all(
+            event["component_path"] == "backbone.0" and not event["durable"] for event in probes
+        )
+    finally:
+        worker.close()
+
+
+def test_training_checkpoint_resumes_same_optimizer_trajectory_across_worker_restart(
+    tmp_path: Path,
+) -> None:
+    import numpy as np
+    import torch
+
+    spec = ModelSpec(3, 6, {"task": 2})
+    x = torch.arange(48, dtype=torch.float32).reshape(16, 3) / 20
+    targets = {"task": torch.flip(x[:, :2], dims=[0])}
+
+    torch.manual_seed(121)
+    uninterrupted_model = build_model(spec)
+    uninterrupted_optimizer = torch.optim.AdamW(uninterrupted_model.parameters(), lr=0.01)
+    train_multihead(uninterrupted_model, x, targets, epochs=8, optimizer=uninterrupted_optimizer)
+    expected = {
+        key: value.detach().clone() for key, value in uninterrupted_model.state_dict().items()
+    }
+
+    artifact_source = tmp_path / "dataset"
+    artifact_source.mkdir()
+    np.savez_compressed(artifact_source / "data.npz", x=x.numpy(), task=targets["task"].numpy())
+    store = LocalArtifactStore(tmp_path / "store")
+    dataset = store.put_directory(artifact_source)
+    worker = LocalPythonWorker(tmp_path)
+    partial_source = """
+import numpy as np
+import torch
+from graphimo_core.pytorch import ModelSpec, build_model, checkpoint_bytes, train_multihead
+torch.manual_seed(seed)
+spec = ModelSpec(**model_spec)
+with graphimo.open_artifact(dataset_id) as directory:
+    with np.load(directory / "data.npz") as data:
+        x = torch.from_numpy(data["x"].copy())
+        targets = {"task": torch.from_numpy(data["task"].copy())}
+model = build_model(spec)
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+train_multihead(model, x, targets, epochs=4, optimizer=optimizer)
+checkpoint = graphimo.put_bytes(checkpoint_bytes(model, optimizer, spec,
+    metadata={"next_epoch": 4}), kind="checkpoint", parent_id=dataset_id)
+partial_result = {"checkpoint_id": checkpoint["artifact_id"]}
+"""
+    first = worker.request(
+        {
+            "op": "execute_node",
+            "source": partial_source,
+            "inputs": {"dataset_id": dataset.artifact_id, "model_spec": spec.__dict__, "seed": 121},
+            "outputs": ["partial_result"],
+        }
+    )
+    checkpoint_id = first["outputs"]["partial_result"]["checkpoint_id"]
+    worker.terminate()
+
+    resume_source = """
+import numpy as np
+import torch
+from graphimo_core.pytorch import checkpoint_bytes, load_training_checkpoint, train_multihead
+model, spec, optimizer, checkpoint = load_training_checkpoint(graphimo.read_bytes(checkpoint_id))
+with graphimo.open_artifact(dataset_id) as directory:
+    with np.load(directory / "data.npz") as data:
+        x = torch.from_numpy(data["x"].copy())
+        targets = {"task": torch.from_numpy(data["task"].copy())}
+train_multihead(model, x, targets, epochs=4, optimizer=optimizer, start_epoch=4)
+resumed_checkpoint = graphimo.put_bytes(checkpoint_bytes(model, optimizer, spec), kind="checkpoint")
+resume_result = {"checkpoint_id": resumed_checkpoint["artifact_id"]}
+"""
+    resumed = worker.request(
+        {
+            "op": "execute_node",
+            "source": resume_source,
+            "inputs": {"dataset_id": dataset.artifact_id, "checkpoint_id": checkpoint_id},
+            "outputs": ["resume_result"],
+        }
+    )
+    model_after, _, _ = load_checkpoint(
+        store.read_bytes(store.get(resumed["outputs"]["resume_result"]["checkpoint_id"]))
+    )
+    worker.close()
+    assert all(torch.equal(expected[key], model_after.state_dict()[key]) for key in expected)
+
+
 def test_worker_timeout_and_external_cancel_restart_the_process(tmp_path: Path) -> None:
     worker = LocalPythonWorker(tmp_path)
-    request = {"op": "execute_node", "source": "import time\ntime.sleep(2)\nanswer = 1",
-               "outputs": ["answer"]}
+    request = {
+        "op": "execute_node",
+        "source": "import time\ntime.sleep(2)\nanswer = 1",
+        "outputs": ["answer"],
+    }
     try:
         with pytest.raises(TimeoutError, match="worker stopped"):
             worker.request(request, timeout_seconds=0.05)
@@ -206,10 +454,14 @@ def test_worker_timeout_and_external_cancel_restart_the_process(tmp_path: Path) 
 
         def long_request():
             try:
-                worker.request({"op": "execute_node",
-                                "source": "import time\nprint('started')\ngraphimo.progress(0.1)\ntime.sleep(10)\nanswer = 1",
-                                "outputs": ["answer"]},
-                               on_event=lambda event: event_seen.set() if event["kind"] == "log" else None)
+                worker.request(
+                    {
+                        "op": "execute_node",
+                        "source": "import time\nprint('started')\ngraphimo.progress(0.1)\ntime.sleep(10)\nanswer = 1",
+                        "outputs": ["answer"],
+                    },
+                    on_event=lambda event: event_seen.set() if event["kind"] == "log" else None,
+                )
             except Exception as exc:
                 failure.append(exc)
 
@@ -221,7 +473,9 @@ def test_worker_timeout_and_external_cancel_restart_the_process(tmp_path: Path) 
         assert not thread.is_alive()
         assert failure and "exited without a response" in str(failure[0])
 
-        restarted = worker.request({"op": "execute_node", "source": "answer = 2", "outputs": ["answer"]})
+        restarted = worker.request(
+            {"op": "execute_node", "source": "answer = 2", "outputs": ["answer"]}
+        )
         assert restarted["outputs"]["answer"] == 2
     finally:
         worker.close()
@@ -249,5 +503,5 @@ def test_vertical_slice_trains_checkpoints_restarts_and_forks(tmp_path: Path) ->
 
     ledger = WorkspaceGraph(tmp_path / "workspace" / "workspace.sqlite3")
     events = ledger.events(report["runs"][0])
-    assert {event.kind for event in events} >= {"metric", "progress", "model_probe", "resource"}
+    assert {event.kind for event in events} >= {"metric", "progress", "resource"}
     assert all(ledger.get_run(run_id).status == "succeeded" for run_id in report["runs"])

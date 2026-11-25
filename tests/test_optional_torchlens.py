@@ -8,8 +8,10 @@ from graphimo_core.pytorch import ModelSpec, build_model, inspect_model
 from graphimo_core.vertical_demo import run_vertical_demo
 
 
-@pytest.mark.skipif(importlib.util.find_spec("torchlens") is None,
-                    reason="install the optional inspection extra to run TorchLens integration")
+@pytest.mark.skipif(
+    importlib.util.find_spec("torchlens") is None,
+    reason="install the optional inspection extra to run TorchLens integration",
+)
 def test_targeted_torchlens_capture_validates_selected_model_module(tmp_path) -> None:
     import torch
 

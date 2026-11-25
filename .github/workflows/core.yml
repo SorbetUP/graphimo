@@ -1,0 +1,22 @@
+name: Graphimo core
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install core test dependencies
+        run: python -m pip install -e ".[dev,prototype]"
+      - name: Lint core and tests
+        run: ruff check core/graphimo_core tests/test_core_vertical_slice.py tests/test_optional_torchlens.py
+      - name: Test core contracts
+        run: python -m pytest -q tests/test_core_vertical_slice.py tests/test_optional_torchlens.py

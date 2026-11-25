@@ -51,14 +51,18 @@ class LocalArtifactStore:
 
     @staticmethod
     def _valid_digest(digest: Any) -> bool:
-        return isinstance(digest, str) and len(digest) == 64 and all(
-            char in "0123456789abcdef" for char in digest
+        return (
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(char in "0123456789abcdef" for char in digest)
         )
 
     def _blob_path(self, digest: str) -> Path:
         return self.blobs / digest[:2] / digest[2:]
 
-    def put_bytes(self, data: bytes, *, kind: str = "blob", parent_id: str | None = None) -> ArtifactRef:
+    def put_bytes(
+        self, data: bytes, *, kind: str = "blob", parent_id: str | None = None
+    ) -> ArtifactRef:
         if type(data) is not bytes:
             raise TypeError("artifact data must be bytes")
         digest = self._digest(data)
@@ -86,17 +90,62 @@ class LocalArtifactStore:
             rel = item.relative_to(root).as_posix()
             if not rel or PurePosixPath(rel).is_absolute() or ".." in PurePosixPath(rel).parts:
                 raise ValueError(f"invalid artifact path: {rel}")
-            data = item.read_bytes()
-            digest = self._digest(data)
-            blob = self._blob_path(digest)
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            if not blob.exists():
-                self._atomic_write(blob, data)
-            elif self._digest(blob.read_bytes()) != digest:
-                raise ValueError("existing artifact blob checksum mismatch")
-            files[rel] = {"blob": digest, "size": len(data)}
+            digest, size = self._store_file_blob(item)
+            files[rel] = {"blob": digest, "size": size}
         manifest = {"format": 1, "kind": kind, "files": files}
         return self._save_manifest(manifest, parent_id)
+
+    def put_file(
+        self, path: str | os.PathLike[str], *, kind: str = "file", parent_id: str | None = None
+    ) -> ArtifactRef:
+        source = Path(path)
+        if not source.is_file() or source.is_symlink():
+            raise ValueError("artifact source must be a regular file")
+        digest, size = self._store_file_blob(source)
+        return self._save_manifest(
+            {"format": 1, "kind": kind, "blob": digest, "size": size}, parent_id
+        )
+
+    def _store_file_blob(self, source: Path) -> tuple[str, int]:
+        digest_builder = hashlib.sha256()
+        size = 0
+        with source.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest_builder.update(chunk)
+                size += len(chunk)
+        digest = digest_builder.hexdigest()
+        blob = self._blob_path(digest)
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        if blob.exists():
+            if blob.stat().st_size != size or self._file_digest(blob) != digest:
+                raise ValueError("existing artifact blob checksum mismatch")
+            return digest, size
+
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{blob.name}.", dir=blob.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "wb") as target, source.open("rb") as stream:
+                shutil.copyfileobj(stream, target, length=1024 * 1024)
+                target.flush()
+                os.fsync(target.fileno())
+            if temporary.stat().st_size != size or self._file_digest(temporary) != digest:
+                raise ValueError("artifact source changed while it was being imported")
+            try:
+                os.link(temporary, blob)
+            except FileExistsError:
+                if blob.stat().st_size != size or self._file_digest(blob) != digest:
+                    raise ValueError("existing artifact blob checksum mismatch")
+        finally:
+            temporary.unlink(missing_ok=True)
+        return digest, size
+
+    @staticmethod
+    def _file_digest(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _save_manifest(self, body: dict[str, Any], parent_id: str | None) -> ArtifactRef:
         if parent_id is not None and (
@@ -110,7 +159,9 @@ class LocalArtifactStore:
             self._atomic_write(path, encoded)
         if parent_id is not None:
             with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
-                db.execute("INSERT OR IGNORE INTO artifact_parents VALUES (?,?)", (artifact_id, parent_id))
+                db.execute(
+                    "INSERT OR IGNORE INTO artifact_parents VALUES (?,?)", (artifact_id, parent_id)
+                )
         return ArtifactRef(artifact_id, str(body["kind"]), body, parent_id)
 
     def get(self, artifact_id: str, *, parent_id: str | None = None) -> ArtifactRef:
@@ -121,18 +172,30 @@ class LocalArtifactStore:
         canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
         if hashlib.sha256(canonical).hexdigest() != artifact_id:
             raise ValueError("artifact manifest checksum mismatch")
-        if not isinstance(body, dict) or body.get("format") != 1 or not isinstance(body.get("kind"), str):
+        if (
+            not isinstance(body, dict)
+            or body.get("format") != 1
+            or not isinstance(body.get("kind"), str)
+        ):
             raise ValueError("invalid artifact manifest")
         if "blob" in body:
-            if not self._valid_digest(body["blob"]) or type(body.get("size")) is not int or body["size"] < 0:
+            if (
+                not self._valid_digest(body["blob"])
+                or type(body.get("size")) is not int
+                or body["size"] < 0
+            ):
                 raise ValueError("invalid artifact blob reference")
         elif isinstance(body.get("files"), dict):
             for rel, item in body["files"].items():
                 rel_path = PurePosixPath(rel) if isinstance(rel, str) else PurePosixPath("..")
                 if rel_path.is_absolute() or ".." in rel_path.parts or not rel_path.parts:
                     raise ValueError("invalid path in artifact manifest")
-                if (not isinstance(item, dict) or not self._valid_digest(item.get("blob"))
-                        or type(item.get("size")) is not int or item["size"] < 0):
+                if (
+                    not isinstance(item, dict)
+                    or not self._valid_digest(item.get("blob"))
+                    or type(item.get("size")) is not int
+                    or item["size"] < 0
+                ):
                     raise ValueError("invalid blob entry in artifact manifest")
         else:
             raise ValueError("invalid artifact manifest shape")
@@ -145,20 +208,31 @@ class LocalArtifactStore:
         if len(artifact_id) != 64 or any(c not in "0123456789abcdef" for c in artifact_id):
             raise ValueError("invalid artifact id")
         with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
-            rows = db.execute("SELECT parent_id FROM artifact_parents WHERE artifact_id=? ORDER BY parent_id",
-                              (artifact_id,)).fetchall()
+            rows = db.execute(
+                "SELECT parent_id FROM artifact_parents WHERE artifact_id=? ORDER BY parent_id",
+                (artifact_id,),
+            ).fetchall()
         return [row[0] for row in rows]
 
     def pin(self, artifact_id: str, owner: str) -> None:
-        if not self._valid_digest(artifact_id) or not isinstance(owner, str) or not owner or len(owner) > 200:
-            raise ValueError("pin requires a valid artifact id and a non-empty owner of at most 200 characters")
+        if (
+            not self._valid_digest(artifact_id)
+            or not isinstance(owner, str)
+            or not owner
+            or len(owner) > 200
+        ):
+            raise ValueError(
+                "pin requires a valid artifact id and a non-empty owner of at most 200 characters"
+            )
         self.get(artifact_id)
         with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
             db.execute("INSERT OR IGNORE INTO artifact_pins VALUES (?,?)", (artifact_id, owner))
 
     def unpin(self, artifact_id: str, owner: str) -> None:
         with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
-            db.execute("DELETE FROM artifact_pins WHERE artifact_id=? AND owner=?", (artifact_id, owner))
+            db.execute(
+                "DELETE FROM artifact_pins WHERE artifact_id=? AND owner=?", (artifact_id, owner)
+            )
 
     def gc(self, referenced_ids: set[str] | None = None) -> dict[str, int]:
         """Delete unreferenced manifests/blobs, retaining pinned roots and ancestors.
@@ -221,18 +295,22 @@ class LocalArtifactStore:
                 deleted_blobs += 1
         with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
             for artifact_id in removed:
-                db.execute("DELETE FROM artifact_parents WHERE artifact_id=? OR parent_id=?",
-                           (artifact_id, artifact_id))
+                db.execute(
+                    "DELETE FROM artifact_parents WHERE artifact_id=? OR parent_id=?",
+                    (artifact_id, artifact_id),
+                )
                 db.execute("DELETE FROM artifact_pins WHERE artifact_id=?", (artifact_id,))
-        return {"artifacts_removed": deleted_artifacts, "blobs_removed": deleted_blobs,
-                "bytes_reclaimed": deleted_bytes}
+        return {
+            "artifacts_removed": deleted_artifacts,
+            "blobs_removed": deleted_blobs,
+            "bytes_reclaimed": deleted_bytes,
+        }
 
     def _verified_blob(self, digest: str) -> Path:
         if not self._valid_digest(digest):
             raise ValueError("invalid artifact blob id")
         path = self._blob_path(digest)
-        data = path.read_bytes()
-        if self._digest(data) != digest:
+        if self._file_digest(path) != digest:
             raise ValueError("artifact blob checksum mismatch")
         return path
 
@@ -280,9 +358,10 @@ class LocalArtifactStore:
             methods[self._copy_blob(self._verified_blob(item["blob"]), output)] += 1
             total += int(item["size"])
         used_methods = [name for name, count in methods.items() if count]
-        method = "empty" if not used_methods else ("mixed" if len(used_methods) > 1 else used_methods[0])
-        return {"method": method,
-                "methods": methods, "files": len(files), "bytes": total}
+        method = (
+            "empty" if not used_methods else ("mixed" if len(used_methods) > 1 else used_methods[0])
+        )
+        return {"method": method, "methods": methods, "files": len(files), "bytes": total}
 
     @staticmethod
     def _copy_blob(source: Path, destination: Path) -> str:
@@ -300,6 +379,7 @@ class LocalArtifactStore:
         if os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Linux":
             try:
                 import fcntl
+
                 with source.open("rb") as src, destination.open("xb") as dst:
                     fcntl.ioctl(dst.fileno(), 0x40049409, src.fileno())
                 return "reflink"

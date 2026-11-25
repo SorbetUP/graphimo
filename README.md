@@ -120,11 +120,14 @@ port. It does not replace an end-to-end run inside Zeron with a live marimo
 server. Example notebooks are ordinary marimo `.py` files and use marimo's
 `cache_cells = true` setting.
 
-An isolated architecture spike now lives in `core/graphimo_core/`. It proves a
-small persistent workspace ledger, content-addressed file/directory artifacts,
-a local Python worker, a three-head PyTorch model, run events, checkpoints,
-process restart, and a weight-migration report. It is not yet wired into the
-Zeron canvas or marimo bridge; see [the vertical-slice validation report](docs/core-vertical-slice.md).
+An isolated architecture spike now lives in `core/graphimo_core/`. Its first
+slice validates the artifact store, workspace ledger, persistent Python worker,
+PyTorch model, and checkpoint artifacts. A second slice sends dataset branches
+through ordinary Python nodes, supports cooperative live model probes during a
+run, resumes optimizer/RNG state after worker restart, and records immutable
+node revisions. The core is not wired into the Zeron canvas or marimo bridge.
+See the [first](docs/core-vertical-slice.md) and
+[second](docs/core-second-vertical-slice.md) validation reports.
 Run it with `PYTHONPATH=core python -m graphimo_core.vertical_demo /path/to/workspace`
 after installing `.[prototype]`. Install `.[prototype,inspection]` to enable the
 optional TorchLens model-inspection helper.

@@ -190,6 +190,53 @@ Le SDK `zeron.luau` expose les helpers précédents ; le runtime fournit en plus
 
 Cette liste reflète les primitives rencontrées dans les deux plugins étudiés, pas tout l’inventaire de ZGX. Les API UI précises doivent être vérifiées dans le squelette et les packages de la version cible.
 
+### Pavé tactile et interactions de canvas
+
+Les gestes d’un canvas sont gérés par ses callbacks de pointeur, de molette et de pincement. Ils ne font pas partie de l’API publique `zeron.*` : les noms et champs d’événement ci-dessous sont ceux observés dans le runtime Zeron et dans Graphimo. Vérifie-les dans le `ui.canvas` de la version cible avant de les réutiliser.
+
+| Geste / callback | Comportement recommandé |
+| --- | --- |
+| `on_press(e)` | Mémoriser la position initiale. Si un élément est sous le pointeur, le sélectionner et préparer son déplacement; sinon, préparer le déplacement du canvas. |
+| `on_pointer_move(e)` | Pendant un déplacement actif, déplacer l’élément sélectionné ou translater le canvas avec le delta de pointeur. |
+| `on_release(e)` | Terminer le déplacement et nettoyer l’état temporaire, y compris si le geste s’est achevé sans mouvement. |
+| `on_wheel(e)` avec `e.cmd` ou `e.ctrl` | Zoomer autour de `e.local_x`, `e.local_y`, en tenant ce point fixe dans le canvas. `e.dy` fournit le sens et l’amplitude du zoom. |
+| `on_wheel(e)` sans modificateur | Translation du canvas avec `e.dx` et `e.dy`; cela prend en charge le défilement à deux doigts du pavé tactile. |
+| `on_pinch(e)` | Zoomer autour du point du geste avec `e.scale` et `e.local_x`/`e.local_y` (ou `e.x`/`e.y` si la version du runtime ne fournit pas les coordonnées locales). |
+
+Exemple de base pour un canvas dont le zoom est centré sur le curseur ou le centre du pincement. `zoom_at` doit ajuster l’échelle et la translation ensemble afin que le point situé sous le geste reste immobile à l’écran; borne l’échelle dans cette fonction.
+
+```lua
+local function wheel(e)
+    if e.cmd or e.ctrl then
+        local factor = math.exp(-e.dy * 0.01)
+        zoom_at(e.local_x, e.local_y, factor)
+    else
+        pan_x = pan_x - (e.dx or 0)
+        pan_y = pan_y - (e.dy or 0)
+    end
+    return true
+end
+
+local function pinch(e)
+    local x = e.local_x or e.x
+    local y = e.local_y or e.y
+    zoom_at(x, y, 1 + e.scale)
+    return true
+end
+```
+
+Pour la sélection et le déplacement, conserve un état de geste explicite (`idle`, `pan`, `drag`) : au `on_press`, fais le hit-test et sélectionne la cible; sur fond vide, passe en `pan`; pendant `on_pointer_move`, applique le delta; au `on_release`, remets l’état à `idle`. Ne déclenche pas le déplacement d’un bloc si le pointeur est relâché avant le seuil de mouvement prévu par l’interface.
+
+Conseils de compatibilité :
+
+- Le scroll à deux doigts arrive par `on_wheel`; le pincement peut arriver séparément par `on_pinch`. Implémente les deux pour couvrir les pavés tactiles qui émettent l’un ou l’autre.
+- `e.scale` est un delta relatif dans l’implémentation observée : l’exemple l’emploie comme facteur `1 + e.scale`. Vérifie le signe et l’échelle dans le runtime installé avant de modifier cette formule.
+- Les événements peuvent fournir `dx`/`dy`, les coordonnées locales, les modificateurs et un delta de pointeur différents selon la version. Gère les valeurs absentes et évite de traiter le même geste deux fois si l’hôte émet plusieurs événements.
+- Retourne `true` quand le callback consomme le geste, selon le contrat du composant utilisé; vérifie ce contrat dans la version Zeron visée.
+- Utilise toujours le repère local du canvas pour les coordonnées de zoom et de hit-test. Nettoie l’état du geste sur relâchement et lors de la destruction du composant.
+
+La combinaison utilisée dans Graphimo est la suivante : clic sur un bloc pour le sélectionner, glissement d’un bloc pour le déplacer, glissement du fond pour déplacer la vue, défilement à deux doigts pour déplacer la vue, `Ctrl`/`Cmd` + défilement pour zoomer, et pincement à deux doigts pour zoomer. Zeron utilise aussi `on_pinch` et les deltas de molette dans ses vues internes, par exemple dans le [visualiseur de fichiers](https://github.com/zeronsh/zeron/blob/main/apps/zgx/ui/ds/file_viewer.luau) et la [lightbox](https://github.com/zeronsh/zeron/blob/main/apps/zgx/ui/ds/lightbox.luau); ces exemples sont des indices de compatibilité, pas une garantie de stabilité publique.
+
 ## API des deux plugins étudiés
 
 Les appels Zeron ci-dessus sont la couche commune. Les fonctions ci-dessous sont les contrats spécifiques déclarés dans les deux manifestes ; les helpers internes de modules ne deviennent pas des API Zeron par leur seule existence.
