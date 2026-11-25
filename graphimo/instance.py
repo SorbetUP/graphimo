@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 _INSTANCE_ID = re.compile(r"^[0-9a-f]{8}$")
 _MAX_EXPRESSION_CHARS = 10_000
+_DISABLED_BEGIN = "# graphimo:disabled-begin"
+_DISABLED_END = "# graphimo:disabled-end"
 
 
 @dataclass(frozen=True)
@@ -198,3 +200,66 @@ def output_expression(instance: InstanceSpec, output_index: int, output_count: i
     if output_count == 1:
         return instance.result_var
     return f"{instance.result_var}[{output_index}]"
+
+
+def disable_instance_source(source: str) -> str:
+    """Comment a marked instance out of marimo's executable dependency graph."""
+    instance = parse_instance_source(source)
+    if instance is None:
+        raise ValueError("only a valid Graphimo node instance can be disabled")
+    canonical, _ = build_instance_source(
+        instance.node_name,
+        {binding.input_name: binding.expression for binding in instance.bindings},
+        instance_id=instance.instance_id,
+    )
+    if source != canonical:
+        raise ValueError("only canonical Graphimo node source can be disabled")
+    lines = source.splitlines(keepends=True)
+    if _DISABLED_BEGIN in lines or _DISABLED_END in lines:
+        raise ValueError("instance source already contains disabled markers")
+    body = "".join("# " + line for line in lines)
+    separator = "" if body.endswith(("\n", "\r")) else "\n"
+    return f"{_DISABLED_BEGIN}\n{body}{separator}{_DISABLED_END}"
+
+
+def enable_instance_source(source: str) -> str:
+    """Restore the exact source body from a valid disabled Graphimo instance."""
+    if not isinstance(source, str):
+        raise TypeError("disabled source must be text")
+    lines = source.splitlines(keepends=True)
+    bare = [line.rstrip("\r\n") for line in lines]
+    if bare.count(_DISABLED_BEGIN) != 1 or bare.count(_DISABLED_END) != 1:
+        raise ValueError("disabled instance markers are missing, nested, or duplicated")
+    start = bare.index(_DISABLED_BEGIN)
+    end = bare.index(_DISABLED_END)
+    if start != 0 or end != len(lines) - 1 or start >= end:
+        raise ValueError("disabled instance markers are not in canonical order")
+    restored: list[str] = []
+    for line in lines[start + 1 : end]:
+        if line.endswith("\r\n"):
+            content, ending = line[:-2], "\r\n"
+        elif line.endswith(("\r", "\n")):
+            content, ending = line[:-1], line[-1:]
+        else:
+            content, ending = line, ""
+        if content == "#":
+            restored.append(ending)
+        elif content.startswith("# "):
+            restored.append(content[2:] + ending)
+        else:
+            raise ValueError("disabled instance body contains an uncommented line")
+    active = "".join(restored)
+    # build_instance_source emits a source body without a final newline; the
+    # line break separating its last commented line from disabled-end is framing.
+    active = active.removesuffix("\n")
+    if parse_instance_source(active) is None:
+        raise ValueError("disabled body does not contain a valid Graphimo node instance")
+    return active
+
+
+def parse_disabled_instance_source(source: str) -> InstanceSpec | None:
+    """Return instance identity for a disabled body while keeping it non-executable."""
+    try:
+        return parse_instance_source(enable_instance_source(source))
+    except ValueError:
+        return None

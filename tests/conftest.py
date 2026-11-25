@@ -123,6 +123,9 @@ class FakeMarimoPort:
 
     def replace_cell_source(self, session_id: str, cell_id: str, source: str):
         self.replaced.append((session_id, cell_id, source))
+        cell = next((item for item in self.snapshot["cells"] if item.get("id") == cell_id), None)
+        if cell is not None:
+            cell["source"] = source
         return {"ok": True}
 
     def run_cell(self, session_id: str, cell_id: str):

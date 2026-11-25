@@ -38,3 +38,7 @@ Use `output_expression(spec, output_index, output_count)` to create a downstream
 These APIs generate source and describe contracts. Marimo remains responsible for dependency analysis and reactive execution.
 
 The Python adapter's `inspect_node_instance` operation reads the result global through the host-supplied `MarimoPort.inspect_value(session_id, variable)` boundary. A host that does not expose that live namespace operation returns `runtime_inspection_unavailable`; Graphimo never evaluates cell code in a parallel namespace.
+
+## Disable and restore an instance
+
+`disable_instance_source` accepts only canonical Graphimo instance bodies and comments every executable line between `# graphimo:disabled-begin` and `# graphimo:disabled-end`. `enable_instance_source` validates those markers and restores the exact canonical active body. The adapter's `set_instance_enabled` operation replaces the source of the existing marimo cell. Inspection keeps disabled output ports visible with `available: false` and `stale: true`; references from downstream cells remain in place and are projected as stale edges instead of being silently removed.

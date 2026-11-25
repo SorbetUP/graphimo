@@ -388,3 +388,64 @@ def test_connect_uses_declared_multi_output_expression(project, host):
     )
     assert result["ok"] is True
     assert "image=g_split_bbaa9988[1]" in result["source"]
+
+
+def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
+    from graphimo import build_instance_source
+
+    active, instance = build_instance_source(
+        "normalize",
+        {"image": "data", "mean": "0.0", "std": "1.0"},
+        instance_id="aabbccdd",
+    )
+    host.marimo.snapshot["cells"][1]["source"] = active
+    host.marimo.snapshot["cells"][1]["defs"] = [instance.result_var]
+    host.marimo.snapshot["cells"][2]["refs"] = [instance.result_var]
+    host.marimo.snapshot["edges"] = [
+        {
+            "source_cell_id": "normalize",
+            "target_cell_id": "arbitrary",
+            "variable": instance.result_var,
+        }
+    ]
+    disabled = dispatch(
+        {
+            "op": "set_instance_enabled",
+            "session_id": "fixture",
+            "cell_id": "normalize",
+            "enabled": False,
+        },
+        host.context,
+    )
+    assert disabled["ok"] is True
+    assert "# graphimo:disabled-begin" in disabled["source"]
+
+    snapshot = dispatch({"op": "inspect", "session_id": "fixture"}, host.context)
+    cell = next(item for item in snapshot["cells"] if item["id"] == "normalize")
+    assert cell["graphimo_disabled_instance"]["disabled"] is True
+    assert cell["graphimo_disabled_instance"]["outputs"] == [
+        {
+            "index": 0,
+            "declared_type": None,
+            "expressions": ["(image - mean) / std"],
+            "available": False,
+            "stale": True,
+        }
+    ]
+    assert snapshot["edges"][0]["status"] == "stale"
+
+    enabled = dispatch(
+        {
+            "op": "set_instance_enabled",
+            "session_id": "fixture",
+            "cell_id": "normalize",
+            "enabled": True,
+        },
+        host.context,
+    )
+    assert enabled["ok"] is True
+    assert enabled["source"] == active
+    reopened = dispatch({"op": "inspect", "session_id": "fixture"}, host.context)
+    assert "graphimo_disabled_instance" not in next(
+        item for item in reopened["cells"] if item["id"] == "normalize"
+    )

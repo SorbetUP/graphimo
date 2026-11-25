@@ -7,6 +7,8 @@ import pytest
 from graphimo import (
     Binding,
     build_instance_source,
+    disable_instance_source,
+    enable_instance_source,
     new_instance_id,
     output_expression,
     parse_instance_source,
@@ -88,3 +90,20 @@ def test_output_expression_uses_result_or_tuple_index() -> None:
     assert output_expression(instance, 2, 3) == "g_split_f00dbabe[2]"
     with pytest.raises(IndexError):
         output_expression(instance, 3, 3)
+
+
+def test_disable_and_enable_are_lossless_and_refuse_unowned_source() -> None:
+    source, _ = build_instance_source(
+        "normalize", {"dataset": "dataset_a", "scale": "1.0"}, instance_id="4f2a7c91"
+    )
+    disabled = disable_instance_source(source)
+    assert disabled.startswith("# graphimo:disabled-begin\n")
+    assert "# Graphimo node: normalize" in disabled
+    assert enable_instance_source(disabled) == source
+
+    with pytest.raises(ValueError, match="valid Graphimo"):
+        disable_instance_source("result = normalize(dataset_a)")
+    with pytest.raises(ValueError, match="duplicated"):
+        enable_instance_source(disabled + "\n# graphimo:disabled-end")
+    with pytest.raises(ValueError, match="commented line"):
+        enable_instance_source(disabled.replace("#     scale=1.0,", "    scale=1.0,"))

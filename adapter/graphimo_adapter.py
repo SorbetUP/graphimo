@@ -25,7 +25,10 @@ from typing import Any, Literal, get_args, get_origin
 import graphimo
 from graphimo.instance import (
     build_instance_source,
+    disable_instance_source,
+    enable_instance_source,
     output_expression,
+    parse_disabled_instance_source,
     parse_instance_source,
     reconnect_instance_source,
 )
@@ -144,7 +147,65 @@ def _snapshot(context: Any, session_id: str) -> dict[str, Any]:
         if reference is not None:
             item["graphimo_component"] = reference
         cells.append(item)
+    disabled: dict[str, tuple[str, str]] = {}
+    root = Path(getattr(context, "components_root", "components"))
+    for item in cells:
+        if not isinstance(item, dict):
+            continue
+        instance = parse_disabled_instance_source(item.get("source", ""))
+        if instance is None:
+            continue
+        disabled[item.get("id")] = (instance.result_var, instance.node_name)
+        outputs: list[dict[str, Any]] = []
+        try:
+            spec = graphimo.inspect_node(_find_node(root, instance.node_name))
+            outputs = [
+                {
+                    "index": port.index,
+                    "declared_type": port.declared_type,
+                    "expressions": list(port.expressions),
+                    "available": False,
+                    "stale": True,
+                }
+                for port in spec.outputs
+            ]
+        except (_RequestError, TypeError, ValueError):
+            pass
+        item["graphimo_disabled_instance"] = {
+            "instance_id": instance.instance_id,
+            "node": instance.node_name,
+            "result_var": instance.result_var,
+            "outputs": outputs,
+            "disabled": True,
+        }
+    edges = list(projected.get("edges", []))
+    known = {
+        (edge.get("source_cell_id"), edge.get("target_cell_id"), edge.get("variable"))
+        for edge in edges
+        if isinstance(edge, dict)
+    }
+    for source_id, (result_var, _) in disabled.items():
+        for item in cells:
+            if not isinstance(item, dict) or item.get("id") == source_id:
+                continue
+            if result_var not in item.get("refs", []):
+                continue
+            edge_key = (source_id, item.get("id"), result_var)
+            if edge_key not in known:
+                edges.append(
+                    {
+                        "source_cell_id": source_id,
+                        "target_cell_id": item.get("id"),
+                        "variable": result_var,
+                        "status": "stale",
+                    }
+                )
+                known.add(edge_key)
+    for edge in edges:
+        if isinstance(edge, dict) and edge.get("source_cell_id") in disabled:
+            edge.setdefault("status", "stale")
     projected["cells"] = cells
+    projected["edges"] = edges
     return projected
 
 
@@ -893,6 +954,28 @@ def _inspect_node_instance(
     }
 
 
+def _set_instance_enabled(
+    request: dict[str, Any], context: Any, session_id: str, snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    cell_id = _required_string(request, "cell_id")
+    cell = _cell(snapshot, cell_id)
+    enabled = request.get("enabled")
+    if type(enabled) is not bool:
+        raise _RequestError("invalid_request", "'enabled' must be a boolean", cell_id)
+    source = cell.get("source", "")
+    try:
+        updated = enable_instance_source(source) if enabled else disable_instance_source(source)
+        compile(updated, "<graphimo-instance-state>", "exec")
+        context.marimo.replace_cell_source(session_id, cell_id, updated)
+    except ValueError as exc:
+        raise _RequestError("invalid_instance_state", str(exc), cell_id) from exc
+    except Exception as exc:
+        raise _RequestError(
+            "marimo_unavailable", f"Could not update instance state: {exc}", cell_id
+        ) from exc
+    return {"ok": True, "cell_id": cell_id, "enabled": enabled, "source": updated}
+
+
 def dispatch(request: Any, context: Any) -> dict[str, Any]:
     """Dispatch one host operation. All failures use the common error shape."""
     try:
@@ -905,6 +988,7 @@ def dispatch(request: Any, context: Any) -> dict[str, Any]:
         if operation not in {
             "inspect",
             "inspect_node_instance",
+            "set_instance_enabled",
             "add_component",
             "connect",
             "run",
@@ -927,6 +1011,8 @@ def dispatch(request: Any, context: Any) -> dict[str, Any]:
             return _connect(request, context, session_id, snapshot)
         if operation == "inspect_node_instance":
             return _inspect_node_instance(request, context, session_id, snapshot)
+        if operation == "set_instance_enabled":
+            return _set_instance_enabled(request, context, session_id, snapshot)
         cell_id = _required_string(request, "cell_id")
         _cell(snapshot, cell_id)
         if operation == "run":
