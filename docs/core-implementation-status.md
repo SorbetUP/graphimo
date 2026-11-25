@@ -90,6 +90,12 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - The Workbench marimo port uses the pinned marimo 0.25.2 native UI-value endpoint. It retrieves the skew-protection token from the local rendered page; the endpoint then triggers marimo's own reactive execution.
 - A live test creates and changes every baseline UI primitive and confirms a slider update recomputes a downstream node. The marimo button uses a fixed generated increment callback; its parser rejects other callback ASTs.
 
+### W3–W5 — persistence, MetaBlocks, and PyTorch Workbench audit
+
+- W3 layout persistence and disable/enable are implemented by M4/M6. Its Group Block navigation/execution remains stopped at Core §28's explicit human choice of marimo nested-workflow mechanism.
+- W4 addon entry-point discovery and opaque missing-addon placeholders are implemented. Create/open/edit and scope navigation for an installed addon depend on Core §31's unfrozen handler interface; the P9 wheel lifecycle verifies discovery and preservation, not a fabricated editor handler.
+- W5 addon-owned registry, shape/source/runtime projections, templates, and standalone numerical execution are available and tested without a renderer. Wiring visible Workbench edits, materialization, live telemetry actions and the Llama acceptance scenario depends on the same §31 handler contract, plus the conflicting §32/Addon §7 parent model-value requirement. These controls remain deferred rather than implemented in browser or Zeron-only code.
+
 ### PyTorch addon P1 — package and semantic schema
 
 - Added `addons/pytorch` as a separate `graphimo-pytorch` distribution with the `graphimo.metablocks` entry point and no PyTorch import during registration/schema import.
