@@ -75,6 +75,36 @@ trusted addon code; this path does not accept arbitrary Python source.
 The definition remains inside the addon until the Core/addon parent-port
 contract conflict described above is resolved.
 
+## P5 independent runtime inspection subset
+
+`PyTorchModelDefinition.instantiate()` assigns a new runtime instance ID,
+stores Graphimo metadata on the module outside its `state_dict()`, registers it
+weakly and emits `runtime.created`. `release_runtime_model(model)` removes
+subscriptions and registry metadata and emits `runtime.released`; collection
+also clears weak runtime/subscription entries.
+
+`SubscriptionSpec` selects an activation or output-gradient signal for one
+logical element, one repeated-group index, a rate and `summary`, `histogram`,
+or `sample` detail. `subscribe(model, spec)` resolves the compiler binding map
+and installs local removable module hooks only for that subscription.
+`unsubscribe(id)` removes them. Output and gradient hooks return their input
+unchanged. Gradient inspection reports a one-shot warning when a selected
+output does not require gradients.
+
+`summarize_tensor` returns JSON-safe shape/dtype/device/count/statistics.
+Histogram bins are bounded; sample payloads are capped at 4096 values. GPU
+statistics stay on-device except scalar results and bounded samples. Nested
+module outputs get a bounded tree summary; histogram/sample on multi-leaf
+outputs asks the caller to select one leaf. `emit_metric` associates finite
+scalar values with runtime provenance. `emit_cuda_resources` returns without
+calling CUDA APIs for CPU models and rate-limits CUDA resource events.
+
+Events are written to a bounded, non-blocking addon `EventQueue`. They are
+ready for generic Core routing, but no application adapter or visible
+Workbench subscription selector is wired while Core §31's public handler
+interface remains unfrozen. The addon does not add a separate live UI or
+Zeron-only execution path.
+
 ## P4 independent projection/editor subset
 
 `graphimo_pytorch.workbench_projection.project_workbench(...)` returns

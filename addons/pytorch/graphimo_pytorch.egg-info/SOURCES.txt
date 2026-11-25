@@ -4,6 +4,7 @@ graphimo_pytorch/bindings.py
 graphimo_pytorch/compiler.py
 graphimo_pytorch/definition.py
 graphimo_pytorch/diagnostics.py
+graphimo_pytorch/editing.py
 graphimo_pytorch/registration.py
 graphimo_pytorch/registry.py
 graphimo_pytorch/revision.py
@@ -12,8 +13,10 @@ graphimo_pytorch/runtime_ops.py
 graphimo_pytorch/schema.py
 graphimo_pytorch/serialization.py
 graphimo_pytorch/shapes.py
+graphimo_pytorch/telemetry.py
 graphimo_pytorch/validation.py
 graphimo_pytorch/version.py
+graphimo_pytorch/workbench_projection.py
 graphimo_pytorch.egg-info/PKG-INFO
 graphimo_pytorch.egg-info/SOURCES.txt
 graphimo_pytorch.egg-info/dependency_links.txt

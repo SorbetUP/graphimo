@@ -28,7 +28,12 @@ class RuntimeRegistry:
 
         def discard(_: weakref.ReferenceType[object]) -> None:
             self._models.pop(runtime_id, None)
-            self._infos.pop(runtime_id, None)
+            info = self._infos.pop(runtime_id, None)
+            if info is not None:
+                from .telemetry import emit_runtime_released, subscription_manager
+
+                subscription_manager.unsubscribe_runtime(runtime_id)
+                emit_runtime_released(info)
 
         self._models[runtime_id] = weakref.ref(model, discard)
         self._infos[runtime_id] = info
@@ -66,5 +71,11 @@ def new_runtime_info(metablock_id: str, graph_revision: str, materialization_key
 
 
 def release_runtime_model(model: object) -> None:
+    runtime = getattr(model, "__graphimo_pytorch_runtime__", None)
+    if isinstance(runtime, RuntimeModelInfo):
+        from .telemetry import emit_runtime_released, subscription_manager
+
+        subscription_manager.unsubscribe_runtime(runtime.runtime_instance_id)
+        emit_runtime_released(runtime)
     runtime_registry.release(model)
 

@@ -122,3 +122,12 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added immutable semantic edit operations for scalar parameter changes, parameter promotion to an external MetaBlock input, and demotion when safe. Promotion/demotion preserves external bindings and only removes an external parameter after its last binding is removed.
 - Automated tests cover projection data and edits without invoking a renderer.
 - The actual Workbench presentation/intent wiring and marimo parent materialization remain deferred. Core §31 says the stable addon handler API is not frozen and forbids inventing public handler methods. Core §32 marks the parent model value as **HUMAN DECISION REQUIRED**; the addon contract §7 selects `PyTorchModelDefinition`, so the two documents conflict. The exact decision is whether the parent cell exposes an instantiated `nn.Module`, a class/factory, or the explicit `PyTorchModelDefinition` handle. No UI-only bypass was added.
+
+### PyTorch addon P5 — independent runtime inspection subset
+
+- Added V1 JSON-safe `PyTorchEvent`, bounded non-blocking `EventQueue`, and `SubscriptionSpec` validation.
+- Added subscription-managed per-module forward hooks, output tensor gradient hooks, repetition-index selection, rate limiting, one-shot no-gradient warnings and cleanup on unsubscribe, explicit release, or model collection. No global PyTorch hooks are used; hook callbacks do not alter outputs or gradients.
+- Added bounded tensor summaries, opt-in histogram/sample detail (maximum 4096 sample values), safe tensor-tree summaries, scalar metric emission, and CUDA resource events that make no CUDA calls for CPU models.
+- Model creation/release emits runtime lifecycle events. Runtime instances are weakly registered and carry Graphimo provenance separately from `state_dict()`.
+- P5 tests exercise activation/gradient events, unsubscribe/release, rate limiting, empty/non-finite tensors, bounded histogram/sample payloads, metrics and CPU resource handling.
+- The generic Graphimo application event-routing adapter and visible Workbench live selector remain deferred with Core §31's unfrozen handler API. The addon exposes queued events and structured runtime data without creating a private Workbench or Luau/Zeron bypass.

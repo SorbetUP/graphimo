@@ -35,6 +35,9 @@ class PyTorchModelDefinition:
         )
         setattr(model, "__graphimo_pytorch_runtime__", info)
         runtime_registry.register(model, info)
+        from .telemetry import emit_runtime_created
+
+        emit_runtime_created(info)
         return model
 
     def __call__(self, *, device: str | object | None = None, dtype: object | None = None) -> object:

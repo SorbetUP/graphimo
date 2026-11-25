@@ -30,6 +30,19 @@ from .schema import (
 from .serialization import canonical_state_json, load_state, save_state, state_from_dict, state_to_dict
 from .version import __version__
 from .runtime import RuntimeModelInfo, RuntimeRegistry, release_runtime_model, runtime_registry
+from .telemetry import (
+    EventQueue,
+    PyTorchEvent,
+    SubscriptionManager,
+    SubscriptionSpec,
+    emit_cuda_resources,
+    emit_metric,
+    event_queue,
+    subscribe,
+    subscription_manager,
+    summarize_tensor,
+    unsubscribe,
+)
 from .workbench_projection import PyTorchWorkbenchProjection, project_workbench
 from .shapes import Dim, ShapeInferenceResult, TensorSpec, infer_model_shapes, tensor_spec
 from .validation import ValidationReport, validate_model_graph
@@ -47,6 +60,17 @@ __all__ = [
     "RuntimeRegistry",
     "runtime_registry",
     "release_runtime_model",
+    "PyTorchEvent",
+    "SubscriptionSpec",
+    "EventQueue",
+    "SubscriptionManager",
+    "event_queue",
+    "subscription_manager",
+    "subscribe",
+    "unsubscribe",
+    "summarize_tensor",
+    "emit_metric",
+    "emit_cuda_resources",
     "PyTorchWorkbenchProjection",
     "project_workbench",
     "set_element_parameter",
