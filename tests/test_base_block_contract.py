@@ -1,4 +1,5 @@
 """Static contracts for function-backed Graphimo Base Blocks."""
+
 from __future__ import annotations
 
 import json
@@ -24,42 +25,56 @@ def _component_callables(result):
     }
 
 
-def test_component_discovery_projects_conservative_static_return_contract(tmp_path, host):
+def test_component_discovery_projects_decorated_node_contracts(tmp_path, host):
     root = tmp_path / "base_block_components"
     root.mkdir()
     (root / "contracts.py").write_text(
         "from typing import Literal, NamedTuple\n"
+        "from graphimo import node as _node\n"
+        "@_node\n"
         "def obtenir_infos(prix: float, quantite: int, stock: int) -> tuple[float, int, int]:\n"
         "    flower = 3 + stock\n"
         "    return prix + 0.2, quantite + stock, flower\n"
+        "@_node\n"
         "def scalar(value: int) -> int:\n"
         "    answer = value * 2\n"
         "    return answer\n"
+        "@_node\n"
         "def scalar_expression(value: int) -> int:\n"
         "    return value * 2\n"
+        "@_node\n"
         "def scalar_literal(value) -> Literal[1, 2.0]:\n"
         "    return 1\n"
+        "@_node\n"
         "def nonfinite_scalar():\n"
         "    return 1e309\n"
+        "@_node\n"
         "def no_return(value):\n"
         "    value + 1\n"
+        "@_node\n"
         "def explicit_none() -> None:\n"
         "    return None\n"
+        "@_node\n"
         "def coherent_branches(value: int, flag: bool) -> tuple[int, int]:\n"
         "    if flag:\n"
         "        return value, value + 1\n"
         "    return value, value + 2\n"
+        "@_node\n"
         "def mismatched_branches(flag: bool) -> tuple[int, int]:\n"
         "    if flag:\n"
         "        return 1, 2\n"
         "    return 1\n"
+        "@_node\n"
         "def dynamic_tuple(value) -> tuple[int, int]:\n"
         "    return tuple(value)\n"
+        "@_node\n"
         "def dictionary_output(value) -> dict:\n"
         "    return {'value': value}\n"
+        "@_node\n"
         "def named_tuple_output(value):\n"
         "    return NamedTuple('Output', [('value', int)])(value)\n"
         "calls = []\n"
+        "@_node\n"
         "def must_not_run(value: int) -> int:\n"
         "    calls.append(value)\n"
         "    return value\n",
@@ -71,7 +86,11 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
     )
 
     info = callables["obtenir_infos"]
-    assert info["base_block"]["inputs"] == info["parameters"]
+    assert [item["name"] for item in info["base_block"]["inputs"]] == [
+        "prix",
+        "quantite",
+        "stock",
+    ]
     assert info["base_block"]["output_mode"] == "tuple"
     assert info["base_block"]["outputs"] == [
         {"index": 1, "name": "output_1", "expression": "prix + 0.2", "annotation": "float"},
@@ -90,18 +109,15 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
     ]
     scalar_literal = callables["scalar_literal"]["base_block"]
     assert scalar_literal["output_mode"] == "single"
+    assert callables["scalar_literal"]["outputs"][0]["declared_type"] == "Literal[1, 2.0]"
     assert scalar_literal["outputs"] == [
         {"index": 1, "name": "output_1", "expression": "1", "annotation": "Literal[1, 2.0]"}
     ]
-    nonfinite = callables["nonfinite_scalar"]["base_block"]
-    assert nonfinite["output_mode"] == "object"
-    assert nonfinite["outputs"] == [{"index": 1, "name": "result", "annotation": "object"}]
+    nonfinite = callables["nonfinite_scalar"]
+    assert nonfinite["outputs"] == [{"index": 0, "declared_type": None, "expressions": ["1e309"]}]
 
-    assert callables["no_return"]["base_block"] == {
-        "inputs": callables["no_return"]["parameters"],
-        "outputs": [],
-        "output_mode": "none",
-    }
+    assert callables["no_return"]["base_block"]["outputs"] == []
+    assert callables["no_return"]["base_block"]["output_mode"] == "none"
     assert callables["explicit_none"]["base_block"]["output_mode"] == "none"
     assert callables["explicit_none"]["base_block"]["outputs"] == []
 
@@ -111,11 +127,12 @@ def test_component_discovery_projects_conservative_static_return_contract(tmp_pa
         {"index": 1, "name": "value", "expression": "value", "annotation": "int"},
         {"index": 2, "name": "output_2", "annotation": "int"},
     ]
-    for name in ("mismatched_branches", "dynamic_tuple", "dictionary_output", "named_tuple_output"):
-        contract = callables[name]["base_block"]
-        assert contract["output_mode"] == "object", name
-        assert len(contract["outputs"]) == 1, name
-        assert contract["outputs"][0]["name"] == "result", name
+    assert callables["mismatched_branches"]["diagnostic"] == "node_output_arity_inconsistent"
+    assert callables["dynamic_tuple"]["diagnostic"] == "node_return_annotation_arity_mismatch"
+    assert callables["dictionary_output"]["outputs"] == [
+        {"index": 0, "declared_type": "dict", "expressions": ["{'value': value}"]}
+    ]
+    assert len(callables["named_tuple_output"]["outputs"]) == 1
 
     # The functions were inspected statically; discovery did not call them.
     imported_contracts = adapter._load_module(root / "contracts.py")
@@ -127,6 +144,8 @@ def test_unavailable_function_source_falls_back_to_one_object(tmp_path, host, mo
     root = tmp_path / "source_unavailable_components"
     root.mkdir()
     (root / "unavailable.py").write_text(
+        "from graphimo import node as _node\n"
+        "@_node\n"
         "def compute(value: int) -> tuple[int, int]:\n"
         "    return value, value + 1\n",
         encoding="utf-8",
@@ -142,10 +161,8 @@ def test_unavailable_function_source_falls_back_to_one_object(tmp_path, host, mo
     callables = _component_callables(
         dispatch({"op": "list_components", "root": str(root)}, host.context)
     )
-    assert callables["compute"]["base_block"]["output_mode"] == "object"
-    assert callables["compute"]["base_block"]["outputs"] == [
-        {"index": 1, "name": "result", "annotation": "object"}
-    ]
+    assert callables["compute"]["diagnostic"] == "node_source_unavailable"
+    assert callables["compute"]["outputs"] == []
 
 
 def test_inspect_links_only_exact_generated_component_markers_and_call(tmp_path, host):
@@ -165,10 +182,30 @@ def test_inspect_links_only_exact_generated_component_markers_and_call(tmp_path,
     )
     host.marimo.snapshot["cells"] = [
         {"id": "instance-a", "source": generated, "defs": ["normalized"], "refs": ["data"]},
-        {"id": "instance-b", "source": generated.replace("normalized =", "again ="), "defs": ["again"], "refs": ["data"]},
-        {"id": "legacy", "source": generated.replace("# Graphimo callable: normalize\n", ""), "defs": ["normalized"], "refs": ["data"]},
-        {"id": "wrong-call", "source": generated.replace(".normalize(image=data)", ".other(image=data)"), "defs": ["normalized"], "refs": ["data"]},
-        {"id": "stale", "source": generated.replace(source_hash, "0" * 64), "defs": ["normalized"], "refs": ["data"]},
+        {
+            "id": "instance-b",
+            "source": generated.replace("normalized =", "again ="),
+            "defs": ["again"],
+            "refs": ["data"],
+        },
+        {
+            "id": "legacy",
+            "source": generated.replace("# Graphimo callable: normalize\n", ""),
+            "defs": ["normalized"],
+            "refs": ["data"],
+        },
+        {
+            "id": "wrong-call",
+            "source": generated.replace(".normalize(image=data)", ".other(image=data)"),
+            "defs": ["normalized"],
+            "refs": ["data"],
+        },
+        {
+            "id": "stale",
+            "source": generated.replace(source_hash, "0" * 64),
+            "defs": ["normalized"],
+            "refs": ["data"],
+        },
     ]
 
     result = dispatch({"op": "inspect", "session_id": "fixture"}, host.context)
@@ -200,5 +237,7 @@ def test_base_block_luau_projection_orders_and_rejects_mismatched_references():
         text=True,
         timeout=10,
     )
-    assert result.returncode == 0, f"Base Block projection failed:\n{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"Base Block projection failed:\n{result.stdout}\n{result.stderr}"
+    )
     assert "BASE_BLOCK_PROJECTION_OK" in result.stdout

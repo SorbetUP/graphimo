@@ -22,6 +22,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, get_args, get_origin
 
+import graphimo
+from graphimo.instance import (
+    build_instance_source,
+    output_expression,
+    parse_instance_source,
+    reconnect_instance_source,
+)
+
 _LITERAL_ALIAS_TYPE = type(Literal[0])
 _TUPLE_ALIAS_TYPES = {type(tuple[int, ...]), type(typing.Tuple[int, ...])}  # noqa: UP006 - support the typing.Tuple spelling
 _SAFE_SCALAR_ANNOTATIONS = {"bool", "float", "int", "str"}
@@ -60,7 +68,9 @@ def _session(context: Any, requested: Any = None) -> tuple[str, dict[str, Any]]:
     else:
         selected = next((item for item in sessions if item.get("session_id") == requested), None)
         if selected is None:
-            raise _RequestError("session_not_found", f"Active marimo session '{requested}' was not found")
+            raise _RequestError(
+                "session_not_found", f"Active marimo session '{requested}' was not found"
+            )
     return selected["session_id"], selected
 
 
@@ -92,14 +102,20 @@ def _generated_component_ref(source: Any) -> dict[str, str] | None:
     if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.Assign):
         return None
     assignment = parsed.body[0]
-    if len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name) or not isinstance(assignment.value, ast.Call):
+    if (
+        len(assignment.targets) != 1
+        or not isinstance(assignment.targets[0], ast.Name)
+        or not isinstance(assignment.value, ast.Call)
+    ):
         return None
     expected = f"_out = __import__('importlib').reload(__import__('importlib').import_module({module_name!r})).{callable_name}()"
     try:
         expected_call = ast.parse(expected).body[0].value
     except (SyntaxError, AttributeError):
         return None
-    if ast.dump(assignment.value.func, include_attributes=False) != ast.dump(expected_call.func, include_attributes=False):
+    if ast.dump(assignment.value.func, include_attributes=False) != ast.dump(
+        expected_call.func, include_attributes=False
+    ):
         return None
     return {
         "component_id": component_id,
@@ -112,7 +128,9 @@ def _snapshot(context: Any, session_id: str) -> dict[str, Any]:
     try:
         snapshot = context.marimo.inspect(session_id)
     except KeyError as exc:
-        raise _RequestError("session_not_found", f"Active marimo session '{session_id}' was not found") from exc
+        raise _RequestError(
+            "session_not_found", f"Active marimo session '{session_id}' was not found"
+        ) from exc
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("cells"), list):
         raise _RequestError("marimo_unavailable", "Marimo returned an invalid notebook snapshot")
     projected = dict(snapshot)
@@ -142,11 +160,15 @@ def _safe_component_id(root: Path, component_id: Any) -> Path:
         raise _RequestError("component_not_found", "Choose a component from the component library")
     relative = Path(component_id)
     if relative.is_absolute() or any(part in ("..", "") for part in relative.parts):
-        raise _RequestError("component_not_found", "Component path is outside the component library")
+        raise _RequestError(
+            "component_not_found", "Component path is outside the component library"
+        )
     base = root.resolve()
     path = (base / relative).resolve()
     if base not in path.parents and path != base:
-        raise _RequestError("component_not_found", "Component path is outside the component library")
+        raise _RequestError(
+            "component_not_found", "Component path is outside the component library"
+        )
     if path.is_dir() and (path / "__init__.py").is_file():
         return path / "__init__.py"
     if path.suffix == ".py" and path.is_file():
@@ -245,7 +267,11 @@ def _safe_signature(signature: inspect.Signature) -> str:
     for parameter in signature.parameters.values():
         text = _safe_annotation_text(parameter.annotation)
         choices = _literal_choices(parameter.annotation)
-        if text is None and choices is not None and all(_scalar_default(choice) for choice in choices):
+        if (
+            text is None
+            and choices is not None
+            and all(_scalar_default(choice) for choice in choices)
+        ):
             text = "Literal[" + ", ".join(repr(choice) for choice in choices) + "]"
         default = (
             parameter.default
@@ -260,7 +286,9 @@ def _safe_signature(signature: inspect.Signature) -> str:
     return_annotation = _safe_annotation_text(signature.return_annotation)
     safe_signature = signature.replace(
         parameters=parameters,
-        return_annotation=_SafeAnnotation(return_annotation) if return_annotation is not None else inspect.Signature.empty,
+        return_annotation=_SafeAnnotation(return_annotation)
+        if return_annotation is not None
+        else inspect.Signature.empty,
     )
     return str(safe_signature)
 
@@ -275,15 +303,20 @@ def _tuple_annotation_items(annotation: Any) -> list[str | None] | None:
             return None
         value = expression.value
         if not (
-            isinstance(value, ast.Name) and value.id in {"tuple", "Tuple"}
+            isinstance(value, ast.Name)
+            and value.id in {"tuple", "Tuple"}
             or isinstance(value, ast.Attribute)
             and isinstance(value.value, ast.Name)
             and value.value.id == "typing"
             and value.attr == "Tuple"
         ):
             return None
-        items = expression.slice.elts if isinstance(expression.slice, ast.Tuple) else [expression.slice]
-        if not items or any(isinstance(item, ast.Constant) and item.value is Ellipsis for item in items):
+        items = (
+            expression.slice.elts if isinstance(expression.slice, ast.Tuple) else [expression.slice]
+        )
+        if not items or any(
+            isinstance(item, ast.Constant) and item.value is Ellipsis for item in items
+        ):
             return None
         return [ast.unparse(item) for item in items]
 
@@ -323,20 +356,28 @@ def _callable_function(value: Any) -> ast.FunctionDef | ast.AsyncFunctionDef | N
     except (OSError, TypeError, ValueError, SyntaxError, AttributeError):
         return None
     return next(
-        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name),
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        ),
         None,
     )
 
 
 def _object_base_block() -> dict[str, Any]:
-    return {"outputs": [{"index": 1, "name": "result", "annotation": "object"}], "output_mode": "object"}
+    return {
+        "outputs": [{"index": 1, "name": "result", "annotation": "object"}],
+        "output_mode": "object",
+    }
 
 
 def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, Any]:
     inputs = [
         _parameter_metadata(parameter)
         for parameter in parsed_signature.parameters.values()
-        if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
     ]
     annotation = parsed_signature.return_annotation
     annotation_text = _safe_annotation_text(annotation)
@@ -356,13 +397,22 @@ def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, An
     values = [node.value for node in visitor.returns if node.value is not None]
     tuple_items = _tuple_annotation_items(annotation)
     if tuple_items is not None:
-        if not all(isinstance(node, ast.Tuple) and len(node.elts) == len(tuple_items) for node in values):
+        if not all(
+            isinstance(node, ast.Tuple) and len(node.elts) == len(tuple_items) for node in values
+        ):
             return {"inputs": inputs, **_object_base_block()}
         outputs = []
         for position, item_annotation in enumerate(tuple_items, 1):
             expressions = [ast.unparse(node.elts[position - 1]) for node in values]
-            unique_expression = expressions[0] if all(item == expressions[0] for item in expressions) else None
-            names = [node.elts[position - 1].id if isinstance(node.elts[position - 1], ast.Name) else None for node in values]
+            unique_expression = (
+                expressions[0] if all(item == expressions[0] for item in expressions) else None
+            )
+            names = [
+                node.elts[position - 1].id
+                if isinstance(node.elts[position - 1], ast.Name)
+                else None
+                for node in values
+            ]
             unique_name = names[0] if names[0] and all(item == names[0] for item in names) else None
             descriptor: dict[str, Any] = {
                 "index": position,
@@ -375,11 +425,28 @@ def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, An
             outputs.append(descriptor)
         return {"inputs": inputs, "outputs": outputs, "output_mode": "tuple"}
 
-    if any(isinstance(node, (ast.Tuple, ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp, ast.GeneratorExp)) for node in values):
+    if any(
+        isinstance(
+            node,
+            (
+                ast.Tuple,
+                ast.Dict,
+                ast.List,
+                ast.Set,
+                ast.DictComp,
+                ast.ListComp,
+                ast.SetComp,
+                ast.GeneratorExp,
+            ),
+        )
+        for node in values
+    ):
         return {"inputs": inputs, **_object_base_block()}
 
     expressions = [ast.unparse(node) for node in values]
-    unique_expression = expressions[0] if all(item == expressions[0] for item in expressions) else None
+    unique_expression = (
+        expressions[0] if all(item == expressions[0] for item in expressions) else None
+    )
     names = [node.id if isinstance(node, ast.Name) else None for node in values]
     unique_name = names[0] if names[0] and all(item == names[0] for item in names) else None
     scalar_annotation = annotation_text in _SAFE_SCALAR_ANNOTATIONS or (
@@ -387,7 +454,10 @@ def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, An
     )
     scalar_constants = all(
         isinstance(node, ast.Constant)
-        and (type(node.value) in (bool, int, str) or (type(node.value) is float and math.isfinite(node.value)))
+        and (
+            type(node.value) in (bool, int, str)
+            or (type(node.value) is float and math.isfinite(node.value))
+        )
         for node in values
     )
     if not scalar_annotation and not scalar_constants:
@@ -403,11 +473,20 @@ def _base_block(parsed_signature: inspect.Signature, value: Any) -> dict[str, An
 def _callables(path: Path) -> list[dict[str, Any]]:
     module = _load_module(path)
     exports = getattr(module, "__all__", None)
-    names = exports if isinstance(exports, (list, tuple)) else [name for name in vars(module) if not name.startswith("_")]
+    names = (
+        exports
+        if isinstance(exports, (list, tuple))
+        else [name for name in vars(module) if not name.startswith("_")]
+    )
     result: list[dict[str, Any]] = []
     for name in names:
         value = getattr(module, name, None)
-        if not isinstance(name, str) or not callable(value) or inspect.isclass(value) or inspect.isbuiltin(value):
+        if (
+            not isinstance(name, str)
+            or not callable(value)
+            or inspect.isclass(value)
+            or inspect.isbuiltin(value)
+        ):
             continue
         try:
             parsed_signature = inspect.signature(value)
@@ -415,15 +494,76 @@ def _callables(path: Path) -> list[dict[str, Any]]:
             parameters = [
                 _parameter_metadata(parameter)
                 for parameter in parsed_signature.parameters.values()
-                if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                if parameter.kind
+                in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
             ]
         except (TypeError, ValueError):
             parsed_signature = None
             signature = "(...)"
             parameters = []
         doc = inspect.getdoc(value) or inspect.getdoc(module) or ""
-        base_block = _base_block(parsed_signature, value) if parsed_signature is not None else {"inputs": [], **_object_base_block()}
-        result.append({"name": name, "signature": signature, "description": doc.splitlines()[0] if doc else "", "parameters": parameters, "base_block": base_block})
+        item: dict[str, Any] = {
+            "name": name,
+            "signature": signature,
+            "description": doc.splitlines()[0] if doc else "",
+            "parameters": parameters,
+            "graphimo_node": graphimo.is_node(value),
+            "insertable": graphimo.is_node(value),
+        }
+        if item["graphimo_node"]:
+            spec = graphimo.inspect_node(value)
+            item["inputs"] = [
+                {
+                    "name": port.name,
+                    "required": port.required,
+                    "annotation": port.annotation,
+                    "has_default": port.has_default,
+                    **(
+                        {"default": port.default}
+                        if port.has_default and _scalar_default(port.default)
+                        else {}
+                    ),
+                }
+                for port in spec.inputs
+            ]
+            item["outputs"] = [
+                {
+                    "index": port.index,
+                    "declared_type": port.declared_type,
+                    "expressions": list(port.expressions),
+                }
+                for port in spec.outputs
+            ]
+            item["diagnostic"] = spec.diagnostic
+            item["base_block"] = {
+                "inputs": item["inputs"],
+                "outputs": [
+                    {
+                        "index": port.index + 1,
+                        "name": (
+                            port.expressions[0]
+                            if len(port.expressions) == 1 and port.expressions[0].isidentifier()
+                            else f"output_{port.index + 1}"
+                        ),
+                        **(
+                            {"expression": port.expressions[0]}
+                            if len(port.expressions) == 1
+                            else {}
+                        ),
+                        "annotation": port.declared_type,
+                    }
+                    for port in spec.outputs
+                ],
+                "output_mode": "none"
+                if not spec.outputs
+                else "single"
+                if len(spec.outputs) == 1
+                else "tuple",
+            }
+        else:
+            item["inputs"] = item["parameters"]
+            item["outputs"] = []
+        result.append(item)
     return result
 
 
@@ -432,7 +572,9 @@ def _components(root: Path) -> list[dict[str, Any]]:
         raise _RequestError("component_root_not_found", f"Component library '{root}' was not found")
     items: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*.py")):
-        if any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts):
+        if any(
+            part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts
+        ):
             continue
         if path.name == "__init__.py":
             continue
@@ -442,9 +584,20 @@ def _components(root: Path) -> list[dict[str, Any]]:
         except _RequestError:
             continue
         if callables:
-            items.append({"id": rel, "path": rel, "category": list(path.relative_to(root).parts[:-1]), "kind": "file", "callables": callables})
+            items.append(
+                {
+                    "id": rel,
+                    "path": rel,
+                    "category": list(path.relative_to(root).parts[:-1]),
+                    "kind": "file",
+                    "callables": callables,
+                }
+            )
     for init_path in sorted(root.rglob("__init__.py")):
-        if any(part.startswith(".") or part == "__pycache__" for part in init_path.relative_to(root).parts):
+        if any(
+            part.startswith(".") or part == "__pycache__"
+            for part in init_path.relative_to(root).parts
+        ):
             continue
         rel = init_path.parent.relative_to(root).as_posix()
         if rel == ".":
@@ -454,7 +607,15 @@ def _components(root: Path) -> list[dict[str, Any]]:
         except _RequestError:
             continue
         if callables:
-            items.append({"id": rel, "path": rel, "category": list(init_path.parent.relative_to(root).parts[:-1]), "kind": "package", "callables": callables})
+            items.append(
+                {
+                    "id": rel,
+                    "path": rel,
+                    "category": list(init_path.parent.relative_to(root).parts[:-1]),
+                    "kind": "package",
+                    "callables": callables,
+                }
+            )
     items.sort(key=lambda item: item["id"])
     return items
 
@@ -478,99 +639,258 @@ def _add_component(request: dict[str, Any], context: Any, session_id: str) -> di
             raise _RequestError("callable_required", "Choose a callable from this component")
     export = next((item for item in exports if item["name"] == callable_name), None)
     if export is None:
-        raise _RequestError("callable_not_found", f"Callable '{callable_name}' was not found in this component")
-    output = _identifier(request.get("output_name"), "output_name")
+        raise _RequestError(
+            "callable_not_found", f"Callable '{callable_name}' was not found in this component"
+        )
+    if not export.get("graphimo_node"):
+        raise _RequestError(
+            "node_required",
+            f"'{callable_name}' is a helper; decorate executable functions with @graphimo.node",
+        )
+    function = _load_module(path)
+    value = getattr(function, callable_name, None)
+    try:
+        spec = graphimo.inspect_node(value)
+    except (TypeError, ValueError) as exc:
+        raise _RequestError("node_contract_error", str(exc)) from exc
+    if spec.diagnostic:
+        raise _RequestError(
+            "node_contract_error", f"Node '{callable_name}' has diagnostic {spec.diagnostic}"
+        )
     bindings = request.get("bindings", {})
     if not isinstance(bindings, dict):
         raise _RequestError("invalid_request", "'bindings' must be an object")
-    params = []
+    expressions: dict[str, str] = {}
     for name, value in bindings.items():
         name = _identifier(name, "binding name")
+        if name not in {port.name for port in spec.inputs}:
+            raise _RequestError(
+                "unknown_node_input", f"Node '{callable_name}' has no input named '{name}'"
+            )
         if not isinstance(value, dict) or len(value) != 1:
-            raise _RequestError("invalid_request", f"Binding '{name}' must contain exactly one of 'variable' or 'literal'")
+            raise _RequestError(
+                "invalid_request",
+                f"Binding '{name}' must contain exactly one of 'variable' or 'literal'",
+            )
         if "variable" in value:
-            variable = _identifier(value["variable"], "binding variable")
-            params.append(f"{name}={variable}")
+            expressions[name] = _identifier(value["variable"], "binding variable")
         elif "literal" in value:
             try:
                 literal = repr(value["literal"])
                 ast.literal_eval(literal)
             except (ValueError, TypeError, SyntaxError):
-                raise _RequestError("invalid_request", f"Binding '{name}' is not a supported Python literal") from None
-            params.append(f"{name}={literal}")
+                raise _RequestError(
+                    "invalid_request", f"Binding '{name}' is not a supported Python literal"
+                ) from None
+            expressions[name] = literal
         else:
-            raise _RequestError("invalid_request", f"Binding '{name}' must contain 'variable' or 'literal'")
-    module_path = path.relative_to(root.resolve()).with_suffix("")
-    if path.name == "__init__.py":
-        module_path = path.parent.relative_to(root.resolve())
-    relative_import = ".".join(part for part in module_path.parts if part not in ("", "."))
-    import_name = ".".join(part for part in (root.name, relative_import) if part)
-    if all(part.isidentifier() for part in import_name.split(".")):
-        invocation = f"(__import__('{import_name.rsplit('.', 1)[0] or import_name}', fromlist=['{callable_name}']).{callable_name})" if not import_name.isidentifier() else callable_name
-        if import_name.isidentifier():
-            prefix = f"from {import_name} import {callable_name}\n\n"
-        else:
-            parent, leaf = import_name.rsplit(".", 1)
-            prefix = f"from {parent} import {leaf}\nfrom {parent}.{leaf} import {callable_name}\n\n"
-            invocation = callable_name
-    else:
-        # Category names may contain hyphens. importlib accepts these normal
-        # filesystem package segments although Python's import statement does not.
-        invocation = f"__import__('importlib').import_module('{import_name}').{callable_name}"
-        prefix = ""
-    source = f"{prefix}{output} = {invocation}({', '.join(params)})\n"
+            raise _RequestError(
+                "invalid_request", f"Binding '{name}' must contain 'variable' or 'literal'"
+            )
+
+    missing = [port.name for port in spec.inputs if port.required and port.name not in expressions]
+    if missing:
+        raise _RequestError(
+            "missing_required_binding", f"Required node inputs are missing: {', '.join(missing)}"
+        )
+    for port in spec.inputs:
+        if port.name not in expressions and port.has_default and _safe_literal(port.default):
+            expressions[port.name] = repr(port.default)
+    try:
+        source, instance = build_instance_source(callable_name, expressions)
+    except (TypeError, ValueError) as exc:
+        raise _RequestError("invalid_request", str(exc)) from exc
+
+    # Keep the reusable library definition in one marimo cell. Instance cells
+    # themselves remain the canonical marker + direct call body.
+    snapshot = _snapshot(context, session_id)
+    component_id_text = path.relative_to(root.resolve()).as_posix()
+    import_marker = f"# Graphimo node library: {component_id_text}:{callable_name}"
+    if not any(import_marker in str(cell.get("source", "")) for cell in snapshot["cells"]):
+        module_path = path.relative_to(root.resolve()).with_suffix("")
+        if path.name == "__init__.py":
+            module_path = path.parent.relative_to(root.resolve())
+        module_parts = [root.name, *(part for part in module_path.parts if part not in ("", "."))]
+        module_name = ".".join(module_parts)
+        library_source = (
+            f"{import_marker}\n"
+            "import sys as _graphimo_sys\n"
+            f"_graphimo_root = {str(root.resolve().parent)!r}\n"
+            "if _graphimo_root not in _graphimo_sys.path:\n"
+            "    _graphimo_sys.path.insert(0, _graphimo_root)\n"
+            "import importlib as _graphimo_importlib\n"
+            f"_graphimo_module = _graphimo_importlib.reload(_graphimo_importlib.import_module({module_name!r}))\n"
+            f"{callable_name} = _graphimo_module.{callable_name}\n"
+        )
+        try:
+            context.marimo.add_cell(session_id, library_source)
+        except Exception as exc:
+            raise _RequestError(
+                "marimo_unavailable", f"Could not import node definition: {exc}"
+            ) from exc
     try:
         compile(source, "<graphimo-component>", "exec")
         cell_id = context.marimo.add_cell(session_id, source)
     except Exception as exc:
-        raise _RequestError("marimo_unavailable", f"Could not insert component cell: {exc}") from exc
-    return {"ok": True, "cell_id": cell_id, "source": source}
+        raise _RequestError(
+            "marimo_unavailable", f"Could not insert component cell: {exc}"
+        ) from exc
+    return {
+        "ok": True,
+        "cell_id": cell_id,
+        "source": source,
+        "instance_id": instance.instance_id,
+        "result_var": instance.result_var,
+    }
 
 
-def _connect(request: dict[str, Any], context: Any, session_id: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+def _safe_literal(value: Any) -> bool:
+    if value is None or type(value) in (bool, int, str):
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) in (list, tuple):
+        return all(_safe_literal(item) for item in value)
+    if type(value) is dict:
+        return all(_safe_literal(key) and _safe_literal(item) for key, item in value.items())
+    return False
+
+
+def _find_node(root: Path, node_name: str) -> Any:
+    matches: list[Any] = []
+    paths = [
+        path
+        for path in sorted(root.rglob("*.py"))
+        if path.name != "__init__.py"
+        and not any(
+            part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts
+        )
+    ]
+    paths.extend(
+        path
+        for path in sorted(root.rglob("__init__.py"))
+        if not any(
+            part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts
+        )
+    )
+    for path in paths:
+        try:
+            exports = _callables(path)
+        except _RequestError:
+            continue
+        if any(item["name"] == node_name and item.get("graphimo_node") for item in exports):
+            matches.append(getattr(_load_module(path), node_name))
+    if len(matches) != 1:
+        raise _RequestError(
+            "node_definition_ambiguous",
+            f"Expected one @node definition named '{node_name}', found {len(matches)}",
+        )
+    return matches[0]
+
+
+def _connect(
+    request: dict[str, Any], context: Any, session_id: str, snapshot: dict[str, Any]
+) -> dict[str, Any]:
     target_id = _required_string(request, "to_cell_id")
     target = _cell(snapshot, target_id)
     source_id = _required_string(request, "from_cell_id")
     source = _cell(snapshot, source_id)
-    variable = _identifier(request.get("variable"), "variable")
-    input_ref = _identifier(request.get("input_ref"), "input_ref")
-    if variable not in source.get("defs", []):
-        raise _RequestError("invalid_connection", f"'{variable}' is not defined by the source cell", target_id)
     source_text = target.get("source", "")
+    target_instance = parse_instance_source(source_text)
+    if target_instance is None:
+        raise _RequestError(
+            "unsafe_edit", "Target is not a Graphimo-owned node instance; open its code", target_id
+        )
+    input_name = _identifier(request.get("input_name", request.get("input_ref")), "input_name")
+    root = Path(request.get("root") or context.components_root)
+    target_spec = graphimo.inspect_node(_find_node(root, target_instance.node_name))
+    if input_name not in {port.name for port in target_spec.inputs}:
+        raise _RequestError(
+            "invalid_connection",
+            f"Node '{target_instance.node_name}' has no input named '{input_name}'",
+            target_id,
+        )
+
+    source_instance = parse_instance_source(source.get("source", ""))
+    if source_instance is None:
+        variable = _identifier(request.get("variable"), "variable")
+        if variable not in source.get("defs", []):
+            raise _RequestError(
+                "invalid_connection", f"'{variable}' is not defined by the source cell", target_id
+            )
+        expression = variable
+    else:
+        source_spec = graphimo.inspect_node(_find_node(root, source_instance.node_name))
+        if not source_spec.outputs:
+            raise _RequestError(
+                "invalid_connection",
+                f"Node '{source_instance.node_name}' has no outputs",
+                target_id,
+            )
+        output_index = request.get("output_index")
+        if output_index is None:
+            if len(source_spec.outputs) != 1:
+                raise _RequestError(
+                    "output_index_required", "Choose an output port on the source node", target_id
+                )
+            output_index = 0
+        try:
+            expression = output_expression(source_instance, output_index, len(source_spec.outputs))
+        except (IndexError, ValueError) as exc:
+            raise _RequestError("invalid_connection", str(exc), target_id) from exc
+        if source_instance.result_var not in source.get("defs", []):
+            raise _RequestError(
+                "invalid_connection", "The selected source output is stale", target_id
+            )
+
     try:
-        tree = ast.parse(source_text)
-    except SyntaxError:
-        raise _RequestError("unsafe_edit", "Target source is not valid Python; open the code to edit it", target_id) from None
-    # Deliberately accept one assignment calling a bare function with exactly
-    # one positional name argument. This is a narrow, reviewable edit contract.
-    if len(tree.body) != 1 or not isinstance(tree.body[0], (ast.Assign, ast.AnnAssign)):
-        raise _RequestError("unsafe_edit", "Target is not one simple component assignment; open its code", target_id)
-    assignment = tree.body[0]
-    call = assignment.value
-    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or len(call.args) != 1 or call.keywords:
-        raise _RequestError("unsafe_edit", "Target call is ambiguous; open its code to edit it", target_id)
-    arg = call.args[0]
-    if not isinstance(arg, ast.Name) or arg.id != input_ref or variable in target.get("defs", []):
-        raise _RequestError("unsafe_edit", "The selected reference cannot be safely replaced; open its code", target_id)
-    if input_ref not in target.get("refs", []):
-        raise _RequestError("unsafe_edit", "The selected input is stale in marimo's current graph; inspect the notebook again", target_id)
-    start, end = arg.col_offset, arg.end_col_offset
-    lines = source_text.splitlines(keepends=True)
-    updated_line = lines[arg.lineno - 1]
-    # AST column offsets are UTF-8 byte offsets; convert back to character
-    # offsets so Unicode names/comments earlier on the line remain intact.
-    encoded = updated_line.encode("utf-8")
-    prefix = encoded[:start].decode("utf-8")
-    replacement_tail = encoded[end:].decode("utf-8")
-    new_line = prefix + variable + replacement_tail
-    lines[arg.lineno - 1] = new_line
-    updated = "".join(lines)
+        updated = reconnect_instance_source(
+            source_text, input_name=input_name, expression=expression
+        )
+    except ValueError as exc:
+        raise _RequestError("unsafe_edit", str(exc), target_id) from exc
     try:
         compile(updated, "<graphimo-connect>", "exec")
         context.marimo.replace_cell_source(session_id, target_id, updated)
     except Exception as exc:
-        raise _RequestError("marimo_unavailable", f"Could not update cell source: {exc}", target_id) from exc
+        raise _RequestError(
+            "marimo_unavailable", f"Could not update cell source: {exc}", target_id
+        ) from exc
     return {"ok": True, "changed": True, "source": updated}
+
+
+def _inspect_node_instance(
+    request: dict[str, Any], context: Any, session_id: str, snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    cell_id = _required_string(request, "cell_id")
+    cell = _cell(snapshot, cell_id)
+    instance = parse_instance_source(cell.get("source", ""))
+    if instance is None:
+        raise _RequestError(
+            "not_graphimo_instance", "Cell is not a Graphimo-owned node instance", cell_id
+        )
+    root = Path(request.get("root") or context.components_root)
+    spec = graphimo.inspect_node(_find_node(root, instance.node_name))
+    if spec.diagnostic:
+        raise _RequestError("node_contract_error", f"Node diagnostic: {spec.diagnostic}", cell_id)
+    inspect_value = getattr(context.marimo, "inspect_value", None)
+    if not callable(inspect_value):
+        raise _RequestError(
+            "runtime_inspection_unavailable",
+            "Marimo port does not expose live namespace inspection",
+            cell_id,
+        )
+    try:
+        value = inspect_value(session_id, instance.result_var)
+        outputs = graphimo.describe_result(value, spec)
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise _RequestError("runtime_inspection_failed", str(exc), cell_id) from exc
+    return {
+        "ok": True,
+        "instance_id": instance.instance_id,
+        "node": instance.node_name,
+        "outputs": outputs,
+    }
 
 
 def dispatch(request: Any, context: Any) -> dict[str, Any]:
@@ -582,16 +902,31 @@ def dispatch(request: Any, context: Any) -> dict[str, Any]:
         if operation == "list_components":
             root = Path(request.get("root") or context.components_root)
             return {"ok": True, "components": _components(root)}
-        if operation not in {"inspect", "add_component", "connect", "run", "open_code", "delete"}:
+        if operation not in {
+            "inspect",
+            "inspect_node_instance",
+            "add_component",
+            "connect",
+            "run",
+            "open_code",
+            "delete",
+        }:
             raise _RequestError("invalid_request", "Unknown or missing operation")
         session_id, _ = _session(context, request.get("session_id"))
         snapshot = _snapshot(context, session_id)
         if operation == "inspect":
-            return {"ok": True, "notebook": snapshot.get("notebook", {"path": None, "session_id": session_id}), "cells": snapshot["cells"], "edges": snapshot.get("edges", [])}
+            return {
+                "ok": True,
+                "notebook": snapshot.get("notebook", {"path": None, "session_id": session_id}),
+                "cells": snapshot["cells"],
+                "edges": snapshot.get("edges", []),
+            }
         if operation == "add_component":
             return _add_component(request, context, session_id)
         if operation == "connect":
             return _connect(request, context, session_id, snapshot)
+        if operation == "inspect_node_instance":
+            return _inspect_node_instance(request, context, session_id, snapshot)
         cell_id = _required_string(request, "cell_id")
         _cell(snapshot, cell_id)
         if operation == "run":
@@ -602,7 +937,9 @@ def dispatch(request: Any, context: Any) -> dict[str, Any]:
             return {"ok": True, **(state if isinstance(state, dict) else {"status": str(state)})}
         callback = getattr(context, "open_code", None)
         if not callable(callback):
-            raise _RequestError("open_code_unavailable", "Zeron code navigation is unavailable", cell_id)
+            raise _RequestError(
+                "open_code_unavailable", "Zeron code navigation is unavailable", cell_id
+            )
         callback(cell_id)
         return {"ok": True, "opened": True}
     except _RequestError as exc:
@@ -624,12 +961,18 @@ def read_layout(path: str | os.PathLike[str], notebook_path: str) -> dict[str, d
         cells = notebook.get("cells", {}) if isinstance(notebook, dict) else {}
         if not isinstance(cells, dict):
             return {}
-        return {key: value for key, value in cells.items() if isinstance(key, str) and isinstance(value, dict)}
+        return {
+            key: value
+            for key, value in cells.items()
+            if isinstance(key, str) and isinstance(value, dict)
+        }
     except (OSError, ValueError, TypeError, AttributeError):
         return {}
 
 
-def write_layout(path: str | os.PathLike[str], notebook_path: str, cells: dict[str, dict[str, Any]]) -> None:
+def write_layout(
+    path: str | os.PathLike[str], notebook_path: str, cells: dict[str, dict[str, Any]]
+) -> None:
     """Atomically update one notebook's allowed visual metadata."""
     allowed = {"x", "y", "collapsed", "width", "height", "group"}
     clean = {
@@ -657,7 +1000,9 @@ def write_layout(path: str | os.PathLike[str], notebook_path: str, cells: dict[s
             os.unlink(temporary)
 
 
-def merge_layout(cells: list[dict[str, Any]], saved: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def merge_layout(
+    cells: list[dict[str, Any]], saved: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     """Merge matching positions and place new cells in a simple grid."""
     result: list[dict[str, Any]] = []
     for index, cell in enumerate(cells):

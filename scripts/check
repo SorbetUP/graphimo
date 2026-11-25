@@ -72,11 +72,16 @@ def python_paths() -> list[str]:
 
 def lint_paths() -> list[str]:
     return [
+        "adapter",
+        "components",
+        "examples",
         "graphimo",
         "addons/pytorch/graphimo_pytorch",
         "addons/pytorch/tests",
         "core/graphimo_core",
         "tests/test_core_vertical_slice.py",
+        "tests/test_component_parameter_metadata.py",
+        "tests/test_dispatch_contract.py",
         "addons/pytorch/tests/test_torchlens.py",
         "tests/test_metablock_host.py",
         "tests/test_package_distribution.py",

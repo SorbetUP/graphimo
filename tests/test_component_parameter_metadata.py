@@ -1,4 +1,5 @@
 """Contract for JSON-safe component parameter metadata."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,8 @@ def test_list_components_exposes_only_safe_parameter_metadata(tmp_path, host):
     root = tmp_path / "metadata_components"
     root.mkdir()
     (root / "metadata.py").write_text(
-        "from typing import Literal\n"
+        "from typing import Literal\nfrom graphimo import node as _node\n"
+        "@_node\n"
         "def inspect_values(required, implicit, none_value=None, flag: bool = True, "
         "count: int = 7, ratio: float = 1.25, label: str = 'sample', "
         "forward: 'NotImported' = 'x', absent: None = None, "
@@ -24,10 +26,13 @@ def test_list_components_exposes_only_safe_parameter_metadata(tmp_path, host):
         "    def __str__(self): raise AssertionError('str was called')\n"
         "unsafe_annotation = Unsafe()\n"
         "unsafe_default = Unsafe()\n"
+        "@_node\n"
         "def inspect_unsafe(value: unsafe_annotation = unsafe_default):\n"
         "    return value\n"
+        "@_node\n"
         "def inspect_unsupported_literal(choice: Literal[unsafe_default] = 'small'):\n"
         "    return choice\n"
+        "@_node\n"
         "def inspect_mixed_literal(value: Literal[True, None, 1, 1.5, 'x'] = 'x'):\n"
         "    return value\n",
         encoding="utf-8",
@@ -42,7 +47,10 @@ def test_list_components_exposes_only_safe_parameter_metadata(tmp_path, host):
     assert callable_info["signature"].startswith("(required, implicit, none_value=None")
 
     assert parameters["required"] == {
-        "name": "required", "required": True, "positional": True, "has_default": False
+        "name": "required",
+        "required": True,
+        "positional": True,
+        "has_default": False,
     }
     assert parameters["implicit"]["required"] is True
     assert parameters["implicit"]["has_default"] is False

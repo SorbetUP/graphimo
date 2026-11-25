@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import ast
 import inspect
+import math
 import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,16 @@ def _safe_annotation(annotation: object) -> str | None:
         return annotation
     if isinstance(annotation, type):
         return type.__getattribute__(annotation, "__name__")
+    if get_origin(annotation) is Literal:
+        choices = get_args(annotation)
+        if all(
+            choice is None
+            or type(choice) in (bool, int, str)
+            or type(choice) is float
+            and math.isfinite(choice)
+            for choice in choices
+        ):
+            return "Literal[" + ", ".join(repr(choice) for choice in choices) + "]"
     return None
 
 

@@ -36,3 +36,5 @@ The generated body has a random eight-character lowercase hexadecimal instance I
 Use `output_expression(spec, output_index, output_count)` to create a downstream reference: a single output uses the result global; multiple outputs use a zero-based tuple index. Port labels remain the `OutputPort` metadata from `inspect_node`.
 
 These APIs generate source and describe contracts. Marimo remains responsible for dependency analysis and reactive execution.
+
+The Python adapter's `inspect_node_instance` operation reads the result global through the host-supplied `MarimoPort.inspect_value(session_id, variable)` boundary. A host that does not expose that live namespace operation returns `runtime_inspection_unavailable`; Graphimo never evaluates cell code in a parallel namespace.

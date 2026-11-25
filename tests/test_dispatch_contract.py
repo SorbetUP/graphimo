@@ -18,7 +18,11 @@ def test_inspect_projects_all_marimo_cells_and_current_edges(host):
     assert result["ok"] is True
     assert result["notebook"] == {"path": "fixture.py", "session_id": "fixture"}
     assert [cell["id"] for cell in result["cells"]] == [
-        "load", "normalize", "arbitrary", "empty", "markdown"
+        "load",
+        "normalize",
+        "arbitrary",
+        "empty",
+        "markdown",
     ]
     arbitrary = next(cell for cell in result["cells"] if cell["id"] == "arbitrary")
     assert arbitrary["source"] == "x = complicated_custom_code(processed)"
@@ -119,10 +123,14 @@ def test_add_component_inserts_readable_python_with_requested_bindings(project, 
 
     assert result["ok"] is True
     assert result["cell_id"] == "inserted-cell"
-    assert result["source"] == host.marimo.added[0][1]
+    assert result["source"] == host.marimo.added[-1][1]
+    assert result["source"].startswith("# Graphimo node: normalize\n# Graphimo instance: ")
+    assert len(host.marimo.added) == 2  # one shared library import plus its first instance
     tree = ast.parse(result["source"])
     assignment = next(node for node in tree.body if isinstance(node, ast.Assign))
-    assert [target.id for target in assignment.targets if isinstance(target, ast.Name)] == ["normalized"]
+    assert [target.id for target in assignment.targets if isinstance(target, ast.Name)] == [
+        result["result_var"]
+    ]
     assert isinstance(assignment.value, ast.Call)
     called_name = (
         assignment.value.func.id
@@ -132,8 +140,28 @@ def test_add_component_inserts_readable_python_with_requested_bindings(project, 
     assert called_name == "normalize"
     names = {node.id for node in ast.walk(assignment.value) if isinstance(node, ast.Name)}
     assert "data" in names
-    assert any(isinstance(node, ast.Constant) and node.value == 0.25 for node in ast.walk(assignment.value))
+    assert any(
+        isinstance(node, ast.Constant) and node.value == 0.25 for node in ast.walk(assignment.value)
+    )
     compile(result["source"], "<inserted-cell>", "exec")
+    namespace = {"data": 5.0}
+    exec(host.marimo.added[0][1], namespace)  # noqa: S102 - exercise generated marimo cell source
+    exec(result["source"], namespace)  # noqa: S102 - exercise generated marimo cell source
+    assert namespace[result["result_var"]] == 9.5
+
+    second = dispatch(
+        {
+            "op": "add_component",
+            "session_id": "fixture",
+            "component_id": "data-processing/normalize.py",
+            "callable": "normalize",
+            "output_name": "ignored_legacy_output",
+            "bindings": {"image": {"variable": "data"}},
+        },
+        host.context,
+    )
+    assert second["ok"] is True
+    assert len(host.marimo.added) == 3  # the library definition is shared by both instances
 
 
 def test_add_component_can_select_one_callable_from_a_multi_export_package(project, host):
@@ -152,21 +180,55 @@ def test_add_component_can_select_one_callable_from_a_multi_export_package(proje
     assert result["ok"] is True
     assert result["cell_id"] == "inserted-cell"
     expression = next(
-        node.value for node in ast.parse(result["source"]).body
-        if isinstance(node, ast.Assign)
+        node.value for node in ast.parse(result["source"]).body if isinstance(node, ast.Assign)
     )
     assert isinstance(expression, ast.Call)
-    called_name = expression.func.id if isinstance(expression.func, ast.Name) else expression.func.attr
+    called_name = (
+        expression.func.id if isinstance(expression.func, ast.Name) else expression.func.attr
+    )
     assert called_name == "encode"
-    assert host.marimo.added == [("fixture", result["source"])]
+    assert host.marimo.added[-1] == ("fixture", result["source"])
+    assert len(host.marimo.added) == 2
+
+
+def test_add_component_refuses_helpers_and_missing_required_inputs(project, host):
+    helper = dispatch(
+        {
+            "op": "add_component",
+            "session_id": "fixture",
+            "component_id": "data-processing/normalize.py",
+            "callable": "helper",
+            "output_name": "result",
+            "bindings": {"value": {"variable": "data"}},
+        },
+        host.context,
+    )
+    assert_error(helper, "node_required")
+
+    missing = dispatch(
+        {
+            "op": "add_component",
+            "session_id": "fixture",
+            "component_id": "data-processing/normalize.py",
+            "callable": "normalize",
+            "output_name": "result",
+            "bindings": {},
+        },
+        host.context,
+    )
+    assert_error(missing, "missing_required_binding")
+    assert host.marimo.added == []
 
 
 def test_unknown_component_and_callable_return_defined_errors(project, host):
     missing_component = dispatch(
         {
-            "op": "add_component", "session_id": "fixture",
-            "component_id": "missing.py", "callable": "run",
-            "output_name": "result", "bindings": {},
+            "op": "add_component",
+            "session_id": "fixture",
+            "component_id": "missing.py",
+            "callable": "run",
+            "output_name": "result",
+            "bindings": {},
         },
         host.context,
     )
@@ -174,9 +236,12 @@ def test_unknown_component_and_callable_return_defined_errors(project, host):
 
     missing_callable = dispatch(
         {
-            "op": "add_component", "session_id": "fixture",
-            "component_id": "data-processing/normalize.py", "callable": "absent",
-            "output_name": "result", "bindings": {},
+            "op": "add_component",
+            "session_id": "fixture",
+            "component_id": "data-processing/normalize.py",
+            "callable": "absent",
+            "output_name": "result",
+            "bindings": {},
         },
         host.context,
     )
@@ -185,20 +250,29 @@ def test_unknown_component_and_callable_return_defined_errors(project, host):
 
 
 def test_connect_replaces_one_simple_positional_reference_in_real_source(host):
-    host.marimo.snapshot["cells"][2]["source"] = "prediction = model(input_data)"
+    from graphimo import build_instance_source
+
+    target_source, _ = build_instance_source(
+        "normalize", {"image": "input_data"}, instance_id="aabbccdd"
+    )
+    host.marimo.snapshot["cells"][2]["source"] = target_source
     host.marimo.snapshot["cells"][2]["refs"] = ["model", "input_data"]
 
     result = dispatch(
         {
-            "op": "connect", "session_id": "fixture", "from_cell_id": "normalize",
-            "variable": "processed", "to_cell_id": "arbitrary", "input_ref": "input_data",
+            "op": "connect",
+            "session_id": "fixture",
+            "from_cell_id": "normalize",
+            "variable": "processed",
+            "to_cell_id": "arbitrary",
+            "input_name": "image",
         },
         host.context,
     )
 
     assert result["ok"] is True
     assert result["changed"] is True
-    assert result["source"] == "prediction = model(processed)"
+    assert "image=processed" in result["source"]
     assert host.marimo.replaced == [("fixture", "arbitrary", result["source"])]
 
 
@@ -213,8 +287,12 @@ def test_connect_refuses_ambiguous_or_unsupported_source_without_editing(host):
         host.marimo.snapshot["cells"][2]["source"] = source
         result = dispatch(
             {
-                "op": "connect", "session_id": "fixture", "from_cell_id": "normalize",
-                "variable": "processed", "to_cell_id": "arbitrary", "input_ref": "input_data",
+                "op": "connect",
+                "session_id": "fixture",
+                "from_cell_id": "normalize",
+                "variable": "processed",
+                "to_cell_id": "arbitrary",
+                "input_ref": "input_data",
             },
             host.context,
         )
@@ -235,6 +313,14 @@ def test_list_components_finds_plain_file_and_package_public_exports(project, ho
     normalize = next(item for item in file_item["callables"] if item["name"] == "normalize")
     assert normalize["signature"] == "(image, mean=0.5, std=0.5)"
     assert normalize["description"] == "Scale an image."
+    assert normalize["graphimo_node"] is True
+    assert normalize["insertable"] is True
+    assert normalize["outputs"] == [
+        {"index": 0, "declared_type": None, "expressions": ["(image - mean) / std"]}
+    ]
+    helper = next(item for item in file_item["callables"] if item["name"] == "helper")
+    assert helper["graphimo_node"] is False
+    assert helper["insertable"] is False
 
     package_item = items["models/bodypart"]
     assert package_item["kind"] == "package"
@@ -246,3 +332,59 @@ def test_missing_component_root_returns_error_instead_of_empty_success(project, 
     result = dispatch({"op": "list_components", "root": str(tmp_path / "absent")}, host.context)
 
     assert_error(result, "component_root_not_found")
+
+
+def test_inspect_node_instance_reads_live_result_through_marimo_port(host):
+    from graphimo import build_instance_source
+
+    source, instance = build_instance_source(
+        "normalize",
+        {"image": "data", "mean": "0.0", "std": "1.0"},
+        instance_id="aabbccdd",
+    )
+    host.marimo.snapshot["cells"][2]["source"] = source
+    host.marimo.values[instance.result_var] = 4.2
+    result = dispatch(
+        {"op": "inspect_node_instance", "session_id": "fixture", "cell_id": "arbitrary"},
+        host.context,
+    )
+    assert result["ok"] is True
+    assert result["instance_id"] == "aabbccdd"
+    assert result["node"] == "normalize"
+    assert result["outputs"][0]["runtime_type"] == "float"
+    assert result["outputs"][0]["preview"] == "4.2"
+    assert result["outputs"][0]["expressions"] == ["(image - mean) / std"]
+
+
+def test_connect_uses_declared_multi_output_expression(project, host):
+    from graphimo import build_instance_source
+
+    source_path = project.components / "pair.py"
+    source_path.write_text(
+        "from graphimo import node as _node\n\n"
+        "@_node\n"
+        "def split(value) -> tuple[int, int]:\n"
+        "    return value, value\n",
+        encoding="utf-8",
+    )
+    source, source_instance = build_instance_source(
+        "split", {"value": "data"}, instance_id="bbaa9988"
+    )
+    target, _ = build_instance_source("normalize", {"image": "old_value"}, instance_id="aabbccdd")
+    host.marimo.snapshot["cells"][0]["source"] = source
+    host.marimo.snapshot["cells"][0]["defs"] = [source_instance.result_var]
+    host.marimo.snapshot["cells"][2]["source"] = target
+    result = dispatch(
+        {
+            "op": "connect",
+            "session_id": "fixture",
+            "from_cell_id": "load",
+            "to_cell_id": "arbitrary",
+            "variable": source_instance.result_var,
+            "output_index": 1,
+            "input_name": "image",
+        },
+        host.context,
+    )
+    assert result["ok"] is True
+    assert "image=g_split_bbaa9988[1]" in result["source"]
