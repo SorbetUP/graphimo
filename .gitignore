@@ -1,4 +1,11 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+.marimo/
+__marimo__/
 .graphimo.json

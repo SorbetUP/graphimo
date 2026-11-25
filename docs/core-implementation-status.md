@@ -2,6 +2,24 @@
 
 This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files remain unchanged and normative.
 
+## Current plan — implementation update 2026-11-25
+
+[`Graphimo_IMPLEMENTATION_UPDATE_2026-11-25.md`](../Graphimo_IMPLEMENTATION_UPDATE_2026-11-25.md)
+is now the normative update to the three contracts. It resolves the prior
+Group backend, addon host API, and PyTorch parent-value decisions. The ordered
+work after the already completed Core/PyTorch backend milestones is U1 local
+gate, U2 generic MetaBlock host, U3 PyTorch host integration, U4 Group Blocks,
+U5 local service/client, U6 Zeron migration, U7 agent parity, and U8 renderer
+UX completion. The existing Zeron plugin is the primary UI; the standalone
+Workbench remains a conformance/debug harness.
+
+### U1 — repository hygiene and local validation gate
+
+- Removed tracked addon `build/` and `.egg-info/` outputs and untracked the generated Zeron `dist/` archive while preserving the local archive. Added ignores for build, dist, egg-info, marimo and cache output.
+- Added `./scripts/check --fast` and `./scripts/check --full`, with changed-file Ruff format checks, complete Ruff lint, syntax compilation, core/control/artifact/addon checks, full pytest and live marimo tests, isolated root/addon wheel builds, direct dependency consistency checks and generated-artifact hygiene.
+- The wheel tests now build from temporary source copies. The optional `.githooks/pre-push` runs the full gate and is enabled with `scripts/install-hooks`.
+- Local verification: fast gate **97 passed, 1 deselected**; full gate **181 passed, 1 opt-in network bootstrap skipped**; both wheels build and include expected package files; Ruff and hygiene checks pass.
+
 ## Completed milestones
 
 ### M1 — transparent node API
@@ -60,23 +78,23 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 - The original `graphimo_core.LocalArtifactStore` remains available for the experimental vertical-slice prototype; product callers use `graphimo.artifacts`.
 - The application/controller exposes an explicit ArtifactStore inspection action, and the Workbench inspector displays usage statistics without loading payloads or showing CAS paths.
 
-## Contract conflict to resolve
+## Remaining unrelated contract conflict
 
 `Graphimo_CODEX_IMPLEMENTATION.md` §5.2 says `active_expression` remains `null` until a separately specified runtime hook exists. §18's expected runtime-inspection response shows `active_expression: "normalized"`. No such hook is defined in the contract. M1's core rule is followed for now: `describe_result` and the adapter return `null`. The runtime output still carries every statically known expression in `expressions`.
 
-`Graphimo_CODEX_IMPLEMENTATION.md` §32 says **HUMAN DECISION REQUIRED** whether the PyTorch MetaBlock's parent port carries an instantiated module, class/factory, or explicit handle. `Graphimo_PYTORCH_PLUGIN_IMPLEMENTATION.md` §7 says this is fixed as a `PyTorchModelDefinition` handle and rejects the other two forms. These are incompatible normative instructions. The external model value, its parent marimo cell and dependent runtime materialization are not implemented until the decision is resolved; independent schema/package work can proceed.
+This is the remaining unrelated specification discrepancy. The active expression stays `null`; the implementation does not add runtime return-path instrumentation without a defined contract.
 
-## Explicitly blocked feature
+## Group Block backend — decision resolved, implementation pending U4
 
-`Graphimo_CODEX_IMPLEMENTATION.md` §28 labels the generic Group Blocks backend `HUMAN DECISION REQUIRED`. The needed decision is which supported marimo mechanism executes a nested workflow: `app.run(defs=...)`, a generated callable wrapper, or another minimal marimo-supported path. Group execution is not implemented, and no custom scheduler was added. This does not block independent Core or Workbench work.
+The update selects a cloned marimo `App.run(defs=...)` wrapped as a callable Graphimo component, with declared named outputs and no Graphimo scheduler. Group execution, palette/import/reuse, and nested scope operations remain to be implemented in U4.
 
 ## MetaBlock seam — independent subset
 
 - Added generic recursive `GraphScope`, `GraphElement`, `GraphEdge`, and `MetaBlock` records. Addon-owned state remains opaque JSON and round-trips without interpreting element kinds.
 - Added `MetaDialectRegistration` and entry-point discovery from `graphimo.metablocks`. Discovery returns metadata entries without importing or invoking optional addons.
-- Workbench opening scans generic `.graphimo/metablocks/*.json` sidecars and shows missing/unavailable addons as opaque cards. The sidecar bytes are never rewritten; unreadable files remain preserved with a diagnostic. Entering/editing still requires the unfrozen addon host interface.
+- Workbench opening scans generic `.graphimo/metablocks/*.json` sidecars and shows missing/unavailable addons as opaque cards. The sidecar bytes are never rewritten; unreadable files remain preserved with a diagnostic.
 - Core source has a conformance test forbidding direct `torch`/`torchlens` imports.
-- The stable addon host/handler API remains explicitly unfrozen in Core §31. Core does not instantiate factories, create addon elements, or claim Workbench missing-addon placeholders yet. Those dependent operations remain deferred until the contract is fixed; no handler methods were invented.
+- The host/handler contract is now specified by the implementation update and is the U2 deliverable. Core continues to treat addon state as opaque and does not add PyTorch semantics.
 
 ## Host integration seam
 
@@ -92,9 +110,9 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 
 ### W3–W5 — persistence, MetaBlocks, and PyTorch Workbench audit
 
-- W3 layout persistence and disable/enable are implemented by M4/M6. Its Group Block navigation/execution remains stopped at Core §28's explicit human choice of marimo nested-workflow mechanism.
-- W4 addon entry-point discovery and opaque missing-addon placeholders are implemented. Create/open/edit and scope navigation for an installed addon depend on Core §31's unfrozen handler interface; the P9 wheel lifecycle verifies discovery and preservation, not a fabricated editor handler.
-- W5 addon-owned registry, shape/source/runtime projections, templates, and standalone numerical execution are available and tested without a renderer. Wiring visible Workbench edits, materialization, live telemetry actions and the Llama acceptance scenario depends on the same §31 handler contract, plus the conflicting §32/Addon §7 parent model-value requirement. These controls remain deferred rather than implemented in browser or Zeron-only code.
+- W3 layout persistence and disable/enable are implemented by M4/M6. Group Block navigation/execution is pending U4 under the resolved marimo `App.run(defs=...)` backend.
+- W4 addon entry-point discovery and opaque missing-addon placeholders are implemented. Create/open/edit, scope navigation and materialization are pending U2.
+- W5 addon registry, shape/source/runtime projections, templates and standalone numerical execution are available. Connecting them to the shared application, Zeron renderer and parent marimo cell is pending U3/U6; the parent value is fixed as `PyTorchModelDefinition`.
 
 ### PyTorch addon P1 — package and semantic schema
 
@@ -102,7 +120,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added frozen state/element/edge/method/group/parameter dataclasses, JSON conversion, finite JSON validation, atomic UTF-8 save, unsupported-schema diagnostics and canonical SHA-256 graph revisions.
 - Unknown element-kind strings and their schema fields round-trip without a registry; later validation/compiler stages decide whether they can materialize.
 - P1 tests cover state round-trip, repeat validation, deterministic revisions, semantic changes, unknown schema non-mutation, wheel metadata and an import guard forbidding `torch`/`torchlens`.
-- Core §31 explicitly leaves the stable addon handler API unfrozen. The P1 registration factory is therefore a private marker only; it does not advertise a usable PyTorch canvas/editor yet.
+- The generic host API is specified in the implementation update; its implementation and addon-loading lifecycle are the U2 milestone.
 
 ### PyTorch addon P2 — registry, validation and shape inference
 
@@ -111,7 +129,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added frozen `Dim` and `TensorSpec` values plus `infer_model_shapes`. It propagates through methods, declared element inputs/outputs, and nested/repeated Group definitions without executing a model forward.
 - Implemented V1 shape rules for all catalog kinds: embedding/linear/norm, activation and dropout, tensor transforms, split/merge heads, concat, broadcast add/multiply, batched matmul, RoPE, causal masks and cross entropy. Static concrete incompatibilities are errors; unresolved symbolic compatibility remains unresolved rather than falsely blocking compilation.
 - The P2 suite covers the exact registry catalog, MLP propagation, embedding/attention matmul shapes, dimension failures, invalid ports/cycles/parameters, broadcast and loss shapes, reshape/transpose/flatten/unflatten, RoPE parity, recursive Groups and unresolved external bindings.
-- P2 does not create a compiler, PyTorch module instances, Workbench editing surface, or addon host handler methods; those belong to later milestones and the Core handler contract remains unfrozen.
+- P2 does not create a compiler, PyTorch module instances, or Workbench editing surface; the generic addon host is implemented separately in U2.
 
 ### PyTorch addon P3 — compiler and generated source
 
@@ -120,14 +138,14 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added inspectable wrappers for reshape, transpose, split/merge heads, add/multiply, scale, matmul, RoPE, causal masking, concatenate, unflatten and cross entropy. The compiler executes only addon-generated trusted source in a private namespace.
 - Added stable `RuntimeBindingMap` records for visual module sites and repeated Group paths. `PyTorchModelDefinition.instantiate()` creates a fresh real module, applies optional device/dtype, attaches private runtime metadata, and registers the model weakly; metadata does not enter `state_dict()`.
 - P3 tests execute an MLP, an attention/mask graph and a repeated Group; they verify readable generated source, external-parameter materialization changes, stable binding paths, invalid-graph refusal and weak registry cleanup.
-- P3 compiles to the addon-local definition handle. It does not expose that handle as a parent Graphimo port because Core §32 and addon §7 still conflict on that boundary.
+- P3 compiles to the addon-local `PyTorchModelDefinition`. U3 will generate the canonical marimo materialization cell that exports this opaque value to a parent scope.
 
 ### PyTorch addon P4 — independent projection/editor subset
 
 - Added `graphimo_pytorch.workbench_projection.project_workbench`, a renderer-independent projection for contextual PyTorch palette entries, MetaBlock summary/ports, method tabs, scope cards, parameter descriptors, edge shapes/diagnostics, Group navigation/repetition, generated source/bindings, and available runtime instances. It never inspects raw `nn.Module` objects.
 - Added immutable semantic edit operations for scalar parameter changes, parameter promotion to an external MetaBlock input, and demotion when safe. Promotion/demotion preserves external bindings and only removes an external parameter after its last binding is removed.
 - Automated tests cover projection data and edits without invoking a renderer.
-- The actual Workbench presentation/intent wiring and marimo parent materialization remain deferred. Core §31 says the stable addon handler API is not frozen and forbids inventing public handler methods. Core §32 marks the parent model value as **HUMAN DECISION REQUIRED**; the addon contract §7 selects `PyTorchModelDefinition`, so the two documents conflict. The exact decision is whether the parent cell exposes an instantiated `nn.Module`, a class/factory, or the explicit `PyTorchModelDefinition` handle. No UI-only bypass was added.
+- The renderer-independent projection and semantic edit operations are ready. U2/U3 will wire them through the newly specified generic addon host and materialization contract; the parent output is `PyTorchModelDefinition`.
 
 ### PyTorch addon P5 — independent runtime inspection subset
 
@@ -136,7 +154,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added bounded tensor summaries, opt-in histogram/sample detail (maximum 4096 sample values), safe tensor-tree summaries, scalar metric emission, and CUDA resource events that make no CUDA calls for CPU models.
 - Model creation/release emits runtime lifecycle events. Runtime instances are weakly registered and carry Graphimo provenance separately from `state_dict()`.
 - P5 tests exercise activation/gradient events, unsubscribe/release, rate limiting, empty/non-finite tensors, bounded histogram/sample payloads, metrics and CPU resource handling.
-- The generic Graphimo application event-routing adapter and visible Workbench live selector remain deferred with Core §31's unfrozen handler API. The addon exposes queued events and structured runtime data without creating a private Workbench or Luau/Zeron bypass.
+- The generic application event route and visible runtime controls remain pending U3/U6. The addon exposes queued events and structured runtime data without a private Workbench or Luau/Zeron bypass.
 
 ### PyTorch addon P6 — checkpoints and conservative migration
 
@@ -152,7 +170,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Zero ablation and scalar scaling use TorchLens 2.34.1's capture-time intervention selector. Results label these as experimental, report the modified activation, and leave model weights unchanged. Inspection restores pre-existing parameter gradients and module buffers after the explicit replay.
 - Full traces remain transient by default. `save_torchlens_inspection(result, store)` is the explicit export action; it stores a TorchLens trace plus a JSON provenance report as `pytorch-torchlens-trace`, including MetaBlock/revision/materialization/runtime/element/path and Torch/PyTorch versions.
 - Tested the actual addon against the exact TorchLens 2.34.1 wheel with CPU activation, loss-gradient, zero/scale intervention, unchanged weight, and ArtifactStore round-trip tests. The pinned package remains lazy-loaded; importing the addon does not import TorchLens.
-- The Workbench inspector controls and generic host event/action route remain deferred under Core §31's unfrozen addon handler API. This does not create a separate PyTorch canvas or Zeron-only logic.
+- Workbench inspector controls and the generic host event/action route are pending U3/U6. Deep inspection remains addon-owned and does not create a separate PyTorch canvas or Zeron-only logic.
 
 ### Core/addon boundary correction
 
@@ -166,7 +184,7 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Added an internal `method_call` semantic record so `predict -> forward -> softmax` remains explicit and reconstructible. It is supported by validation, shape propagation and generated Python but intentionally excluded from the exact user-insertable V1 element catalog and palette.
 - Extended Group shape projection so the Workbench view can inspect inner element and edge shapes within a repeated Group. The projected view also exposes the collapsed repetition count, method tabs and generated source.
 - The scaled `vocab=128, d=32, heads=4, ff=64, layers=2, sequence=8` graph is numerically compared to a direct PyTorch reference with copied state dictionaries for logits, next-token loss and prediction probabilities. Tests also verify repeated binding paths and internal Group shape labels. The full-size fixture is compiled but not instantiated.
-- The addon APIs and Workbench view projection are tested, but the end-to-end visual insertion/edit/run scenario remains blocked by Core §31: its normative handler API is explicitly unfrozen, and the contract forbids inventing addon host action methods. No separate PyTorch canvas or Zeron-only insertion path was added.
+- The addon APIs and Workbench view projection are tested. The end-to-end visual insertion/edit/run scenario is now specified and is pending the ordered U2/U3/U6 host integration; no separate PyTorch canvas was added.
 
 ### PyTorch addon P9 — isolation, reinstall, and bounded delivery
 

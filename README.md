@@ -1,5 +1,10 @@
 # Graphimo
 
+The existing `plugin/` Zeron implementation is Graphimo's primary UI and
+daily-use renderer. It presents a live marimo notebook while marimo remains the
+execution and dependency engine. The standalone Workbench is a conformance and
+debugging harness for the same Graphimo application operations.
+
 ## Standalone development Workbench
 
 Install the Workbench dependencies and run it locally:
@@ -21,12 +26,16 @@ The native ArtifactStore API and retention semantics are documented in
 [docs/artifacts.md](docs/artifacts.md).
 The Workbench's marimo-backed interactive controls are documented in
 [docs/controls.md](docs/controls.md).
-The separately packaged PyTorch MetaBlock addon and its current P1 scope are
-documented in [docs/pytorch-addon.md](docs/pytorch-addon.md).
+The separately packaged PyTorch MetaBlock addon, P1–P9 implementation, and
+remaining host-integration work are documented in
+[docs/pytorch-addon.md](docs/pytorch-addon.md).
 
-## Existing Zeron plugin (legacy UI)
+## Existing Zeron plugin (primary UI)
 
-The following sections describe the existing Zeron plugin, which remains available as a reference renderer while the standalone Core Workbench is built. The new Workbench is not yet wired into Zeron.
+The existing Zeron plugin remains the product renderer. New Graphimo
+semantics are progressively moving behind the host-independent application
+and local Graphimo service; Luau remains a renderer/transport adapter rather
+than the owner of Graphimo behavior.
 
 Graphimo is a small Zeron v3 plugin that projects a live marimo notebook onto a
 canvas. marimo owns the notebook, dependency graph, execution, cell outputs,
@@ -134,19 +143,24 @@ or cache. The private bridge is pinned to marimo 0.25.2 in `pyproject.toml`.
 For the Zeron plugin API reference and examples from Graphimo and Orchestrator Builder, see [the plugin development guide](docs/zeron-plugin-api.md).
 For Codex plugin work in this repository, use the reusable [Zeron Plugin Builder skill](.agents/skills/zeron-plugin-builder/SKILL.md).
 
-Install the pinned notebook runtime and development tools, then run the
-independent contract suite:
+Install the pinned notebook runtime and development tools, install the
+separately packaged PyTorch addon for its CPU/TorchLens acceptance tests, then
+use the local gate:
 
 ```bash
-python3 -m pip install -e '.[notebook,dev]'
-rtk proxy env PYTHONDONTWRITEBYTECODE=1 pytest -q
-rtk ruff check adapter examples components
+python3 -m pip install -e '.[notebook,dev,workbench]'
+python3 -m pip install -e ./addons/pytorch
+./scripts/check --fast
+./scripts/check --full
 ```
 
-The pytest suite exercises `adapter.graphimo_adapter` through a fake marimo
-port. It does not replace an end-to-end run inside Zeron with a live marimo
-server. Example notebooks are ordinary marimo `.py` files and use marimo's
-`cache_cells = true` setting.
+`--full` is the normal local pre-push validation gate. It checks the complete
+suite, marimo integration, package builds, addon isolation, PyTorch and pinned
+TorchLens behavior, dependency versions, and generated-artifact hygiene. An
+optional pre-push hook is installed with `scripts/install-hooks`. The current
+machine may have unrelated packages that conflict with one another; the gate
+checks dependency consistency for Graphimo's declared runtime/development
+requirements.
 
 An isolated architecture spike now lives in `core/graphimo_core/`. It proves a
 small persistent workspace ledger, content-addressed file/directory artifacts,
@@ -154,8 +168,8 @@ a local Python worker, a three-head PyTorch model, run events, checkpoints,
 process restart, and a weight-migration report. It is not yet wired into the
 Zeron canvas or marimo bridge; see [the vertical-slice validation report](docs/core-vertical-slice.md).
 Run it with `PYTHONPATH=core python -m graphimo_core.vertical_demo /path/to/workspace`
-after installing `.[prototype]`. Install `.[prototype,inspection]` to enable the
-optional TorchLens model-inspection helper.
+after installing `.[prototype]`. It is an experimental historical prototype;
+the supported PyTorch dialect is the separate `graphimo-pytorch` addon.
 
 For a live marimo integration check of the production Luau bridge's generated
 requests (inspect, component discovery/insertion, connect, and Run dispatch), install

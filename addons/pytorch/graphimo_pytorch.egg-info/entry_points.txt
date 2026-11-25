@@ -1,2 +1,0 @@
-[graphimo.metablocks]
-pytorch = graphimo_pytorch.registration:registration

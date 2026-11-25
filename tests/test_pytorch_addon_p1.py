@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -43,7 +44,9 @@ def _sample_state(*, width: int = 32, repeat: int = 2) -> PyTorchMetaBlockState:
     elements = (
         ElementRecord("input", "input", "x", {"method_input": "in-x"}),
         ElementRecord(
-            "linear", "unknown-future-kind", "linear_a",
+            "linear",
+            "unknown-future-kind",
+            "linear_a",
             {"in_features": 16, "out_features": width},
             {"out_features": ParameterBinding("p-width")},
             {"opaque": {"future": [1, "raw"]}},
@@ -71,10 +74,14 @@ def _sample_state(*, width: int = 32, repeat: int = 2) -> PyTorchMetaBlockState:
         edges,
         (GroupInstance("use-decoder", "decoder-layer", "layers", repeat, {}),),
     )
-    return PyTorchMetaBlockState(1, "model-7ab2c1f0", "TinyModel", (external,), (group,), (forward,), {"seed": 7})
+    return PyTorchMetaBlockState(
+        1, "model-7ab2c1f0", "TinyModel", (external,), (group,), (forward,), {"seed": 7}
+    )
 
 
-def test_p1_schema_roundtrip_keeps_unknown_element_kind_and_nested_group_state(tmp_path: Path) -> None:
+def test_p1_schema_roundtrip_keeps_unknown_element_kind_and_nested_group_state(
+    tmp_path: Path,
+) -> None:
     state = _sample_state()
     path = tmp_path / ".graphimo" / "metablocks" / "model-7ab2c1f0.pytorch.json"
 
@@ -170,10 +177,26 @@ def test_registration_import_does_not_import_torch() -> None:
 
 
 def test_addon_wheel_declares_entry_point_and_contains_schema(tmp_path: Path) -> None:
+    source = tmp_path / "addon-source"
+    shutil.copytree(
+        ADDON,
+        source,
+        ignore=shutil.ignore_patterns("build", "*.egg-info", "__pycache__", "*.pyc"),
+    )
     output = tmp_path / "wheelhouse"
     output.mkdir()
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps", "--wheel-dir", str(output), str(ADDON)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-build-isolation",
+            "--no-deps",
+            "--wheel-dir",
+            str(output),
+            str(source),
+        ],
         capture_output=True,
         check=False,
         text=True,
@@ -183,7 +206,10 @@ def test_addon_wheel_declares_entry_point_and_contains_schema(tmp_path: Path) ->
     wheel = next(output.glob("graphimo_pytorch-*.whl"))
     with zipfile.ZipFile(wheel) as archive:
         files = set(archive.namelist())
-        metadata = archive.read(next(name for name in files if name.endswith("entry_points.txt"))).decode()
+        metadata = archive.read(
+            next(name for name in files if name.endswith("entry_points.txt"))
+        ).decode()
     assert "graphimo_pytorch/schema.py" in files
+    assert "graphimo_pytorch/templates.py" in files
     assert "graphimo.metablocks" in metadata
     assert "graphimo_pytorch.registration:registration" in metadata

@@ -6,6 +6,11 @@ import Torch or TorchLens. Package metadata follows the addon contract:
 Python 3.11+ (the current Graphimo Core floor), `torch>=2.6`, and
 `torchlens==2.34.1`, with no CUDA wheel pinned.
 
+The [2026-11-25 implementation update](../Graphimo_IMPLEMENTATION_UPDATE_2026-11-25.md)
+supersedes earlier host-boundary TODOs: the external parent value is
+`PyTorchModelDefinition`, and the generic addon host is implemented in U2,
+PyTorch integration in U3, and Zeron rendering in U6.
+
 ## P1 delivered
 
 - `graphimo_pytorch.registration.registration` declares dialect
@@ -20,10 +25,9 @@ Python 3.11+ (the current Graphimo Core floor), `torch>=2.6`, and
 - Schema and registration imports do not import `torch` or `torchlens`.
 - When a semantic JSON file is present but the plugin is absent, the Core Workbench displays its generic opaque placeholder and leaves the file byte-for-byte unchanged.
 
-The first schema milestone does not claim an interactive PyTorch editor or
-model materializer. Core §31 says the stable host handler API is not frozen;
-the factory remains a private registration marker until that interface is
-specified. P1 does not add handler methods to Core.
+P1 established the independent schema and entry point. The registration
+factory becomes an active host dialect during U2; P1 does not put PyTorch
+semantics in Graphimo Core.
 
 ## P2 delivered: element registry and shape validation
 
@@ -72,8 +76,8 @@ Generated model code includes inspectable wrappers for functional operations
 and uses `nn.ModuleList` for repeated Groups. Binding sites retain logical
 element IDs, module paths and repetition indexes. The generated source is
 trusted addon code; this path does not accept arbitrary Python source.
-The definition remains inside the addon until the Core/addon parent-port
-contract conflict described above is resolved.
+U3 will use this definition to build the canonical marimo materialization cell
+and expose it as an opaque parent value.
 
 ## P5 independent runtime inspection subset
 
@@ -99,11 +103,9 @@ outputs asks the caller to select one leaf. `emit_metric` associates finite
 scalar values with runtime provenance. `emit_cuda_resources` returns without
 calling CUDA APIs for CPU models and rate-limits CUDA resource events.
 
-Events are written to a bounded, non-blocking addon `EventQueue`. They are
-ready for generic Core routing, but no application adapter or visible
-Workbench subscription selector is wired while Core §31's public handler
-interface remains unfrozen. The addon does not add a separate live UI or
-Zeron-only execution path.
+Events are written to a bounded, non-blocking addon `EventQueue`. U3 will
+expose addon subscriptions and event draining through the generic host API;
+the addon does not add a separate live UI or Zeron-only execution path.
 
 ## P6 delivered: checkpoint artifacts and migration reports
 
@@ -156,10 +158,9 @@ materialization key, runtime instance, element, module path, both package versio
 operation summary, activation/gradient statistics, and intervention status. The
 full trace is never added to project JSON.
 
-The standalone API and CPU tests are complete against the exact 2.34.1 wheel. A
-visible Workbench inspector and host event/action route still wait on Core §31's
-explicitly unfrozen addon-handler API; no renderer-specific or Zeron-only route
-was added.
+The standalone API and CPU tests are complete against the exact 2.34.1 wheel.
+U3 will expose the inspection action and bounded results through the generic
+host contract; U6 will render those actions in the existing Graphimo plugin.
 
 ## P4 independent projection/editor subset
 
@@ -173,26 +174,19 @@ semantic records and compiler outputs; it does not inspect a raw model.
 The addon also exposes immutable `set_element_parameter`,
 `promote_parameter`, and `demote_parameter` operations so the application can
 own user actions without putting semantic edits in UI code. These operations
-are covered by pure tests. The Workbench cannot yet render these views or
-invoke the addon through the stable host API: Core §31 explicitly says that
-API is not frozen and forbids inventing public handler methods. Parent-port
-materialization also waits for the Core §32 human choice among an instantiated
-module, class/factory, or `PyTorchModelDefinition` handle (the addon spec fixes
-the last option, so those requirements conflict).
+are covered by pure tests. U2 will add the generic host API; U3 will adapt this
+projection/editing layer and implement parent materialization.
 
-## Open normative conflict
+## Resolved parent value; U3 implementation pending
 
-Core §32 marks the exported PyTorch model value as a human decision among an
-instantiated module, class/factory or explicit handle. This addon contract
-§7 fixes the value as `PyTorchModelDefinition`. Those instructions conflict.
-No parent model port or materializer dependent on that choice is implemented.
+The implementation update selects `PyTorchModelDefinition` as the opaque
+parent-scope value. U3 generates and updates its marimo materialization cell
+from the addon state inside the active marimo kernel. The service and renderer
+do not return or construct a live `nn.Module` themselves.
 
-P1 through P8 addon APIs and independent tests are implemented as far as the
-current Core/addon boundary permits. The Core §31 host-handler contract and
-Core §32 parent-port choice remain unresolved, so Workbench actions routed to
-addon semantics and parent model-definition materialization remain deferred.
-The addon remains independent from the Graphimo Core scheduler and contains
-all Torch-specific semantics.
+P1 through P9 addon backend APIs and tests are in place. U2/U3/U6 complete
+host, materialization and renderer integration. The addon remains independent
+from the Graphimo Core scheduler and contains all Torch-specific semantics.
 
 ## P8 attention and Llama templates
 
@@ -222,10 +216,8 @@ instantiated in routine tests.
 
 `project_workbench(...)` exposes the repeated Group card, repetition count,
 method tabs, Group-internal element/edge shapes and optionally generated
-source for the Llama template. This renderer-independent acceptance is in
-place. The live standalone Workbench insertion/edit/run workflow still cannot
-invoke addon operations until Core §31's host handler API is specified; the
-documents explicitly forbid implementing a private UI action route instead.
+source for the Llama template. U3 adapts this to the generic host projection;
+U6 integrates it into the existing Zeron renderer and product workflow.
 
 ## P9 packaging and runtime hardening
 
@@ -246,6 +238,6 @@ The P5 and P9 tests cover rate enforcement, queue saturation and invalid
 unbounded capacities.
 
 The Graphimo Core and PyTorch package boundary remains import-safe when the
-addon is absent. The standalone Workbench's visible P8/P9 addon controls and
-state restoration still need the Core §31 handler contract to be specified;
-these renderer actions have not been routed around the application layer.
+addon is absent. Visible addon controls and project restoration through the
+application/service are U2/U3/U6 work; no renderer-only semantic route is
+introduced.

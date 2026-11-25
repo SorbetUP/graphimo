@@ -13,7 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 notebook = ["marimo==0.25.2"]
-dev = ["pytest>=8,<9", "ruff>=0.8"]
+dev = ["pytest>=8,<9", "ruff>=0.8", "packaging>=23"]
 prototype = ["numpy", "torch"]
 workbench = ["marimo==0.25.2", "websockets>=15"]
 

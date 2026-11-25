@@ -1,6 +1,8 @@
 # Standalone Graphimo Workbench
 
-The Workbench is the first renderer for the new Graphimo application layer. It is a development surface for Core conformance; it is not the existing Zeron plugin UI.
+The Workbench is a development and conformance harness for the same Graphimo
+application operations used by the existing Zeron plugin. It is not a second
+product UI; the Zeron plugin remains Graphimo's primary renderer.
 
 ## Run it
 
@@ -32,7 +34,13 @@ The browser code performs drawing, hit testing, pointer handling and transient s
 
 `MarimoHttpPort` owns the local marimo transport. It executes bounded inspection code in the active marimo context and returns JSON-safe view data. It never transfers arbitrary notebook values into browser JavaScript. The HTTP adapter is a transport for the same `GraphimoApplication` methods used by application-level tests.
 
-The current Workbench implements W1 node editing, disabled blocks, ArtifactStore inspection, W2 marimo-backed controls and opaque missing-addon placeholders. Undo/redo, Group Blocks, nested-scope navigation, active addon catalogs and PyTorch editing remain outstanding. The application returns its supported action list so the renderer can keep unavailable operations hidden. Group Blocks remain blocked by the explicit human decision in the core contract.
+The current Workbench implements W1 node editing, disabled blocks,
+ArtifactStore inspection, W2 marimo-backed controls and opaque missing-addon
+placeholders. Undo/redo, Group Blocks, nested-scope navigation, active addon
+catalogs and PyTorch editing remain outstanding. The application returns its
+supported action list so the renderer can keep unavailable operations hidden.
+The 2026-11-25 implementation update resolves the Group backend as a cloned
+marimo `App.run(defs=...)` workflow; implementation is scheduled for U4.
 
 ## Verification
 
