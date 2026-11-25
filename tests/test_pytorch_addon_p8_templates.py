@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -13,6 +15,7 @@ from graphimo_pytorch import (
     mlp_template,
     project_workbench,
     self_attention_template,
+    validate_model_graph,
 )
 
 
@@ -185,4 +188,19 @@ def test_p8_full_llama_template_estimates_without_allocating_weights() -> None:
     assert any(instance.repeat == 32 for instance in state.entrypoints[0].group_instances)
     assert "range(32)" in generated.generated_source
     assert "class LlamaForCausalLM(nn.Module):" in generated.generated_source
+
+
+def test_internal_method_call_rejects_recursive_method_graphs() -> None:
+    state = llama_causal_lm_template(_scaled_config())
+    predict = state.entrypoints[2]
+    elements = tuple(
+        replace(element, params={**element.params, "method": "predict"})
+        if element.kind == "method_call" else element
+        for element in predict.elements
+    )
+    recursive_predict = replace(predict, elements=elements)
+    malformed = replace(state, entrypoints=(*state.entrypoints[:2], recursive_predict))
+
+    report = validate_model_graph(malformed)
+    assert any(item.code == "pytorch_method_call_recursive" for item in report.diagnostics)
 
