@@ -122,6 +122,45 @@ returned model carries a `WeightMigrationReport` at
 missing on each side and shape mismatches. Weight resizing and optimizer
 migration are not automatic.
 
+## P7 on-demand TorchLens inspection
+
+The addon exports `TorchLensRequest`, `TorchLensIntervention`, `TorchLensResult`,
+`inspect_with_torchlens`, and `save_torchlens_inspection`. Deep inspection lazy-loads
+the pinned `torchlens==2.34.1` only when requested; importing or registering the
+addon does not import TorchLens.
+
+`inspect_with_torchlens(request, inputs, loss_fn=None)` requires explicit input
+data. Tensors are passed as one positional model input, tuples/lists as positional
+inputs, and string-keyed mappings as keyword inputs. The binding map resolves the
+logical element and optional repeated-Group index to the exact compiler module
+path. An ambiguous repeated element requires a repetition index. No training batch
+is captured in the background.
+
+The result includes bounded selected-module activation statistics, up to 128
+operation labels/function names (plus the total operation count), loss-gradient
+statistics when both `capture_gradients=True` and a scalar tensor `loss_fn` are
+provided, non-finite findings, trace identity/version/timing metadata, and any
+structured diagnostics. The inspection restores existing parameter gradients and
+module buffers after the explicit replay.
+
+`TorchLensIntervention("zero")` and `TorchLensIntervention("scale", factor)` use
+TorchLens capture-time selectors. They are one-run experiments; the result marks
+them `experimental=True` and summarizes the post-intervention activation. They do
+not edit graph records or model weights.
+
+Inspection traces are transient by default. Calling
+`save_torchlens_inspection(result, store)` explicitly exports the TorchLens trace
+and an `inspection.json` provenance report into a `pytorch-torchlens-trace`
+ArtifactStore directory. The report records MetaBlock, graph revision,
+materialization key, runtime instance, element, module path, both package versions,
+operation summary, activation/gradient statistics, and intervention status. The
+full trace is never added to project JSON.
+
+The standalone API and CPU tests are complete against the exact 2.34.1 wheel. A
+visible Workbench inspector and host event/action route still wait on Core §31's
+explicitly unfrozen addon-handler API; no renderer-specific or Zeron-only route
+was added.
+
 ## P4 independent projection/editor subset
 
 `graphimo_pytorch.workbench_projection.project_workbench(...)` returns

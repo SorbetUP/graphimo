@@ -138,3 +138,12 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - Strict loading checks both graph revision and materialization key before instantiating/loading a model. A structural graph change raises `pytorch_checkpoint_revision_mismatch`; changed resolved external values/compiler materialization raises `pytorch_checkpoint_materialization_mismatch`.
 - `strict=False` uses the explicit `migrate_state_dict` helper and attaches a `WeightMigrationReport` to the returned model. It copies only same-name, same-shape tensors and reports missing/extra keys and shape mismatches; it does not resize weights or migrate optimizer state.
 - Tests cover artifact round-trip, exact weight restoration, optimizer/scheduler payloads, revision/materialization refusals, exact-copy migration, size mismatch reports and invalid provenance/metadata.
+
+### PyTorch addon P7 — on-demand TorchLens inspection and interventions
+
+- Added the addon-local `TorchLensRequest`, `TorchLensIntervention`, and bounded `TorchLensResult` API. It resolves the selected logical element and repeated Group instance through `RuntimeBindingMap`; it never guesses a module path from visual labels.
+- `inspect_with_torchlens(request, inputs, loss_fn=...)` runs only on caller-supplied inputs. It captures the selected module activation and bounded operation labels, and captures gradients only when requested with an explicit scalar loss callback. No implicit training-batch capture is armed.
+- Zero ablation and scalar scaling use TorchLens 2.34.1's capture-time intervention selector. Results label these as experimental, report the modified activation, and leave model weights unchanged. Inspection restores pre-existing parameter gradients and module buffers after the explicit replay.
+- Full traces remain transient by default. `save_torchlens_inspection(result, store)` is the explicit export action; it stores a TorchLens trace plus a JSON provenance report as `pytorch-torchlens-trace`, including MetaBlock/revision/materialization/runtime/element/path and Torch/PyTorch versions.
+- Tested the actual addon against the exact TorchLens 2.34.1 wheel with CPU activation, loss-gradient, zero/scale intervention, unchanged weight, and ArtifactStore round-trip tests. The pinned package remains lazy-loaded; importing the addon does not import TorchLens.
+- The Workbench inspector controls and generic host event/action route remain deferred under Core §31's unfrozen addon handler API. This does not create a separate PyTorch canvas or Zeron-only logic.

@@ -9,6 +9,14 @@ from .diagnostics import Diagnostic, GraphimoPytorchError
 from .bindings import GroupRuntimeIndex, RuntimeBindingMap, RuntimeSite
 from .compiler import CompileResult, compile_model
 from .checkpoints import ShapeMismatch, WeightMigrationReport, load_checkpoint, migrate_state_dict, save_checkpoint
+from .inspection import (
+    TorchLensIntervention,
+    TorchLensOperation,
+    TorchLensRequest,
+    TorchLensResult,
+    inspect_with_torchlens,
+    save_torchlens_inspection,
+)
 from .definition import PyTorchModelDefinition
 from .editing import demote_parameter, promote_parameter, set_element_parameter
 from .revision import graph_revision
@@ -58,6 +66,12 @@ __all__ = [
     "migrate_state_dict",
     "ShapeMismatch",
     "WeightMigrationReport",
+    "TorchLensIntervention",
+    "TorchLensRequest",
+    "TorchLensOperation",
+    "TorchLensResult",
+    "inspect_with_torchlens",
+    "save_torchlens_inspection",
     "PyTorchModelDefinition",
     "RuntimeSite",
     "GroupRuntimeIndex",
