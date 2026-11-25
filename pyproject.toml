@@ -38,7 +38,7 @@ package-dir = { graphimo_core = "core/graphimo_core" }
 cache_cells = true
 
 [tool.pytest.ini_options]
-pythonpath = [".", "core"]
+pythonpath = [".", "core", "addons/pytorch"]
 
 [tool.ruff]
 line-length = 100

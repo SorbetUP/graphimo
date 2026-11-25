@@ -64,6 +64,8 @@ This is an implementation log. The three `Graphimo_*_IMPLEMENTATION.md` files re
 
 `Graphimo_CODEX_IMPLEMENTATION.md` §5.2 says `active_expression` remains `null` until a separately specified runtime hook exists. §18's expected runtime-inspection response shows `active_expression: "normalized"`. No such hook is defined in the contract. M1's core rule is followed for now: `describe_result` and the adapter return `null`. The runtime output still carries every statically known expression in `expressions`.
 
+`Graphimo_CODEX_IMPLEMENTATION.md` §32 says **HUMAN DECISION REQUIRED** whether the PyTorch MetaBlock's parent port carries an instantiated module, class/factory, or explicit handle. `Graphimo_PYTORCH_PLUGIN_IMPLEMENTATION.md` §7 says this is fixed as a `PyTorchModelDefinition` handle and rejects the other two forms. These are incompatible normative instructions. The external model value, its parent marimo cell and dependent runtime materialization are not implemented until the decision is resolved; independent schema/package work can proceed.
+
 ## Explicitly blocked feature
 
 `Graphimo_CODEX_IMPLEMENTATION.md` §28 labels the generic Group Blocks backend `HUMAN DECISION REQUIRED`. The needed decision is which supported marimo mechanism executes a nested workflow: `app.run(defs=...)`, a generated callable wrapper, or another minimal marimo-supported path. Group execution is not implemented, and no custom scheduler was added. This does not block independent Core or Workbench work.
@@ -86,3 +88,11 @@ The production Zeron adapter still has no implementation of `MarimoPort.get_vari
 - The Workbench renders interactive control cards. Slider/range/number controls show Live or On release; the on-release policy is the default. Text is staged by default; checkboxes, switches, selects and buttons update immediately.
 - The Workbench marimo port uses the pinned marimo 0.25.2 native UI-value endpoint. It retrieves the skew-protection token from the local rendered page; the endpoint then triggers marimo's own reactive execution.
 - A live test creates and changes every baseline UI primitive and confirms a slider update recomputes a downstream node. The marimo button uses a fixed generated increment callback; its parser rejects other callback ASTs.
+
+### PyTorch addon P1 — package and semantic schema
+
+- Added `addons/pytorch` as a separate `graphimo-pytorch` distribution with the `graphimo.metablocks` entry point and no PyTorch import during registration/schema import.
+- Added frozen state/element/edge/method/group/parameter dataclasses, JSON conversion, finite JSON validation, atomic UTF-8 save, unsupported-schema diagnostics and canonical SHA-256 graph revisions.
+- Unknown element-kind strings and their schema fields round-trip without a registry; later validation/compiler stages decide whether they can materialize.
+- P1 tests cover state round-trip, repeat validation, deterministic revisions, semantic changes, unknown schema non-mutation, wheel metadata and an import guard forbidding `torch`/`torchlens`.
+- Core §31 explicitly leaves the stable addon handler API unfrozen. The P1 registration factory is therefore a private marker only; it does not advertise a usable PyTorch canvas/editor yet.

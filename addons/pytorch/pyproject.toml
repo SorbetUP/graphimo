@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphimo-pytorch"
+version = "0.1.0"
+description = "The separately installed PyTorch MetaBlock dialect for Graphimo."
+requires-python = ">=3.11"
+dependencies = ["graphimo>=0.1.0", "torch>=2.6", "torchlens==2.34.1"]
+
+[project.entry-points."graphimo.metablocks"]
+pytorch = "graphimo_pytorch.registration:registration"
+
+[tool.setuptools]
+packages = ["graphimo_pytorch"]

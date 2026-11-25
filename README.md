@@ -21,6 +21,8 @@ The native ArtifactStore API and retention semantics are documented in
 [docs/artifacts.md](docs/artifacts.md).
 The Workbench's marimo-backed interactive controls are documented in
 [docs/controls.md](docs/controls.md).
+The separately packaged PyTorch MetaBlock addon and its current P1 scope are
+documented in [docs/pytorch-addon.md](docs/pytorch-addon.md).
 
 ## Existing Zeron plugin (legacy UI)
 
