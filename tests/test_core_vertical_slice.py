@@ -49,6 +49,23 @@ def test_local_store_streams_single_file_artifact(tmp_path: Path) -> None:
     assert artifact.manifest["size"] == path.stat().st_size
 
 
+def test_file_hashing_and_existing_blob_verification_do_not_read_whole_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "large.bin"
+    path.write_bytes(b"x" * (2 * 1024 * 1024))
+    store = LocalArtifactStore(tmp_path / "store")
+
+    def forbidden_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("streaming file operations must not call Path.read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
+    first = store.put_file(path)
+    second = store.put_file(path)
+    assert second.artifact_id == first.artifact_id
+    assert store.stats()["physical_bytes"] == path.stat().st_size
+
+
 def test_artifact_store_rejects_symlinks_and_manifest_traversal(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

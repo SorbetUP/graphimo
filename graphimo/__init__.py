@@ -1,5 +1,6 @@
 """Host-independent Graphimo application contracts."""
 
+from . import artifacts
 from .application import GraphimoApplication
 from .instance import (
     Binding,
@@ -33,6 +34,7 @@ __all__ = [
     "MetaBlockAddonManager",
     "MetaBlockDialect",
     "MetaDialectRegistration",
+    "artifacts",
     "build_instance_source",
     "describe_result",
     "disable_instance_source",

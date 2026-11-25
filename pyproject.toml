@@ -16,7 +16,7 @@ notebook = ["marimo==0.25.2"]
 dev = ["pytest>=8,<9", "ruff>=0.8"]
 
 [tool.setuptools]
-packages = ["adapter", "graphimo", "graphimo_core"]
+packages = ["adapter", "graphimo", "graphimo.artifacts", "graphimo_core"]
 package-dir = { graphimo_core = "core/graphimo_core" }
 
 [tool.marimo.runtime]

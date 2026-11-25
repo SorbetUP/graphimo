@@ -70,6 +70,8 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "adapter/__init__.py" in names
     assert "adapter/graphimo_adapter.py" in names
     assert "graphimo/__init__.py" in names
+    assert "graphimo/artifacts/__init__.py" in names
+    assert "graphimo/artifacts/local.py" in names
     assert "graphimo/metablocks.py" in names
     assert "graphimo_core/artifacts.py" in names
     assert "graphimo_core/worker.py" in names
@@ -110,7 +112,7 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
         [
             sys.executable,
             "-c",
-            "import sys; from graphimo import GraphimoApplication, MetaBlockAddonManager; from graphimo_core import LocalArtifactStore, WorkspaceGraph; assert 'torch' not in sys.modules and 'torchlens' not in sys.modules; print('import-ok')",
+            "import sys; from graphimo import GraphimoApplication, MetaBlockAddonManager, artifacts; from graphimo_core import LocalArtifactStore, WorkspaceGraph; assert callable(artifacts.put) and 'torch' not in sys.modules and 'torchlens' not in sys.modules; print('import-ok')",
         ],
         cwd=tmp_path,
         env=env,

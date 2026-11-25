@@ -70,7 +70,7 @@ class LocalArtifactStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             self._atomic_write(path, data)
-        elif self._digest(path.read_bytes()) != digest:
+        elif self._file_digest(path) != digest:
             raise ValueError("existing artifact blob checksum mismatch")
         manifest = {"format": 1, "kind": kind, "blob": digest, "size": len(data)}
         return self._save_manifest(manifest, parent_id)
@@ -234,6 +234,27 @@ class LocalArtifactStore:
                 "DELETE FROM artifact_pins WHERE artifact_id=? AND owner=?", (artifact_id, owner)
             )
 
+    def stats(self) -> dict[str, int]:
+        """Report referenced logical bytes and unique stored blob bytes."""
+        logical_bytes = 0
+        artifact_count = 0
+        for manifest_path in self.manifests.glob("*.json"):
+            ref = self.get(manifest_path.stem)
+            artifact_count += 1
+            if "blob" in ref.manifest:
+                logical_bytes += int(ref.manifest["size"])
+            else:
+                logical_bytes += sum(int(item["size"]) for item in ref.manifest["files"].values())
+        blob_paths = [path for path in self.blobs.glob("*/*") if path.is_file()]
+        physical_bytes = sum(path.stat().st_size for path in blob_paths)
+        return {
+            "artifacts": artifact_count,
+            "blobs": len(blob_paths),
+            "logical_bytes": logical_bytes,
+            "physical_bytes": physical_bytes,
+            "deduplicated_bytes": max(0, logical_bytes - physical_bytes),
+        }
+
     def gc(self, referenced_ids: set[str] | None = None) -> dict[str, int]:
         """Delete unreferenced manifests/blobs, retaining pinned roots and ancestors.
 
@@ -385,7 +406,8 @@ class LocalArtifactStore:
                 return "reflink"
             except (OSError, ImportError):
                 destination.unlink(missing_ok=True)
-        shutil.copyfile(source, destination)
+        with source.open("rb") as src, destination.open("xb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
         return "copy"
 
     @staticmethod

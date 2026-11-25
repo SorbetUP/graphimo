@@ -113,6 +113,11 @@ runtime capabilities are still being implemented milestone by milestone.
 For the Zeron plugin API reference and examples from Graphimo and Orchestrator Builder, see [the plugin development guide](docs/zeron-plugin-api.md).
 For Codex plugin work in this repository, use the reusable [Zeron Plugin Builder skill](.agents/skills/zeron-plugin-builder/SKILL.md).
 
+The host-independent [`@node` and generated instance API](docs/node-instance-contract.md)
+keeps marimo as the reactive engine. Explicit file/directory persistence is
+available through [`graphimo.artifacts`](docs/artifacts.md); arbitrary Python
+results are not saved automatically.
+
 Install the pinned notebook runtime and development tools, then run the local
 verification gate:
 
