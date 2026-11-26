@@ -327,3 +327,11 @@ runtime, drains the activation event and explicitly requests TorchLens
 inspection. Projection, semantic editing, materialization, runtime actions,
 event retrieval and deep inspection therefore share the host application
 operation boundary.
+
+The authenticated service integration test adds an agent-style path: a batch
+creates and rewires the graph, the service materializes it, the ordinary
+training component runs one step, activation telemetry and TorchLens inspection
+are requested through service actions, and the checkpoint is inspected and
+previewed against a changed revision. Separate import tests exercise raw
+semantic JSON, sidecar envelopes, the generic `metablock.create` application
+route, and the explicit unsupported-source diagnostic.
