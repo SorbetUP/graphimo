@@ -62,8 +62,24 @@ class LocalArtifactStore:
     def _blob_path(self, digest: str) -> Path:
         return self.blobs / digest[:2] / digest[2:]
 
+    @staticmethod
+    def _validated_metadata(metadata: Any) -> dict[str, Any] | None:
+        if metadata is None:
+            return None
+        if not isinstance(metadata, dict):
+            raise ValueError("artifact metadata must be a JSON object")
+        encoded = json.dumps(metadata, ensure_ascii=False, allow_nan=False, sort_keys=True)
+        if len(encoded.encode("utf-8")) > 16 * 1024:
+            raise ValueError("artifact metadata exceeds the 16 KiB limit")
+        return metadata
+
     def put_bytes(
-        self, data: bytes, *, kind: str = "blob", parent_id: str | None = None
+        self,
+        data: bytes,
+        *,
+        kind: str = "blob",
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ArtifactRef:
         if type(data) is not bytes:
             raise TypeError("artifact data must be bytes")
@@ -74,11 +90,19 @@ class LocalArtifactStore:
             self._atomic_write(path, data)
         elif self._file_digest(path) != digest:
             raise ValueError("existing artifact blob checksum mismatch")
-        manifest = {"format": 1, "kind": kind, "blob": digest, "size": len(data)}
+        manifest: dict[str, Any] = {"format": 1, "kind": kind, "blob": digest, "size": len(data)}
+        validated = self._validated_metadata(metadata)
+        if validated is not None:
+            manifest["metadata"] = validated
         return self._save_manifest(manifest, parent_id)
 
     def put_directory(
-        self, path: str | os.PathLike[str], *, kind: str = "dataset", parent_id: str | None = None
+        self,
+        path: str | os.PathLike[str],
+        *,
+        kind: str = "dataset",
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ArtifactRef:
         root = Path(path).resolve()
         if not root.is_dir():
@@ -94,19 +118,29 @@ class LocalArtifactStore:
                 raise ValueError(f"invalid artifact path: {rel}")
             digest, size = self._store_file_blob(item)
             files[rel] = {"blob": digest, "size": size}
-        manifest = {"format": 1, "kind": kind, "files": files}
+        manifest: dict[str, Any] = {"format": 1, "kind": kind, "files": files}
+        validated = self._validated_metadata(metadata)
+        if validated is not None:
+            manifest["metadata"] = validated
         return self._save_manifest(manifest, parent_id)
 
     def put_file(
-        self, path: str | os.PathLike[str], *, kind: str = "file", parent_id: str | None = None
+        self,
+        path: str | os.PathLike[str],
+        *,
+        kind: str = "file",
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ArtifactRef:
         source = Path(path)
         if not source.is_file() or source.is_symlink():
             raise ValueError("artifact source must be a regular file")
         digest, size = self._store_file_blob(source)
-        return self._save_manifest(
-            {"format": 1, "kind": kind, "blob": digest, "size": size}, parent_id
-        )
+        manifest: dict[str, Any] = {"format": 1, "kind": kind, "blob": digest, "size": size}
+        validated = self._validated_metadata(metadata)
+        if validated is not None:
+            manifest["metadata"] = validated
+        return self._save_manifest(manifest, parent_id)
 
     def _store_file_blob(self, source: Path) -> tuple[str, int]:
         digest_builder = hashlib.sha256()
@@ -201,6 +235,8 @@ class LocalArtifactStore:
                     raise ValueError("invalid blob entry in artifact manifest")
         else:
             raise ValueError("invalid artifact manifest shape")
+        if "metadata" in body and not isinstance(body["metadata"], dict):
+            raise ValueError("invalid artifact metadata")
         if parent_id is None:
             parents = self.parents(artifact_id)
             parent_id = parents[0] if parents else None
@@ -215,6 +251,117 @@ class LocalArtifactStore:
                 (artifact_id,),
             ).fetchall()
         return [row[0] for row in rows]
+
+    def _pins_index(self) -> dict[str, list[str]]:
+        with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
+            rows = db.execute(
+                "SELECT artifact_id, owner FROM artifact_pins ORDER BY owner"
+            ).fetchall()
+        index: dict[str, list[str]] = {}
+        for artifact_id, owner in rows:
+            index.setdefault(artifact_id, []).append(owner)
+        return index
+
+    def _summary(
+        self, artifact_id: str, body: dict[str, Any], path: Path, pins: list[str]
+    ) -> dict[str, Any]:
+        if "blob" in body:
+            size = int(body["size"])
+            files = None
+        else:
+            size = sum(int(item["size"]) for item in body.get("files", {}).values())
+            files = len(body.get("files", {}))
+        return {
+            "artifact_id": artifact_id,
+            "kind": str(body["kind"]),
+            "size_bytes": size,
+            "files": files,
+            "created_unix": path.stat().st_mtime,
+            "parents": self.parents(artifact_id),
+            "pins": pins,
+            "metadata": body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        }
+
+    def describe(self, artifact_id: str) -> dict[str, Any]:
+        """Return the full catalogue entry for one artifact."""
+        ref = self.get(artifact_id)
+        path = self.manifests / f"{ref.artifact_id}.json"
+        pins = self._pins_index().get(ref.artifact_id, [])
+        return self._summary(ref.artifact_id, ref.manifest, path, pins)
+
+    def list(
+        self,
+        *,
+        kind: str | None = None,
+        parent_id: str | None = None,
+        pinned: bool | None = None,
+        cursor: str | None = None,
+        limit: int = 64,
+    ) -> dict[str, Any]:
+        """Paginated catalogue of stored artifacts, newest first.
+
+        ``cursor`` is an opaque continuation token returned as ``next_cursor``;
+        it is an offset into the mtime-descending ordering and stays valid while
+        no new artifact is inserted.
+        """
+        if type(limit) is not int or not 1 <= limit <= 256:
+            raise ValueError("list limit must be an integer between 1 and 256")
+        if kind is not None and (not isinstance(kind, str) or not kind or len(kind) > 128):
+            raise ValueError("kind filter must be a non-empty string of at most 128 characters")
+        if parent_id is not None and not self._valid_digest(parent_id):
+            raise ValueError("parent_id filter must be a valid artifact id")
+        offset = 0
+        if cursor is not None:
+            if not isinstance(cursor, str) or len(cursor) > 256:
+                raise ValueError("invalid list cursor")
+            try:
+                decoded = json.loads(cursor)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("invalid list cursor") from exc
+            if not isinstance(decoded, dict) or type(decoded.get("offset")) is not int:
+                raise ValueError("invalid list cursor")
+            offset = decoded["offset"]
+            if offset < 0:
+                raise ValueError("invalid list cursor")
+        pins_index = self._pins_index()
+        parent_map: dict[str, list[str]] = {}
+        with sqlite3.connect(self.root / "artifact_metadata.sqlite3") as db:
+            for child, parent in db.execute("SELECT artifact_id, parent_id FROM artifact_parents"):
+                parent_map.setdefault(child, []).append(parent)
+        entries: list[tuple[float, str, dict[str, Any]]] = []
+        for path in self.manifests.glob("*.json"):
+            artifact_id = path.stem
+            if not self._valid_digest(artifact_id):
+                continue
+            try:
+                ref = self.get(artifact_id)
+            except (ValueError, OSError, json.JSONDecodeError):
+                continue
+            if kind is not None and ref.kind != kind:
+                continue
+            if parent_id is not None and parent_id not in parent_map.get(artifact_id, []):
+                continue
+            pins = pins_index.get(artifact_id, [])
+            if pinned is True and not pins:
+                continue
+            if pinned is False and pins:
+                continue
+            entries.append((path.stat().st_mtime, artifact_id, ref.manifest))
+        entries.sort(key=lambda item: (-item[0], item[1]))
+        page = entries[offset : offset + limit]
+        items = [
+            self._summary(
+                artifact_id,
+                manifest,
+                self.manifests / f"{artifact_id}.json",
+                pins_index.get(artifact_id, []),
+            )
+            for _mtime, artifact_id, manifest in page
+        ]
+        next_cursor = None
+        if offset + limit < len(entries):
+            next_cursor = json.dumps({"offset": offset + limit}, separators=(",", ":"))
+        return {"items": items, "next_cursor": next_cursor, "scanned": len(entries)}
 
     def pin(self, artifact_id: str, owner: str) -> None:
         if (

@@ -137,10 +137,12 @@ def test_agent_can_inspect_artifact_references_and_store_statistics(
         client = GraphimoClient(service.url, service.token)
         project = client.open_project(notebook)
 
-        assert project.inspect_artifact(reference.id) == {
-            "id": reference.id,
-            "kind": "checkpoint",
-        }
+        inspected = project.inspect_artifact(reference.id)
+        assert inspected["id"] == reference.id
+        assert inspected["kind"] == "checkpoint"
+        assert inspected["size_bytes"] == len(b"model-checkpoint")
+        assert inspected["pins"] == []
+        assert inspected["metadata"] is None
         assert project.artifact_stats() == {
             "stats": {
                 "artifacts": 1,

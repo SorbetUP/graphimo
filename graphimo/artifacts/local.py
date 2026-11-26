@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from .store import ArtifactRef as _StoredArtifactRef
 from .store import LocalArtifactStore
@@ -45,25 +46,52 @@ def _public_ref(ref: _StoredArtifactRef) -> ArtifactRef:
 
 
 def put(
-    path: str | os.PathLike[str], *, kind: str = "file", parent_id: ArtifactRef | str | None = None
+    path: str | os.PathLike[str],
+    *,
+    kind: str = "file",
+    parent_id: ArtifactRef | str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> ArtifactRef:
     """Store a file or directory by content; source files are streamed."""
     source = Path(path)
     parent = _artifact_id(parent_id) if parent_id is not None else None
     if source.is_dir() and not source.is_symlink():
-        return _public_ref(_store().put_directory(source, kind=kind, parent_id=parent))
-    return _public_ref(_store().put_file(source, kind=kind, parent_id=parent))
+        return _public_ref(
+            _store().put_directory(source, kind=kind, parent_id=parent, metadata=metadata)
+        )
+    return _public_ref(_store().put_file(source, kind=kind, parent_id=parent, metadata=metadata))
 
 
 def put_bytes(
-    data: bytes, *, kind: str = "blob", parent_id: ArtifactRef | str | None = None
+    data: bytes,
+    *,
+    kind: str = "blob",
+    parent_id: ArtifactRef | str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> ArtifactRef:
     parent = _artifact_id(parent_id) if parent_id is not None else None
-    return _public_ref(_store().put_bytes(data, kind=kind, parent_id=parent))
+    return _public_ref(_store().put_bytes(data, kind=kind, parent_id=parent, metadata=metadata))
 
 
 def get(artifact: ArtifactRef | str) -> ArtifactRef:
     return _public_ref(_store().get(_artifact_id(artifact)))
+
+
+def describe(artifact: ArtifactRef | str) -> dict[str, Any]:
+    return _store().describe(_artifact_id(artifact))
+
+
+def list(
+    *,
+    kind: str | None = None,
+    parent_id: ArtifactRef | str | None = None,
+    pinned: bool | None = None,
+    cursor: str | None = None,
+    limit: int = 64,
+) -> dict[str, Any]:
+    """Paginated catalogue of stored artifacts, newest first."""
+    parent = _artifact_id(parent_id) if parent_id is not None else None
+    return _store().list(kind=kind, parent_id=parent, pinned=pinned, cursor=cursor, limit=limit)
 
 
 def materialize(artifact: ArtifactRef | str, destination: str | os.PathLike[str]) -> Path:

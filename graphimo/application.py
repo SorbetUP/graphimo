@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +78,14 @@ class GraphimoApplication:
             "component.refresh_instances": self._refresh_component_instances,
             "artifact.inspect": self._inspect_artifact,
             "artifact.stats": self._artifact_stats,
+            "artifact.list": self._list_artifacts,
+            "artifact.pin": self._pin_artifact,
+            "artifact.unpin": self._unpin_artifact,
+            "artifact.gc": self._gc_artifacts,
+            "run.create": self._create_run,
+            "run.append": self._append_run_metrics,
+            "run.list": self._list_runs,
+            "notebook.capture_output": lambda value: self._invoke_notebook("capture_output", value),
             "notebook.inspect": lambda value: self._invoke_notebook("inspect", value),
             "notebook.add_cell": lambda value: self._invoke_notebook("add_cell", value),
             "notebook.restore_cells": lambda value: self._invoke_notebook("restore_cells", value),
@@ -333,18 +345,198 @@ class GraphimoApplication:
             "refresh_component_hashes", {"hashes": hashes, "libraries": libraries}
         )
 
+    def _artifact_store(self) -> Any:
+        store = self.host.artifact_store
+        if store is None:
+            raise ValueError("ArtifactStore is unavailable for this host")
+        return store
+
     def _inspect_artifact(self, args: dict[str, Any]) -> Any:
         artifact_id = self._required(args, "artifact_id")
         if not isinstance(artifact_id, str) or not artifact_id:
             raise ValueError("artifact_id must be a non-empty string")
-        store = self.host.artifact_store
-        if store is None or not callable(getattr(store, "get", None)):
+        store = self._artifact_store()
+        if not callable(getattr(store, "get", None)):
             raise ValueError("ArtifactStore inspection is unavailable for this host")
         reference = store.get(artifact_id)
         result = {"id": getattr(reference, "id", None), "kind": getattr(reference, "kind", None)}
         if not isinstance(result["id"], str) or not isinstance(result["kind"], str):
             raise TypeError("ArtifactStore get() must return an ArtifactRef with id and kind")
+        describe = getattr(store, "describe", None)
+        if callable(describe):
+            details = describe(result["id"])
+            if isinstance(details, dict):
+                result.update(
+                    {
+                        "size_bytes": details.get("size_bytes"),
+                        "files": details.get("files"),
+                        "parents": details.get("parents"),
+                        "pins": details.get("pins"),
+                        "metadata": details.get("metadata"),
+                    }
+                )
         return result
+
+    def _list_artifacts(self, args: dict[str, Any]) -> Any:
+        store = self._artifact_store()
+        list_fn = getattr(store, "list", None)
+        if not callable(list_fn):
+            raise ValueError("ArtifactStore catalogue is unavailable for this host")
+        kwargs: dict[str, Any] = {}
+        for key in ("kind", "parent_id", "cursor"):
+            if key in args:
+                kwargs[key] = args[key]
+        if "pinned" in args:
+            if not isinstance(args["pinned"], bool):
+                raise ValueError("pinned filter must be a boolean")
+            kwargs["pinned"] = args["pinned"]
+        if "limit" in args:
+            kwargs["limit"] = args["limit"]
+        result = list_fn(**kwargs)
+        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+            raise TypeError("ArtifactStore list() must return an object with an items list")
+        return result
+
+    def _pin_artifact(self, args: dict[str, Any]) -> Any:
+        store = self._artifact_store()
+        pin = getattr(store, "pin", None)
+        if not callable(pin):
+            raise ValueError("ArtifactStore pinning is unavailable for this host")
+        artifact_id = self._required(args, "artifact_id")
+        owner = self._required(args, "owner")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_id must be a non-empty string")
+        if not isinstance(owner, str) or not owner or len(owner) > 200:
+            raise ValueError("owner must be a non-empty string of at most 200 characters")
+        pin(artifact_id, owner=owner)
+        return {"artifact_id": artifact_id, "owner": owner, "pinned": True}
+
+    def _unpin_artifact(self, args: dict[str, Any]) -> Any:
+        store = self._artifact_store()
+        unpin = getattr(store, "unpin", None)
+        if not callable(unpin):
+            raise ValueError("ArtifactStore pinning is unavailable for this host")
+        artifact_id = self._required(args, "artifact_id")
+        owner = self._required(args, "owner")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_id must be a non-empty string")
+        if not isinstance(owner, str) or not owner or len(owner) > 200:
+            raise ValueError("owner must be a non-empty string of at most 200 characters")
+        unpin(artifact_id, owner=owner)
+        return {"artifact_id": artifact_id, "owner": owner, "pinned": False}
+
+    def _gc_artifacts(self, args: dict[str, Any]) -> Any:
+        store = self._artifact_store()
+        gc = getattr(store, "gc", None)
+        if not callable(gc):
+            raise ValueError("ArtifactStore garbage collection is unavailable for this host")
+        referenced = args.get("referenced", [])
+        if not isinstance(referenced, list) or not all(
+            isinstance(item, str) for item in referenced
+        ):
+            raise ValueError("referenced must be a list of artifact ids")
+        if len(referenced) > 4096:
+            raise ValueError("referenced root list exceeds 4096 entries")
+        result = gc(referenced=referenced)
+        if not isinstance(result, dict):
+            raise TypeError("ArtifactStore gc() must return an object")
+        return result
+
+    def _create_run(self, args: dict[str, Any]) -> Any:
+        store = self._artifact_store()
+        put_bytes = getattr(store, "put_bytes", None)
+        if not callable(put_bytes):
+            raise ValueError("ArtifactStore is unavailable for this host")
+        run_id = args.get("run_id")
+        if run_id is None:
+            run_id = hashlib.sha256(os.urandom(16)).hexdigest()
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 128:
+            raise ValueError("run_id must be a non-empty string of at most 128 characters")
+        metadata = args.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError("run metadata must be an object")
+        body = {
+            "format": 1,
+            "run_id": run_id,
+            "created_unix": time.time(),
+            "metrics": [],
+        }
+        encoded = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise ValueError("run manifest exceeds the 64 KiB limit")
+        ref = put_bytes(
+            encoded,
+            kind="run-manifest",
+            metadata={"run_id": run_id, **{str(k): v for k, v in metadata.items()}},
+        )
+        return {"run_id": run_id, "artifact_id": getattr(ref, "id", None), "metrics": []}
+
+    def _append_run_metrics(self, args: dict[str, Any]) -> Any:
+        store = self._artifact_store()
+        if not callable(getattr(store, "get", None)) or not callable(
+            getattr(store, "put_bytes", None)
+        ):
+            raise ValueError("ArtifactStore is unavailable for this host")
+        artifact_id = self._required(args, "artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_id must be a non-empty string")
+        metrics = self._required(args, "metrics")
+        if not isinstance(metrics, list) or not 1 <= len(metrics) <= 64:
+            raise ValueError("metrics must be a list of 1 to 64 entries")
+        normalized = []
+        for entry in metrics:
+            if not isinstance(entry, dict):
+                raise ValueError("each metric must be an object")
+            name = entry.get("name")
+            if not isinstance(name, str) or not name or len(name) > 128:
+                raise ValueError("metric name must be a non-empty string of at most 128 characters")
+            value = entry.get("value")
+            if isinstance(value, (dict, list)) or not isinstance(
+                value, (str, int, float, bool, type(None))
+            ):
+                raise ValueError("metric value must be a JSON scalar")
+            if isinstance(value, float) and value != value:
+                raise ValueError("metric value must not be NaN")
+            record = {"name": name, "value": value, "ts": entry.get("ts", time.time())}
+            step = entry.get("step")
+            if step is not None and (type(step) is not int or step < 0):
+                raise ValueError("metric step must be a non-negative integer")
+            if step is not None:
+                record["step"] = step
+            normalized.append(record)
+        current = store.get(artifact_id)
+        if getattr(current, "kind", None) != "run-manifest":
+            raise ValueError("artifact_id must reference a run manifest")
+        scratch = Path(tempfile.mkdtemp(prefix="graphimo-run-"))
+        try:
+            previous = store.materialize(artifact_id, scratch / "run.json")
+            body = json.loads(previous.read_text(encoding="utf-8"))
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        if not isinstance(body, dict) or body.get("format") != 1:
+            raise ValueError("corrupt run manifest")
+        body["metrics"] = body.get("metrics", []) + normalized
+        encoded = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise ValueError("run manifest exceeds the 64 KiB limit after append")
+        ref = store.put_bytes(
+            encoded,
+            kind="run-manifest",
+            parent_id=artifact_id,
+            metadata={"run_id": body.get("run_id", ""), "metrics": len(body["metrics"])},
+        )
+        return {
+            "run_id": body.get("run_id"),
+            "artifact_id": getattr(ref, "id", None),
+            "parent_id": artifact_id,
+            "metrics": len(body["metrics"]),
+            "appended": len(normalized),
+        }
+
+    def _list_runs(self, args: dict[str, Any]) -> Any:
+        limit = args.get("limit", 64)
+        cursor = args.get("cursor")
+        return self._list_artifacts({"kind": "run-manifest", "limit": limit, "cursor": cursor})
 
     def _artifact_stats(self, _args: dict[str, Any]) -> Any:
         store = self.host.artifact_store

@@ -79,7 +79,19 @@ def save_checkpoint(
     with tempfile.TemporaryDirectory(prefix="graphimo-pytorch-checkpoint-") as directory:
         path = Path(directory) / "checkpoint.pt"
         torch.save(envelope, path)
-        return artifacts.put(path, kind=CHECKPOINT_KIND)
+        return artifacts.put(
+            path,
+            kind=CHECKPOINT_KIND,
+            metadata={
+                "metablock_id": info.metablock_id,
+                "model_name": getattr(info, "model_name", ""),
+                "graph_revision": info.graph_revision,
+                "materialization_key": info.materialization_key,
+                "runtime_instance_id": info.runtime_instance_id,
+                "training_steps": (metadata or {}).get("training_steps"),
+                "pytorch_version": str(torch.__version__),
+            },
+        )
 
 
 def _load_envelope(artifact: ArtifactRef | str) -> tuple[dict[str, Any], ArtifactRef]:

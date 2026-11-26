@@ -356,6 +356,83 @@ class GraphimoProject:
         """Read logical and physical ArtifactStore usage statistics."""
         return self.execute("artifact.stats")
 
+    def list_artifacts(
+        self,
+        *,
+        kind: str | None = None,
+        parent_id: str | None = None,
+        pinned: bool | None = None,
+        cursor: str | None = None,
+        limit: int = 64,
+    ) -> dict[str, Any]:
+        """Paginated ArtifactStore catalogue, newest first."""
+        args: dict[str, Any] = {"limit": limit}
+        if kind is not None:
+            args["kind"] = kind
+        if parent_id is not None:
+            args["parent_id"] = parent_id
+        if pinned is not None:
+            args["pinned"] = pinned
+        if cursor is not None:
+            args["cursor"] = cursor
+        return self.execute("artifact.list", args)
+
+    def pin_artifact(self, artifact_id: str, *, owner: str) -> dict[str, Any]:
+        """Pin an artifact so garbage collection keeps it."""
+        return self.execute("artifact.pin", {"artifact_id": artifact_id, "owner": owner})
+
+    def unpin_artifact(self, artifact_id: str, *, owner: str) -> dict[str, Any]:
+        return self.execute("artifact.unpin", {"artifact_id": artifact_id, "owner": owner})
+
+    def gc_artifacts(self, *, referenced: list[str] | None = None) -> dict[str, Any]:
+        """Collect unreferenced artifacts; pins and run manifests are roots."""
+        return self.execute("artifact.gc", {"referenced": referenced or []})
+
+    def create_run(
+        self, run_id: str | None = None, metadata: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Open a durable run manifest (JSONL artifact chain in the ArtifactStore)."""
+        args: dict[str, Any] = {}
+        if run_id is not None:
+            args["run_id"] = run_id
+        if metadata is not None:
+            args["metadata"] = metadata
+        return self.execute("run.create", args)
+
+    def append_run_metrics(self, artifact_id: str, metrics: list[dict[str, Any]]) -> dict[str, Any]:
+        """Append bounded metrics to a run manifest, keeping the provenance chain."""
+        return self.execute("run.append", {"artifact_id": artifact_id, "metrics": metrics})
+
+    def list_runs(self, *, limit: int = 64, cursor: str | None = None) -> dict[str, Any]:
+        """List run manifests (one item per durable run state)."""
+        args: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            args["cursor"] = cursor
+        return self.execute("run.list", args)
+
+    def capture_output(
+        self,
+        result_var: str,
+        *,
+        output_index: int = 0,
+        format: str = "json",
+        max_bytes: int = 268435456,
+        pin: bool = False,
+        label: str = "",
+    ) -> dict[str, Any]:
+        """Snapshot a live kernel output into the ArtifactStore (explicit, bounded)."""
+        return self.execute(
+            "notebook.capture_output",
+            {
+                "result_var": result_var,
+                "output_index": output_index,
+                "format": format,
+                "max_bytes": max_bytes,
+                "pin": pin,
+                "label": label,
+            },
+        )
+
     def close(self) -> bool:
         if self._closed:
             return False

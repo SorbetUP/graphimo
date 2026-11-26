@@ -89,6 +89,7 @@ class MarimoKernelPort:
             "set_literal",
             "disconnect",
             "refresh_component_hashes",
+            "capture_output",
         }:
             raise MarimoKernelError(
                 "notebook_action_unsupported", "notebook action is not supported"
@@ -499,6 +500,46 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "    compile(updated, '<graphimo-connect>', 'exec')",
                 "    ctx.edit_cell(target.id, code=updated)",
                 "    result = {'ok': True, 'changed': True, 'source': updated, 'cell_id': str(target.id)}",
+            ]
+        )
+    elif action == "capture_output":
+        common.extend(
+            [
+                "    import json, tempfile",
+                "    from pathlib import Path",
+                "    from graphimo import artifacts",
+                "    result_var = payload.get('result_var'); output_index = payload.get('output_index', 0)",
+                "    format_name = payload.get('format', 'json'); max_bytes = payload.get('max_bytes', 268435456)",
+                "    should_pin = payload.get('pin', False); label = payload.get('label', '')",
+                "    try:",
+                "        if not isinstance(result_var, str) or not result_var.isidentifier(): raise ValueError('result_var must be a Python identifier')",
+                "        if type(output_index) is not int or output_index < 0: raise ValueError('output_index must be a non-negative integer')",
+                "        if format_name not in ('json', 'torch'): raise ValueError('format must be json or torch')",
+                "        if type(max_bytes) is not int or not 1 <= max_bytes <= 1073741824: raise ValueError('max_bytes must be between 1 byte and 1 GiB')",
+                "        if type(should_pin) is not bool: raise ValueError('pin must be a boolean')",
+                "        if not isinstance(label, str) or len(label) > 200: raise ValueError('label must be at most 200 characters')",
+                "        namespace = ctx.globals",
+                "        if result_var not in namespace: raise ValueError('output_not_available: result variable is not present in the kernel namespace')",
+                "        value = namespace[result_var]",
+                "        if output_index:",
+                "            if not isinstance(value, (list, tuple)) or len(value) <= output_index: raise ValueError('output_index out of range for the result variable')",
+                "            value = value[output_index]",
+                "        if format_name == 'json':",
+                "            try: data = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')",
+                "            except (TypeError, ValueError): raise ValueError('output_not_serializable: value is not JSON; use format=torch for Python objects')",
+                "            if len(data) > max_bytes: raise ValueError('output_too_large: serialized output exceeds max_bytes')",
+                "            ref = artifacts.put_bytes(data, kind='snapshot.json', metadata={'result_var': result_var, 'output_index': output_index, 'label': label, 'format': 'json'})",
+                "        else:",
+                "            import torch",
+                "            with tempfile.TemporaryDirectory(prefix='graphimo-snapshot-') as directory:",
+                "                path = Path(directory) / 'snapshot.pt'",
+                "                torch.save(value, path)",
+                "                if path.stat().st_size > max_bytes: raise ValueError('output_too_large: serialized output exceeds max_bytes')",
+                "                ref = artifacts.put(path, kind='snapshot.torch', metadata={'result_var': result_var, 'output_index': output_index, 'label': label, 'format': 'torch'})",
+                "        if should_pin: artifacts.pin(ref.id, owner='snapshot:' + result_var)",
+                "        result = {'ok': True, 'artifact_id': ref.id, 'kind': ref.kind, 'result_var': result_var, 'output_index': output_index, 'pinned': should_pin}",
+                "    except (TypeError, ValueError, KeyError) as error:",
+                "        result = {'ok': False, 'error': {'code': 'capture_failed', 'message': str(error)[:2000]}}",
             ]
         )
     else:  # inspect

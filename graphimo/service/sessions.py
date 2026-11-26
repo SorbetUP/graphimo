@@ -6,6 +6,7 @@ import hashlib
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,8 @@ _READ_ONLY_ACTIONS = {
     "metablock.events",
     "artifact.inspect",
     "artifact.stats",
+    "artifact.list",
+    "run.list",
     "scope.current",
     "layout.get",
 }
@@ -41,25 +44,59 @@ _READ_ONLY_ACTIONS = {
 class HostArtifactStore:
     """Renderer-neutral facade over Graphimo's standard local ArtifactStore."""
 
-    def put_bytes(self, data: bytes, *, kind: str = "blob", parent_id: str | None = None):
-        return artifacts.put_bytes(data, kind=kind, parent_id=parent_id)
+    def put_bytes(
+        self,
+        data: bytes,
+        *,
+        kind: str = "blob",
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        return artifacts.put_bytes(data, kind=kind, parent_id=parent_id, metadata=metadata)
 
-    def put_file(self, path: str | Path, *, kind: str = "file", parent_id: str | None = None):
-        return artifacts.put(path, kind=kind, parent_id=parent_id)
+    def put_file(
+        self,
+        path: str | Path,
+        *,
+        kind: str = "file",
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        return artifacts.put(path, kind=kind, parent_id=parent_id, metadata=metadata)
 
     def put_directory(
-        self, path: str | Path, *, kind: str = "dataset", parent_id: str | None = None
+        self,
+        path: str | Path,
+        *,
+        kind: str = "dataset",
+        parent_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ):
-        return artifacts.put(path, kind=kind, parent_id=parent_id)
+        return artifacts.put(path, kind=kind, parent_id=parent_id, metadata=metadata)
 
     def get(self, artifact: str):
         return artifacts.get(artifact)
+
+    def describe(self, artifact: str) -> dict[str, Any]:
+        return artifacts.describe(artifact)
+
+    def list(self, **kwargs: Any) -> dict[str, Any]:
+        return artifacts.list(**kwargs)
 
     def materialize(self, artifact: str, destination: str | Path):
         return artifacts.materialize(artifact, destination)
 
     def stats(self) -> dict[str, int]:
         return artifacts.stats()
+
+    def pin(self, artifact: str, *, owner: str) -> None:
+        artifacts.pin(artifact, owner=owner)
+
+    def unpin(self, artifact: str, *, owner: str) -> None:
+        artifacts.unpin(artifact, owner=owner)
+
+    def gc(self, *, referenced: Iterable[str] = ()) -> dict[str, int]:
+        return artifacts.gc(referenced=referenced)
 
 
 class ProjectSession:

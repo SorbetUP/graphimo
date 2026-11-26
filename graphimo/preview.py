@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 from .node import NodeSpec
 
 
 def _safe_repr(value: object, max_chars: int) -> str:
+    if isinstance(value, (str, bytes)):
+        # Truncate before repr: repr of a huge string would materialize it whole.
+        if len(value) > max_chars:
+            value = value[: max(0, max_chars - 1)] + "…"
     try:
         rendered = repr(value)
     except Exception:  # noqa: BLE001 - user object repr must not break inspection
@@ -61,7 +66,8 @@ def preview_value(value: Any, *, max_chars: int = 80, max_items: int = 6) -> dic
         opening, closing = ("[", "]") if isinstance(value, list) else ("(", ")")
         preview = _safe_repr(f"{opening}{sample}{closing} (len={len(value)})", max_chars)
     elif isinstance(value, dict):
-        items = list(value.items())[:max_items]
+        # islice: never materialize the full item list of a large mapping.
+        items = list(itertools.islice(value.items(), max_items))
         sample = ", ".join(
             f"{_safe_repr(key, 16)}: {_safe_repr(item, max(8, max_chars // max(1, max_items)))}"
             for key, item in items
