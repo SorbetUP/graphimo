@@ -712,10 +712,11 @@ model = torch.nn.Sequential(torch.nn.Linear(1, 1))
 info = RuntimeModelInfo('kernel-runtime', 'kernel-model', 'revision-kernel', 'materialization-kernel', RuntimeBindingMap((RuntimeSite('linear', '0'),)))
 RUNTIME_REGISTRY.register(model, info)
 builtins._graphimo_test_model = model
-print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
+print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'runtime_instance_id': 'kernel-runtime'}))
 """.replace("CONFIG", repr(config))
             first_result = json.loads(_kernel_execute(base, session, code))
             assert first_result["ok"] is True
+            runtime_id = first_result["runtime_instance_id"]
             probe_scenario = VerifierScenario("pytorch_runtime_probe", 12007)
             probe_scenario.add(
                 "metablock.invoke",
@@ -727,7 +728,9 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
                     "metablock_id": "kernel-model",
                     "action": "runtime.subscribe",
                     "args": {
-                        "runtime_instance_id": "kernel-runtime",
+                        "runtime_instance_id": {
+                            "$ref": "list_runtime.result.items.0.runtime_instance_id"
+                        },
                         "logical_element_id": "linear",
                         "signal": "activation",
                         "rate_hz": 1000,
@@ -740,7 +743,9 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
                     "metablock_id": "kernel-model",
                     "action": "runtime.subscribe",
                     "args": {
-                        "runtime_instance_id": "kernel-runtime",
+                        "runtime_instance_id": {
+                            "$ref": "list_runtime.result.items.0.runtime_instance_id"
+                        },
                         "logical_element_id": "linear",
                         "signal": "gradient",
                         "rate_hz": 1000,
@@ -752,7 +757,7 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
                 probe_scenario, journal_path=tmp_path / "scenario-run-pytorch-probe.json"
             )
             listed = probe_journal["operations"][0]["result"]
-            assert listed["items"][0]["runtime_instance_id"] == "kernel-runtime"
+            assert listed["items"][0]["runtime_instance_id"] == runtime_id
             subscription = probe_journal["operations"][1]["result"]
             gradient = probe_journal["operations"][2]["result"]
             assert subscription["subscription_id"] and gradient["subscription_id"]
