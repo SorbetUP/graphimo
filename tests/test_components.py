@@ -74,18 +74,71 @@ def test_component_instance_source_uses_validated_ports_and_readable_python(tmp_
 
     assert instance["source_sha256"] in instance["library_source"]
     assert "components.processing.normalize" in instance["library_source"]
-    assert "normalize(" in instance["source"]
+    assert (
+        instance["runtime_symbol"] + " = _graphimo_module.normalize" in instance["library_source"]
+    )
+    assert instance["runtime_symbol"] + "(" in instance["source"]
+    assert "# Graphimo component: processing/normalize.py" in instance["source"]
     assert "value=data," in instance["source"]
     assert "scale=__import__('json').loads('2.5')," in instance["source"]
     assert instance["canonical_instance"] is True
+    assert instance["component_id"] == "processing/normalize.py"
+    assert instance["callable"] == "normalize"
     assert instance["result_var"].startswith("g_normalize_")
     compile(instance["source"], "<component-instance>", "exec")
+
+
+def test_component_instance_source_allows_unbound_required_inputs_as_formal_ports(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("normalize.py", NODE_SOURCE)
+
+    instance = library.instance_source("normalize.py", "normalize", "normalized", {})
+
+    assert instance["canonical_instance"] is True
+    assert "value=" not in instance["source"]
+    assert "scale=" not in instance["source"]
+    compile(instance["source"], "<component-instance>", "exec")
+
+
+def test_same_callable_name_in_two_components_gets_distinct_runtime_symbols(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("images.py", NODE_SOURCE)
+    library.write("tables.py", NODE_SOURCE)
+
+    images = library.instance_source("images.py", "normalize", "a", {})
+    tables = library.instance_source("tables.py", "normalize", "b", {})
+
+    assert images["runtime_symbol"] != tables["runtime_symbol"]
+    assert images["library_marker"] != tables["library_marker"]
+    assert images["library_marker"] == "# Graphimo node library: images.py:normalize"
+    assert tables["library_marker"] == "# Graphimo node library: tables.py:normalize"
+    assert images["runtime_symbol"] + " = " in images["library_source"]
+    assert tables["runtime_symbol"] + " = " in tables["library_source"]
+    compile(images["library_source"], "<library>", "exec")
+    compile(tables["library_source"], "<library>", "exec")
+
+    updates = library.library_updates()
+    assert set(updates) == {
+        "# Graphimo node library: images.py:normalize",
+        "# Graphimo node library: tables.py:normalize",
+    }
+    for marker, source in updates.items():
+        assert source.startswith(marker + "\n")
+        assert "# Graphimo node source sha256: " in source
+        compile(source, "<library>", "exec")
 
 
 @pytest.mark.parametrize(
     "bindings, message",
     [
-        ({}, "missing required"),
         ({"value": {"variable": "data"}, "typo": {"variable": "scale"}}, "unknown component input"),
         ({"value": {"variable": "bad-name"}}, "Python identifier"),
     ],
@@ -276,7 +329,7 @@ def test_application_add_component_uses_the_attached_marimo_host(tmp_path: Path)
     )
 
     assert result["cell_id"] == "cell-new"
-    assert "normalize(" in result["source"]
+    assert result["runtime_symbol"] + "(" in result["source"]
     assert "value=data," in result["source"]
     assert result["canonical_instance"] is True
     assert [item["action"] for item in inserted] == [

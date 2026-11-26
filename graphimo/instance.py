@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib
 import keyword
 import re
 import secrets
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 _INSTANCE_ID = re.compile(r"^[0-9a-f]{8}$")
+_COMPONENT_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py$")
+_LITERAL_CALL = re.compile(r"^__import__\('json'\)\.loads\(.*\)$", re.DOTALL)
 _MAX_EXPRESSION_CHARS = 10_000
 _DISABLED_BEGIN = "# graphimo:disabled-begin"
 _DISABLED_END = "# graphimo:disabled-end"
@@ -27,6 +34,7 @@ class InstanceSpec:
     node_name: str
     result_var: str
     bindings: tuple[Binding, ...]
+    component_path: str | None = None
 
 
 def new_instance_id() -> str:
@@ -59,6 +67,76 @@ def _validate_expression(expression: str) -> None:
         raise ValueError("binding expression is not valid Python") from error
 
 
+def _validate_component_path(component_path: str) -> None:
+    if (
+        not isinstance(component_path, str)
+        or _COMPONENT_PATH.fullmatch(component_path) is None
+        or any(
+            part in {".", ".."} or part.startswith(".") or part == "__pycache__"
+            for part in component_path.split("/")
+        )
+    ):
+        raise ValueError("component_path must be a relative .py path under components/")
+
+
+def runtime_symbol(component_path: str, node_name: str) -> str:
+    """Return the collision-free marimo global bound to one component callable.
+
+    Two components may export functions with the same name, so the runtime
+    symbol is derived from the stable component path rather than its content.
+    """
+    _validate_component_path(component_path)
+    _validate_node_name(node_name)
+    digest = hashlib.sha256(component_path.encode("utf-8")).hexdigest()[:8]
+    return f"__graphimo_c_{digest}_{node_name}"
+
+
+def call_target(node_name: str, component_path: str | None) -> str:
+    """Return the callee used by an instance cell for this node."""
+    if component_path is None:
+        return node_name
+    return runtime_symbol(component_path, node_name)
+
+
+def binding_kind(expression: str) -> str:
+    """Classify a binding expression as a JSON literal or a variable reference."""
+    if isinstance(expression, str) and _LITERAL_CALL.match(expression.strip()):
+        return "literal"
+    return "variable"
+
+
+def load_node_function(
+    instance: InstanceSpec, *, project_root: str | Path, namespace: Mapping[str, Any] | None = None
+) -> Any:
+    """Resolve the live callable for an instance inside the marimo kernel.
+
+    The library cell owns the runtime symbol; the component module is reloaded
+    from disk so inspection always sees the current file. Kernel runtime
+    objects never cross this boundary.
+    """
+    symbol = call_target(instance.node_name, instance.component_path)
+    if namespace is not None:
+        function = namespace.get(symbol)
+        if function is not None:
+            return function
+    if instance.component_path is not None:
+        path = PurePosixPath(instance.component_path)
+        if path.is_absolute() or ".." in path.parts or path.suffix != ".py":
+            raise ValueError("invalid Graphimo component path")
+        root = Path(project_root)
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        module_path = path.parent if path.name == "__init__.py" else path.with_suffix("")
+        module_name = ".".join(["components", *module_path.parts])
+        module = importlib.reload(importlib.import_module(module_name))
+        function = getattr(module, instance.node_name, None)
+        if function is not None:
+            return function
+    if namespace is not None:
+        return namespace.get(instance.node_name)
+    return None
+
+
 def _sanitize_name(node_name: str) -> str:
     fragment = re.sub(r"\W", "_", node_name, flags=re.UNICODE).strip("_") or "node"
     if fragment[0].isdigit():
@@ -78,9 +156,12 @@ def build_instance_source(
     bindings: Mapping[str, str],
     *,
     instance_id: str | None = None,
+    component_path: str | None = None,
 ) -> tuple[str, InstanceSpec]:
     """Build the canonical marimo cell body for one `@node` call."""
     _validate_node_name(node_name)
+    if component_path is not None:
+        _validate_component_path(component_path)
     chosen_id = new_instance_id() if instance_id is None else instance_id
     _validate_instance_id(chosen_id)
     if not isinstance(bindings, Mapping):
@@ -98,13 +179,20 @@ def build_instance_source(
         normalized.append(Binding(input_name, expression.strip()))
 
     result_name = result_variable(node_name, chosen_id)
+    callee = call_target(node_name, component_path)
     if normalized:
         arguments = "\n".join(f"    {item.input_name}={item.expression}," for item in normalized)
-        call = f"{result_name} = {node_name}(\n{arguments}\n)"
+        call = f"{result_name} = {callee}(\n{arguments}\n)"
     else:
-        call = f"{result_name} = {node_name}()"
-    source = f"# Graphimo node: {node_name}\n# Graphimo instance: {chosen_id}\n{call}"
-    return source, InstanceSpec(chosen_id, node_name, result_name, tuple(normalized))
+        call = f"{result_name} = {callee}()"
+    header = f"# Graphimo node: {node_name}\n"
+    if component_path is not None:
+        header += f"# Graphimo component: {component_path}\n"
+    header += f"# Graphimo instance: {chosen_id}\n"
+    source = f"{header}{call}"
+    return source, InstanceSpec(
+        chosen_id, node_name, result_name, tuple(normalized), component_path
+    )
 
 
 def parse_instance_source(source: str) -> InstanceSpec | None:
@@ -114,29 +202,41 @@ def parse_instance_source(source: str) -> InstanceSpec | None:
     lines = source.splitlines()
     node_lines = [line for line in lines if line.startswith("# Graphimo node:")]
     instance_lines = [line for line in lines if line.startswith("# Graphimo instance:")]
-    if len(node_lines) != 1 or len(instance_lines) != 1:
+    component_lines = [line for line in lines if line.startswith("# Graphimo component:")]
+    if len(node_lines) != 1 or len(instance_lines) != 1 or len(component_lines) > 1:
         return None
     node_marker = node_lines[0]
     instance_marker = instance_lines[0]
     node_name = node_marker.removeprefix("# Graphimo node: ")
     instance_id = instance_marker.removeprefix("# Graphimo instance: ")
+    component_path: str | None = None
+    if component_lines:
+        component_path = component_lines[0].removeprefix("# Graphimo component: ")
+        if component_lines[0] != f"# Graphimo component: {component_path}":
+            return None
     if (
         node_marker != f"# Graphimo node: {node_name}"
         or instance_marker != f"# Graphimo instance: {instance_id}"
     ):
         return None
-    if lines.index(node_marker) >= lines.index(instance_marker):
+    node_index = lines.index(node_marker)
+    instance_index = lines.index(instance_marker)
+    if node_index >= instance_index:
+        return None
+    if component_lines and not node_index < lines.index(component_lines[0]) < instance_index:
         return None
     try:
         _validate_node_name(node_name)
         _validate_instance_id(instance_id)
+        if component_path is not None:
+            _validate_component_path(component_path)
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return None
     if len(tree.body) != 1 or not isinstance(tree.body[0], ast.Assign):
         return None
     assignment = tree.body[0]
-    if assignment.lineno <= lines.index(instance_marker) + 1:
+    if assignment.lineno <= instance_index + 1:
         return None
     if len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name):
         return None
@@ -144,7 +244,8 @@ def parse_instance_source(source: str) -> InstanceSpec | None:
     if assignment.targets[0].id != expected_result or not isinstance(assignment.value, ast.Call):
         return None
     call = assignment.value
-    if not isinstance(call.func, ast.Name) or call.func.id != node_name or call.args:
+    expected_callee = call_target(node_name, component_path)
+    if not isinstance(call.func, ast.Name) or call.func.id != expected_callee or call.args:
         return None
     if any(argument.arg is None for argument in call.keywords):
         return None
@@ -162,7 +263,7 @@ def parse_instance_source(source: str) -> InstanceSpec | None:
         except ValueError:
             return None
         bindings.append(Binding(argument.arg, expression))
-    return InstanceSpec(instance_id, node_name, expected_result, tuple(bindings))
+    return InstanceSpec(instance_id, node_name, expected_result, tuple(bindings), component_path)
 
 
 def reconnect_instance_source(source: str, *, input_name: str, expression: str) -> str:
@@ -187,7 +288,9 @@ def reconnect_instance_source(source: str, *, input_name: str, expression: str) 
             updated[binding.input_name] = binding.expression
     if not found:
         raise ValueError(f"instance has no input named {input_name!r}")
-    regenerated, _ = build_instance_source(spec.node_name, updated, instance_id=spec.instance_id)
+    regenerated, _ = build_instance_source(
+        spec.node_name, updated, instance_id=spec.instance_id, component_path=spec.component_path
+    )
     return regenerated
 
 
@@ -206,7 +309,9 @@ def disconnect_instance_source(source: str, *, input_name: str) -> str:
     if input_name not in bindings:
         raise ValueError(f"instance has no bound input named {input_name!r}")
     del bindings[input_name]
-    regenerated, _ = build_instance_source(spec.node_name, bindings, instance_id=spec.instance_id)
+    regenerated, _ = build_instance_source(
+        spec.node_name, bindings, instance_id=spec.instance_id, component_path=spec.component_path
+    )
     return regenerated
 
 
@@ -230,6 +335,7 @@ def disable_instance_source(source: str) -> str:
         instance.node_name,
         {binding.input_name: binding.expression for binding in instance.bindings},
         instance_id=instance.instance_id,
+        component_path=instance.component_path,
     )
     if source != canonical:
         raise ValueError("only canonical Graphimo node source can be disabled")

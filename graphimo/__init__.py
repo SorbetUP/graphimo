@@ -5,16 +5,20 @@ from .application import GraphimoApplication
 from .instance import (
     Binding,
     InstanceSpec,
+    binding_kind,
     build_instance_source,
+    call_target,
     disconnect_instance_source,
     disable_instance_source,
     enable_instance_source,
+    load_node_function,
     new_instance_id,
     output_expression,
     parse_disabled_instance_source,
     parse_instance_source,
     reconnect_instance_source,
     result_variable,
+    runtime_symbol,
 )
 from .groups import (
     GroupContract,
@@ -39,6 +43,8 @@ from .scopes import GraphEdge, GraphElement, GraphScope, GraphScopeError, GroupB
 __all__ = [
     "AddonUnavailableError",
     "Binding",
+    "binding_kind",
+    "call_target",
     "GraphEdge",
     "GraphElement",
     "GraphScope",
@@ -64,6 +70,7 @@ __all__ = [
     "enable_instance_source",
     "inspect_node",
     "is_node",
+    "load_node_function",
     "new_instance_id",
     "node",
     "output_expression",
@@ -73,5 +80,6 @@ __all__ = [
     "reconnect_instance_source",
     "result_variable",
     "run_group",
+    "runtime_symbol",
     "update_group_contract",
 ]

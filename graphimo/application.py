@@ -279,11 +279,12 @@ class GraphimoApplication:
         return self.components.delete(self._required(args, "path"))
 
     def _refresh_component_instances(self, _args: dict[str, Any]) -> Any:
-        hashes = {
-            str(item["path"]): str(item["sha256"])
-            for item in self.components.list().get("items", [])
-        }
-        return self._invoke_notebook("refresh_component_hashes", {"hashes": hashes})
+        listing = self.components.list().get("items", [])
+        hashes = {str(item["path"]): str(item["sha256"]) for item in listing}
+        libraries = self.components.library_updates()
+        return self._invoke_notebook(
+            "refresh_component_hashes", {"hashes": hashes, "libraries": libraries}
+        )
 
     def _inspect_artifact(self, args: dict[str, Any]) -> Any:
         artifact_id = self._required(args, "artifact_id")

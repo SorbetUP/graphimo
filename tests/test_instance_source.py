@@ -6,15 +6,18 @@ import pytest
 
 from graphimo import (
     Binding,
+    binding_kind,
     build_instance_source,
     disconnect_instance_source,
     disable_instance_source,
     enable_instance_source,
     new_instance_id,
     output_expression,
+    parse_disabled_instance_source,
     parse_instance_source,
     reconnect_instance_source,
     result_variable,
+    runtime_symbol,
 )
 
 
@@ -121,3 +124,48 @@ def test_disable_and_enable_are_lossless_and_refuse_unowned_source() -> None:
         enable_instance_source(disabled + "\n# graphimo:disabled-end")
     with pytest.raises(ValueError, match="commented line"):
         enable_instance_source(disabled.replace("#     scale=1.0,", "    scale=1.0,"))
+
+
+def test_component_instances_carry_a_namespaced_runtime_symbol() -> None:
+    source, spec = build_instance_source(
+        "normalize",
+        {"value": "data"},
+        instance_id="4f2a7c91",
+        component_path="images/normalize.py",
+    )
+    symbol = runtime_symbol("images/normalize.py", "normalize")
+    assert symbol.startswith("__graphimo_c_")
+    assert symbol.endswith("_normalize")
+    assert source == (
+        "# Graphimo node: normalize\n"
+        "# Graphimo component: images/normalize.py\n"
+        "# Graphimo instance: 4f2a7c91\n"
+        f"g_normalize_4f2a7c91 = {symbol}(\n"
+        "    value=data,\n"
+        ")"
+    )
+    parsed = parse_instance_source(source)
+    assert parsed is not None
+    assert parsed.component_path == "images/normalize.py"
+    assert parsed.bindings == (Binding("value", "data"),)
+
+    reconnected = reconnect_instance_source(source, input_name="value", expression="other")
+    assert parse_instance_source(reconnected).component_path == "images/normalize.py"
+    assert symbol in reconnected
+    disconnected = disconnect_instance_source(source, input_name="value")
+    assert parse_instance_source(disconnected).component_path == "images/normalize.py"
+    disabled = disable_instance_source(source)
+    assert enable_instance_source(disabled) == source
+    assert parse_disabled_instance_source(disabled).component_path == "images/normalize.py"
+
+    assert runtime_symbol("images/normalize.py", "normalize") != runtime_symbol(
+        "tables/normalize.py", "normalize"
+    )
+    assert runtime_symbol("images/normalize.py", "normalize") == symbol
+    assert binding_kind("__import__('json').loads('2')") == "literal"
+    assert binding_kind("data") == "variable"
+    assert binding_kind("g_source_4f2a7c91[1]") == "variable"
+
+    with pytest.raises(ValueError, match="component_path"):
+        build_instance_source("normalize", {}, component_path="../escape.py")
+    assert parse_instance_source(source.replace(symbol, "normalize")) is None
