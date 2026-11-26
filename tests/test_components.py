@@ -29,8 +29,20 @@ def test_component_write_validates_and_atomically_creates_node(tmp_path: Path) -
     assert created["created"] is True
     assert created["nodes"][0]["name"] == "normalize"
     assert created["nodes"][0]["inputs"] == [
-        {"name": "value", "required": True, "annotation": "float", "has_default": False},
-        {"name": "scale", "required": False, "annotation": "float", "has_default": True},
+        {
+            "name": "value",
+            "required": True,
+            "annotation": "float",
+            "has_default": False,
+            "positional_only": False,
+        },
+        {
+            "name": "scale",
+            "required": False,
+            "annotation": "float",
+            "has_default": True,
+            "positional_only": False,
+        },
     ]
     assert created["nodes"][0]["outputs"] == [
         {"index": 0, "declared_type": "float", "expressions": ["value * scale"]}
@@ -76,6 +88,46 @@ def test_component_instance_source_rejects_invalid_bindings(
 
     with pytest.raises(ComponentError, match=message):
         library.instance_source("normalize.py", "normalize", "result", bindings)
+
+
+def test_component_instance_source_respects_positional_only_parameters(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write(
+        "positional.py",
+        "from graphimo import node\n\n"
+        "@node\n"
+        "def combine(left, /, right=2):\n"
+        "    return left + right\n",
+    )
+
+    result = library.instance_source(
+        "positional.py",
+        "combine",
+        "combined",
+        {"left": {"variable": "data"}, "right": {"literal": 3}},
+    )
+
+    assert "combine(data, right=__import__('json').loads('3'))" in result["source"]
+
+
+def test_component_instance_source_rejects_omitted_preceding_positional_default(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write(
+        "positional.py",
+        "from graphimo import node\n\n"
+        "@node\n"
+        "def combine(scale=2, value=3, /):\n"
+        "    return scale * value\n",
+    )
+
+    with pytest.raises(ComponentError, match="bind positional-only inputs"):
+        library.instance_source("positional.py", "combine", "combined", {"value": {"literal": 3}})
 
 
 def test_invalid_component_update_preserves_previous_valid_file(tmp_path: Path) -> None:

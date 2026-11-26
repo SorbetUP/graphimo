@@ -40,7 +40,9 @@ remove the source.
 
 `component.instance_source` generates readable ordinary Python from a
 validated `@node` contract. Bindings are either live Python variable names or
-bounded JSON literals. `component.add` inserts that source into an attached
+bounded JSON literals. Positional-only parameters are emitted positionally;
+the builder reports when an omitted preceding default cannot be represented
+safely. `component.add` inserts that source into an attached
 marimo session and returns its cell ID; it fails if there is no live kernel.
 
 Each operation uses the same `GraphimoApplication` route as service clients and

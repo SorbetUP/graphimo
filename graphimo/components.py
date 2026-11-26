@@ -41,11 +41,13 @@ try:
         if name.startswith("_") or not is_node(value):
             continue
         contract = inspect_node(value)
+        signature = inspect.signature(value)
         nodes.append({
             "name": name,
             "inputs": [
                 {"name": item.name, "required": item.required,
-                 "annotation": item.annotation, "has_default": item.has_default}
+                 "annotation": item.annotation, "has_default": item.has_default,
+                 "positional_only": signature.parameters[item.name].kind == inspect.Parameter.POSITIONAL_ONLY}
                 for item in contract.inputs
             ],
             "outputs": [
@@ -167,7 +169,7 @@ class ComponentLibrary:
         if missing:
             raise ComponentError(f"missing required component input(s): {', '.join(missing)}")
 
-        rendered: list[str] = []
+        expressions: dict[str, str] = {}
         for name in input_names:
             if name not in bindings:
                 continue
@@ -182,12 +184,38 @@ class ComponentLibrary:
                     or keyword.iskeyword(variable)
                 ):
                     raise ComponentError(f"input {name!r} variable must be a Python identifier")
-                rendered.append(f"{name}={variable}")
+                expressions[name] = variable
             else:
                 literal = json.dumps(value["literal"], ensure_ascii=False, allow_nan=False)
                 if len(literal.encode("utf-8")) > 16 * 1024:
                     raise ComponentError(f"input {name!r} literal exceeds 16 KiB")
-                rendered.append(f"{name}=__import__('json').loads({literal!r})")
+                expressions[name] = f"__import__('json').loads({literal!r})"
+
+        positional_only_indexes = [
+            index for index, item in enumerate(inputs) if item.get("positional_only")
+        ]
+        last_positional_only = max(
+            (index for index in positional_only_indexes if inputs[index]["name"] in expressions),
+            default=-1,
+        )
+        positional: list[str] = []
+        keywords: list[str] = []
+        if last_positional_only >= 0:
+            for item in inputs[: last_positional_only + 1]:
+                name = item["name"]
+                if name not in expressions:
+                    raise ComponentError(
+                        f"bind positional-only inputs before {inputs[last_positional_only]['name']!r}"
+                    )
+                positional.append(expressions[name])
+        for index, item in enumerate(inputs):
+            name = item["name"]
+            if name not in expressions or index <= last_positional_only:
+                continue
+            if item.get("positional_only"):
+                raise ComponentError(f"positional-only input {name!r} must be bound")
+            keywords.append(f"{name}={expressions[name]}")
+        rendered = positional + keywords
 
         relative = Path(path)
         module_path = (
