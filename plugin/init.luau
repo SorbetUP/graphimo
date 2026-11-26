@@ -268,6 +268,10 @@ local Page = ui.component(function()
 	local metablock_event_cursor = ui.use_state("0")
 	local metablock_event_entries = ui.use_state({})
 	local metablock_events_open = ui.use_state(false)
+	local checkpoint_artifact_id = ui.use_state("")
+	local checkpoint_details = ui.use_state(nil)
+	local checkpoint_busy = ui.use_state(false)
+	local checkpoint_panel_open = ui.use_state(false)
 	local service_event_cursor = ui.use_state("0")
 	local service_polling = ui.use_state(false)
 	local visible_cell_ids = ui.use_state({})
@@ -598,6 +602,10 @@ local Page = ui.component(function()
 		metablock_event_cursor:set("0")
 		metablock_event_entries:set({})
 		metablock_events_open:set(false)
+		checkpoint_artifact_id:set("")
+		checkpoint_details:set(nil)
+		checkpoint_busy:set(false)
+		checkpoint_panel_open:set(false)
 		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
@@ -612,6 +620,10 @@ local Page = ui.component(function()
 		metablock_event_cursor:set("0")
 		metablock_event_entries:set({})
 		metablock_events_open:set(false)
+		checkpoint_artifact_id:set("")
+		checkpoint_details:set(nil)
+		checkpoint_busy:set(false)
+		checkpoint_panel_open:set(false)
 		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
@@ -712,6 +724,7 @@ local Page = ui.component(function()
 				metablock_id = metablock_id, cursor = metablock_event_cursor:peek(), limit = 128,
 			})
 		end, function(result)
+			if active_metablock:peek() ~= metablock_id then return end
 			metablock_event_cursor:set(result.cursor or metablock_event_cursor:peek())
 			local next_events = table.clone(metablock_event_entries:peek())
 			for _, event in result.events or {} do table.insert(next_events, event) end
@@ -721,7 +734,62 @@ local Page = ui.component(function()
 			if count == 0 then notice:set("No new MetaBlock events are available in the Graphimo service")
 			else notice:set("Read " .. tostring(count) .. " MetaBlock event(s)") end
 		end, function(err)
+			if active_metablock:peek() ~= metablock_id then return end
 			notice:set("Could not read MetaBlock events: " .. tostring(err))
+		end)
+	end
+
+	local function inspect_checkpoint()
+		local metablock_id = active_metablock:peek()
+		local artifact_id = string.gsub(checkpoint_artifact_id:peek(), "^%s*(.-)%s*$", "%1")
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
+		if metablock_id == "" or path == "" then return end
+		if artifact_id == "" or #artifact_id > 256 then notice:set("Enter a valid Graphimo Artifact ID"); return end
+		checkpoint_busy:set(true)
+		observe("Inspect PyTorch checkpoint", function()
+			return Service.execute(zeron, path, "metablock.invoke", {
+				metablock_id = metablock_id,
+				action = "checkpoint.inspect",
+				args = { artifact_id = artifact_id },
+			})
+		end, function(value)
+			checkpoint_busy:set(false)
+			if active_metablock:peek() ~= metablock_id then return end
+			checkpoint_details:set(value)
+		end, function(err)
+			checkpoint_busy:set(false)
+			if active_metablock:peek() ~= metablock_id then return end
+			notice:set("Could not inspect checkpoint: " .. tostring(err))
+		end)
+	end
+
+	local function preview_checkpoint_migration()
+		local details = checkpoint_details:peek()
+		local view = metablock_projection:peek()
+		local metablock_id = active_metablock:peek()
+		local expected_revision = view and view.graph_revision
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
+		if not details or not view or metablock_id == "" or path == "" then return end
+		local external_values = {}
+		for _, parameter in view.external_parameters or {} do external_values[parameter.id] = parameter.default end
+		checkpoint_busy:set(true)
+		observe("Preview checkpoint migration", function()
+			return Service.execute(zeron, path, "metablock.invoke", {
+				metablock_id = metablock_id,
+				action = "checkpoint.preview_migration",
+				args = { artifact_id = details.artifact_id, external_values = external_values },
+			})
+		end, function(value)
+			checkpoint_busy:set(false)
+			if active_metablock:peek() ~= metablock_id then return end
+			local updated = table.clone(details)
+			updated.migration_preview = value
+			updated.migration_preview_revision = expected_revision
+			checkpoint_details:set(updated)
+		end, function(err)
+			checkpoint_busy:set(false)
+			if active_metablock:peek() ~= metablock_id then return end
+			notice:set("Could not preview checkpoint migration: " .. tostring(err))
 		end)
 	end
 
@@ -2059,6 +2127,55 @@ local Page = ui.component(function()
 						end,
 					}
 				end),
+				Button {
+					function() return if checkpoint_panel_open:get() then "Checkpoints −" else "Checkpoints +" end,
+					tone = "secondary", size = "sm", w_full = true,
+					on_click = function() checkpoint_panel_open:set(not checkpoint_panel_open:peek()) end,
+				},
+				ui.show(checkpoint_panel_open, ui.column { w_full = true, gap = "$space.1",
+					Text { "Inspect checkpoint metadata or preview exact-shape migration. Nothing is loaded or changed.", style = "caption", tone = "secondary", wrap = true },
+					TextField { value = checkpoint_artifact_id, label = "Artifact ID", placeholder = "Graphimo Artifact ID", w_full = true },
+					Button { "Inspect checkpoint", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = inspect_checkpoint },
+					ui.show(function() return checkpoint_details:get() ~= nil end, ui.column { w_full = true, gap = "$space.1",
+						Text { function()
+							local details = checkpoint_details:get()
+							return "Artifact " .. tostring(details and details.artifact_id or "") .. " · " .. tostring(details and details.kind or "checkpoint")
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
+							return "Graph revision: " .. tostring(details and details.graph_revision or "unknown")
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
+							local current = metablock_projection:get()
+							return if details and current and details.graph_revision == current.graph_revision then "Compatibility: same graph revision" else "Compatibility: migration preview may be required"
+						end, style = "caption", tone = "secondary", wrap = true },
+						ui.show(function()
+							local details = checkpoint_details:get()
+							local current = metablock_projection:get()
+							return details ~= nil and current ~= nil and details.graph_revision ~= current.graph_revision
+						end, Button { "Preview exact-shape migration", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = preview_checkpoint_migration }),
+						ui.show(function()
+							local details = checkpoint_details:get()
+							local current = metablock_projection:get()
+							return details ~= nil and current ~= nil and type(details.migration_preview) == "table" and details.migration_preview_revision == current.graph_revision
+						end, ui.column { w_full = true, gap = "$space.1",
+							Text { function()
+								local details = checkpoint_details:get()
+								local report = details and details.migration_preview and details.migration_preview.report or {}
+								local copied = {}
+								for _, name in report.copied or {} do table.insert(copied, tostring(name)) end
+								return "Exact matches: " .. (#copied > 0 and table.concat(copied, ", ") or "none")
+							end, style = "caption", tone = "secondary", wrap = true },
+							Text { "Preview only. Use graphimo_pytorch.load_checkpoint(..., strict=False) explicitly to apply migration.", style = "caption", tone = "secondary", wrap = true },
+						}),
+						ui.show(function()
+							local details = checkpoint_details:get()
+							local current = metablock_projection:get()
+							return details ~= nil and current ~= nil and type(details.migration_preview) == "table" and details.migration_preview_revision ~= current.graph_revision
+						end, Text { "The model graph changed after this preview. Run the migration preview again before relying on it.", style = "caption", tone = "secondary", wrap = true }),
+					}),
+				}),
 				ui.row { w_full = true, items = "center", gap = "$space.1",
 					Button {
 						function() return if metablock_events_open:get() then "Runtime events −" else "Runtime events +" end,

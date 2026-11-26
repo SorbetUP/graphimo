@@ -159,9 +159,15 @@ assert inspected["module_path"] == backbone_path
 assert inspected["selected_activation"]["available"] is True
 reference = save_checkpoint(model, metadata={"epoch": 2})
 checkpoint = inspect_checkpoint(reference)
+service_checkpoint = application.execute("metablock.invoke", {
+    "metablock_id": "tiny", "action": "checkpoint.inspect",
+    "args": {"artifact_id": reference.id},
+})
 restored = load_checkpoint(definition, reference)
 assert checkpoint["artifact_kind"] == "pytorch-checkpoint"
 assert checkpoint["metadata"] == {"epoch": 2}
+assert service_checkpoint["artifact_id"] == reference.id
+assert service_checkpoint["graph_revision"] == definition.graph_revision
 assert restored.__graphimo_pytorch_runtime__.graph_revision == definition.graph_revision
 print(json.dumps({"revision": revision, "parameters": definition.total_parameters, "checkpoint": reference.kind}))
 """

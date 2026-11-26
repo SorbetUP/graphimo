@@ -82,6 +82,10 @@ operation.
   stream with `metablock.events`; it retains at most 50 displayed events and
   truncates each rendered payload. It labels these as events received by the
   Graphimo service.
+- The MetaBlock checkpoint panel inspects an explicit Artifact ID and offers
+  exact-shape migration preview only when graph revisions differ. It never
+  loads or migrates a model from the renderer; applying a migration remains an
+  explicit Python `load_checkpoint(..., strict=False)` operation.
 
 ## Runtime ownership
 
