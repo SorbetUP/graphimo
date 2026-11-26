@@ -126,9 +126,9 @@ When `graphimo_inspect` inspects a live local notebook, Zeron sends its local
 marimo URL, optional marimo token and session ID to `graphimo.service.invoke`.
 That process attaches a `MarimoKernelPort` to the in-memory project session and
 returns the service URL/token/project/session identity to Zeron. Zeron then
-executes `graphimo_pytorch.publisher.configure_kernel_publisher(...)` in the
-kernel through the transient marimo execute endpoint. Credentials remain in
-process memory.
+asks the kernel to run every `graphimo.kernel_hooks` entry point's `configure(...)`
+method through the transient marimo execute endpoint — the bridge never imports
+an addon by name. Credentials remain in process memory.
 
 Runtime operations (`runtime.list`, subscribe, unsubscribe, release and
 TorchLens inspection) go from Zeron through `GraphimoClient`,

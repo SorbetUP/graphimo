@@ -440,6 +440,33 @@ local Page = ui.component(function()
 
 	local refresh_graph
 	local refresh_metablock
+	local poll_service_events
+	local refresh_scheduled = ui.use_state(false)
+	-- Read-only actions never trigger a canvas refresh from the event stream;
+	-- everything else (connect, run, add_cell, metablock.*, ...) does, so
+	-- mutations made by an external agent through the CLI appear live.
+	local read_only_actions = {
+		["notebook.inspect"] = true,
+		["component.list"] = true,
+		["component.refresh_instances"] = true,
+		["group.list"] = true,
+		["control.catalog"] = true,
+		["metablock.list"] = true,
+		["addon.list"] = true,
+		["addon.describe"] = true,
+		["scope.current"] = true,
+		["artifact.list"] = true,
+		["run.list"] = true,
+		["layout.get"] = true,
+	}
+	local function schedule_refresh_from_events()
+		if refresh_scheduled:peek() or refresh_graph == nil then return end
+		refresh_scheduled:set(true)
+		ui.after(300, function()
+			refresh_scheduled:set(false)
+			if refresh_graph ~= nil then refresh_graph() end
+		end)
+	end
 	local function refresh_sessions()
 		if url:peek() == "" then
 			notice:set("Open or create a notebook to begin")
@@ -487,6 +514,10 @@ local Page = ui.component(function()
 			end
 			visible_cell_ids:set(ids)
 			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
+			if not service_polling:peek() and poll_service_events ~= nil then
+				service_polling:set(true)
+				poll_service_events()
+			end
 			local path = value.notebook.path or ""
 			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or path
 			local telemetry_session = value.notebook.session_id or session_id:peek()
@@ -1418,13 +1449,16 @@ local Page = ui.component(function()
 		service_event_cursor:set(result.cursor or service_event_cursor:peek())
 		for _, event in result.events or {} do
 			log("Core event " .. tostring(event.sequence) .. " · " .. tostring(event.kind or "event") .. " · " .. tostring(event.action or event.code or event.metablock_id or ""))
+			if event.kind == "application.action.completed" and not read_only_actions[event.action or ""] then
+				schedule_refresh_from_events()
+			end
 		end
 		if (result.dropped or 0) > 0 then
 			log("Core event history dropped " .. tostring(result.dropped) .. " old event(s)", "warn")
 		end
 	end
 
-	local function poll_service_events()
+	poll_service_events = function()
 		if not service_polling:peek() then return end
 		local path = snapshot:peek().notebook.path or active_notebook:peek().path or ""
 		if path == "" then return end
@@ -1449,8 +1483,12 @@ local Page = ui.component(function()
 	local function toggle_logs()
 		local next_value = not logs_open:peek()
 		logs_open:set(next_value)
-		service_polling:set(next_value)
-		if next_value then poll_service_events() end
+		-- Event polling runs while a notebook is open (started in refresh_graph),
+		-- so external CLI/agent mutations refresh the canvas even with logs closed.
+		if next_value and not service_polling:peek() and poll_service_events ~= nil then
+			service_polling:set(true)
+			poll_service_events()
+		end
 	end
 
 	local function export_logs()

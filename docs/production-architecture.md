@@ -15,6 +15,13 @@ their tests and must not receive new code.
 - **The Zeron plugin is the renderer.** All semantic actions go through
   `plugin/service_bridge.luau` → `graphimo.client` → the service. The plugin
   renders what `notebook.inspect` projects; it never re-derives semantics.
+  While a notebook is open, the plugin polls the service event stream and
+  refreshes the canvas when a mutating action completes — so mutations made
+  by an external agent through the `graphimo` CLI ([docs/cli.md](cli.md))
+  appear live. Kernel hooks (telemetry publishers) are discovered through
+  the `graphimo.kernel_hooks` entry-point group in both the Core
+  (`MarimoKernelPort.stop_publisher`) and the plugin (`marimo_bridge.luau`);
+  neither imports an addon by name.
 
 ## Canonical Python modules
 

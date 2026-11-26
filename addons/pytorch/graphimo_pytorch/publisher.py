@@ -322,3 +322,29 @@ def kernel_publisher_stats() -> dict[str, Any]:
             "failures": 0,
         }
     return current.stats()
+
+
+class KernelHook:
+    """Entry-point object for the ``graphimo.kernel_hooks`` group.
+
+    The Core and the Zeron bridge discover addons through this group only;
+    they never import ``graphimo_pytorch`` by name. ``configure`` receives the
+    ephemeral service credentials, ``stop`` detaches without touching live
+    model runtimes.
+    """
+
+    def configure(
+        self, *, service_url: str, token: str, project_id: str, session_id: str = ""
+    ) -> dict[str, Any]:
+        return configure_kernel_publisher(
+            service_url=service_url, token=token, project_id=project_id, session_id=session_id
+        )
+
+    def stop(self) -> dict[str, Any]:
+        return stop_kernel_publisher()
+
+    def stats(self) -> dict[str, Any]:
+        return kernel_publisher_stats()
+
+
+kernel_hook = KernelHook()

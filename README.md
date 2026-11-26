@@ -102,7 +102,8 @@ graphimo --path /proj/nb.py do metablock.apply '{"metablock_id": "m1", ...}'   #
 ```
 
 The project path can also come from `GRAPHIMO_PROJECT`; `--compact` prints
-single-line JSON. `graphimo-adapter` (stdin JSON `{"path", "operation", ...}`)
+single-line JSON. See [docs/cli.md](docs/cli.md) for the full command table.
+`graphimo-adapter` (stdin JSON `{"path", "operation", ...}`)
 remains the low-level entry point used by the Zeron plugin.
 
 ## Persistence and boundaries

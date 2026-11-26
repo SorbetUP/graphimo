@@ -926,27 +926,45 @@ function Bridge.run(zeron, base, token, session_id, cell_id)
 	return execute(zeron, base, token, session_id, code_for("run", { cell_id = cell_id }), 300)
 end
 
+-- Kernel hooks are discovered through the 'graphimo.kernel_hooks' entry-point
+-- group, never by addon name: any installed addon may expose an object with
+-- configure(service_url, token, project_id, session_id) / stop() / stats().
+local function hook_runner_code(method, encoded_args)
+	local args = encoded_args or "{}"
+	return table.concat({
+		"import json",
+		"from importlib.metadata import entry_points",
+		"result = {}",
+		"for ep in entry_points(group='graphimo.kernel_hooks'):",
+		"    try:",
+		"        hook = ep.load()",
+		"        fn = getattr(hook, " .. ui.json.encode(method) .. ", None)",
+		"        if not callable(fn) and callable(hook): fn = hook",
+		"        if callable(fn):",
+		"            kwargs = json.loads(" .. ui.json.encode(args) .. ")",
+		"            result[ep.name] = fn(**kwargs) if kwargs else fn()",
+		"        else: result[ep.name] = {'skipped': 'no " .. method .. " hook'}",
+		"    except Exception as exc:",
+		"        result[ep.name] = {'error': str(exc)[:200]}",
+		"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'hooks': result}, ensure_ascii=False, allow_nan=False, separators=(',', ':'))) ",
+	}, "\n")
+end
+
 function Bridge.configure_telemetry(zeron, base, token, session_id, config)
 	if type(config) ~= "table" or type(config.service_url) ~= "string" or type(config.service_token) ~= "string" or type(config.project_id) ~= "string" or type(config.session_id) ~= "string" then
 		return failure("Incomplete ephemeral Graphimo telemetry configuration", "invalid_telemetry_config")
 	end
-	local code = table.concat({
-		"import json",
-		"from graphimo_pytorch.publisher import configure_kernel_publisher",
-		"status = configure_kernel_publisher(service_url=" .. ui.json.encode(config.service_url) .. ", token=" .. ui.json.encode(config.service_token) .. ", project_id=" .. ui.json.encode(config.project_id) .. ", session_id=" .. ui.json.encode(config.session_id) .. ")",
-		"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'publisher': status}, separators=(',', ':'))) ",
-	}, "\n")
-	return execute(zeron, base, token, session_id, code, 15)
+	local encoded = ui.json.encode({
+		service_url = config.service_url,
+		token = config.service_token,
+		project_id = config.project_id,
+		session_id = config.session_id,
+	})
+	return execute(zeron, base, token, session_id, hook_runner_code("configure", encoded), 15)
 end
 
 function Bridge.stop_telemetry(zeron, base, token, session_id)
-	local code = table.concat({
-		"import json",
-		"from graphimo_pytorch.publisher import stop_kernel_publisher",
-		"status = stop_kernel_publisher()",
-		"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'publisher': status}, separators=(',', ':'))) ",
-	}, "\n")
-	return execute(zeron, base, token, session_id, code, 10)
+	return execute(zeron, base, token, session_id, hook_runner_code("stop", "{}"), 10)
 end
 
 function Bridge.add_cell(zeron, base, token, session_id, source)

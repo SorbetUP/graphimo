@@ -18,7 +18,7 @@ dependencies = [
 pytorch = "graphimo_pytorch.registration:registration"
 
 [project.entry-points."graphimo.kernel_hooks"]
-pytorch_publisher = "graphimo_pytorch.publisher:stop_kernel_publisher"
+pytorch_publisher = "graphimo_pytorch.publisher:kernel_hook"
 
 [tool.setuptools]
 packages = ["graphimo_pytorch"]
