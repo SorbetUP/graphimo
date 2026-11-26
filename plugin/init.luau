@@ -976,8 +976,8 @@ local Page = ui.component(function()
 					notice:set("Could not read the selected MetaBlock file")
 					return
 				end
-				if #source > 3 * 1024 * 1024 then
-					notice:set("Selected MetaBlock state exceeds the 3 MiB import limit")
+				if #source > 1024 * 1024 then
+					notice:set("Selected MetaBlock state exceeds the 1 MiB import limit")
 					return
 				end
 				output_counter:set(output_counter:peek() + 1)

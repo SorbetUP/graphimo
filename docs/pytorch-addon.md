@@ -56,7 +56,8 @@ changes affect the revision.
 The Zeron **Import PyTorch state** action accepts a Graphimo-PyTorch semantic
 JSON state or a `pytorch.model` sidecar envelope. It creates a new MetaBlock
 sidecar in the active project, assigns the new project-local MetaBlock ID, and
-preserves the imported name and graph. Import input is limited to 3 MiB.
+preserves the imported name and graph. Import input is limited to 1 MiB to fit
+inside the service's nested JSON request bounds.
 Existing project sidecars are reopened through the normal MetaBlock list.
 Arbitrary Python `nn.Module` source is not parsed into a visual graph; the
 addon returns `pytorch_import_unsupported` with an explanation instead of

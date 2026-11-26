@@ -53,10 +53,10 @@ def _create_state(request: dict[str, Any], context: GraphimoHostAPI) -> dict[str
             raise PyTorchSchemaError(
                 "pytorch_import_unsupported", "PyTorch import source must be valid UTF-8"
             ) from exc
-        if len(source_bytes) > 3 * 1024 * 1024:
+        if len(source_bytes) > 1024 * 1024:
             raise PyTorchSchemaError(
                 "pytorch_import_unsupported",
-                "PyTorch semantic state exceeds the 3 MiB import limit",
+                "PyTorch semantic state exceeds the 1 MiB import limit",
             )
         try:
             imported = json.loads(source)

@@ -95,3 +95,14 @@ def test_arbitrary_python_or_non_graphimo_json_is_explicitly_unsupported(
 
     assert error.value.code == "pytorch_import_unsupported"
     assert str(error.value)
+
+
+def test_import_rejects_state_over_nested_service_limit(tmp_path) -> None:
+    host = GraphimoHostAPI("project", tmp_path / "notebook.py").for_metablock("copy")
+
+    with pytest.raises(PyTorchSchemaError, match="1 MiB import limit") as error:
+        PyTorchModelDialect(host).create_state(
+            {"semantic_state_json": " " * (1024 * 1024 + 1)}, host
+        )
+
+    assert error.value.code == "pytorch_import_unsupported"
