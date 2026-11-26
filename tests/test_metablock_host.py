@@ -14,6 +14,7 @@ from graphimo.metablocks import (
     GraphimoHostAPI,
     MetaBlockAddonManager,
     MetaBlockError,
+    MetaBlockHistoryError,
     MetaBlockStateError,
     MetaDialectRegistration,
 )
@@ -136,6 +137,54 @@ def test_create_apply_and_catalog_use_addon_owned_semantics(tmp_path: Path) -> N
     assert manager.load("block").revision != created["revision"]
 
 
+def test_metablock_undo_redo_restores_addon_owned_semantic_state(tmp_path: Path) -> None:
+    _host, manager, _entry = setup_manager(tmp_path)
+    manager.create("test.counter", "block", {})
+
+    first = manager.apply("block", {"type": "increment"})
+    second = manager.apply("block", {"type": "increment"})
+    undone = manager.undo("block", "method:forward")
+    redone = manager.redo("block", "method:forward")
+
+    assert first["history"] == {"undo_depth": 1, "redo_depth": 0, "stale": False}
+    assert second["projection"]["value"] == 2
+    assert undone["changed"] is True and undone["projection"]["value"] == 1
+    assert undone["projection"]["scope"] == "method:forward"
+    assert undone["history"] == {"undo_depth": 1, "redo_depth": 1, "stale": False}
+    assert redone["changed"] is True and redone["projection"]["value"] == 2
+    assert redone["history"] == {"undo_depth": 2, "redo_depth": 0, "stale": False}
+
+    manager.undo("block")
+    replacement = manager.apply("block", {"type": "increment"})
+    no_redo = manager.redo("block")
+    assert replacement["projection"]["value"] == 2
+    assert no_redo["changed"] is False and no_redo["projection"]["value"] == 2
+    assert no_redo["history"]["redo_depth"] == 0
+
+
+def test_metablock_history_refuses_external_sidecar_changes(tmp_path: Path) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+    manager.create("test.counter", "block", {})
+    manager.apply("block", {"type": "increment"})
+    host.write_sidecar(
+        "block",
+        {
+            "format": 1,
+            "metablock_id": "block",
+            "dialect_id": "test.counter",
+            "addon_version": "1.0.0",
+            "api_version": 1,
+            "state": {"name": "External edit", "value": 7},
+        },
+    )
+
+    projected = manager.project("block")
+    assert projected["history"]["stale"] is True
+    with pytest.raises(MetaBlockHistoryError, match="sidecar changed"):
+        manager.undo("block")
+    assert manager.load("block").state["value"] == 7
+
+
 def test_missing_addon_projects_opaque_state_without_rewriting_sidecar(tmp_path: Path) -> None:
     host, manager, _entry = setup_manager(tmp_path)
     manager.create("test.counter", "block", {"name": "Preserved"})
@@ -256,6 +305,8 @@ def test_application_routes_all_addon_lifecycle_actions_through_one_manager(
     edited = application.execute(
         "metablock.apply", {"metablock_id": "block", "intent": {"type": "increment"}}
     )
+    undone = application.execute("metablock.undo", {"metablock_id": "block", "scope": "root"})
+    redone = application.execute("metablock.redo", {"metablock_id": "block", "scope": "root"})
     materialized = application.execute(
         "metablock.materialize",
         {"metablock_id": "block", "bindings": {"seed": 9}},
@@ -272,9 +323,11 @@ def test_application_routes_all_addon_lifecycle_actions_through_one_manager(
     assert catalog == {"scope": "root/model", "items": ["increment"]}
     assert projected["projection"]["value"] == 0
     assert edited["projection"]["value"] == 1
+    assert undone["changed"] is True and undone["projection"]["value"] == 0
+    assert redone["changed"] is True and redone["projection"]["value"] == 1
     assert materialized["bindings"] == {"seed": 9}
     assert materialization_updates[0]["metablock_id"] == "block"
-    assert materialization_updates[0]["revision"] == edited["revision"]
+    assert materialization_updates[0]["revision"] == redone["revision"]
     assert invoked == {"action": "probe", "args": {"depth": 2}}
     assert events == {"cursor": "next", "events": [{"sequence": 1}]}
 

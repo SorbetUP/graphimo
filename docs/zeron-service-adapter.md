@@ -44,8 +44,9 @@ operation.
   still match. The replacement remains a normal marimo cell and the downstream
   marimo dependencies reconnect to the Group's inferred output definitions.
 - Canvas undo/redo tracks layout moves and ordinary-cell source/structure
-  changes. It uses the same live marimo bridge for source restoration and
-  refuses edits whose source changed since the history entry was recorded. See
+  changes through the live marimo bridge. In a PyTorch MetaBlock, the same
+  buttons call `metablock.undo` / `metablock.redo` through Graphimo Core, which
+  restores opaque addon state and refuses stale sidecar revisions. See
   [Zeron canvas undo and redo](zeron-undo-redo.md) for transaction coverage and
   current boundaries.
 - A breadcrumb above the canvas returns to the project or to an ancestor

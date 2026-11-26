@@ -261,6 +261,7 @@ local Page = ui.component(function()
 	local active_metablock = ui.use_state("")
 	local active_metablock_scope = ui.use_state("root")
 	local metablock_projection = ui.use_state(nil)
+	local metablock_history = ui.use_state({ undo_depth = 0, redo_depth = 0, stale = false })
 	local service_event_cursor = ui.use_state("0")
 	local service_polling = ui.use_state(false)
 	local visible_cell_ids = ui.use_state({})
@@ -550,6 +551,7 @@ local Page = ui.component(function()
 				results.projection
 			)
 			metablock_projection:set(projection)
+			metablock_history:set((results.projection or {}).history or { undo_depth = 0, redo_depth = 0, stale = false })
 			local saved_layout = (results.layout or {}).layout or {}
 			local merged, ids = {}, {}
 			for index, cell in projected.cells do
@@ -586,6 +588,7 @@ local Page = ui.component(function()
 		if active_metablock:peek() == "" then notebook_snapshot:set(snapshot:peek()) end
 		active_metablock:set(metablock_id)
 		active_metablock_scope:set(scope or "root")
+		metablock_history:set({ undo_depth = 0, redo_depth = 0, stale = false })
 		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
@@ -596,6 +599,7 @@ local Page = ui.component(function()
 		active_metablock:set("")
 		active_metablock_scope:set("root")
 		metablock_projection:set(nil)
+		metablock_history:set({ undo_depth = 0, redo_depth = 0, stale = false })
 		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
@@ -678,7 +682,8 @@ local Page = ui.component(function()
 		intent.scope = active_metablock_scope:peek()
 		observe("Update PyTorch MetaBlock", function()
 			return Service.execute(zeron, path, "metablock.apply", { metablock_id = metablock_id, intent = intent })
-		end, function()
+		end, function(value)
+			if type(value) == "table" and type(value.history) == "table" then metablock_history:set(value.history) end
 			refresh_metablock()
 		end, function(err)
 			notice:set("MetaBlock update failed: " .. tostring(err))
@@ -1241,8 +1246,38 @@ local Page = ui.component(function()
 	end
 
 	local delete_selected
-	local function undo_canvas() return move_history(undo_stack, redo_stack, true) end
-	local function redo_canvas() return move_history(redo_stack, undo_stack, false) end
+	local function move_history_for_active_scope(action, label)
+		local metablock_id = active_metablock:peek()
+		if metablock_id == "" then return false end
+		if history_busy then return true end
+		if metablock_history:peek().stale then
+			notice:set("MetaBlock history is stale because its saved graph changed outside this session")
+			return true
+		end
+		history_busy = true
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
+		observe(label, function()
+			return Service.execute(zeron, path, action, { metablock_id = metablock_id, scope = active_metablock_scope:peek() })
+		end, function(value)
+			history_busy = false
+			metablock_history:set(value.history or { undo_depth = 0, redo_depth = 0, stale = false })
+			local idle_message = if action == "metablock.undo" then "Nothing to undo in this MetaBlock" else "Nothing to redo in this MetaBlock"
+			notice:set(if value.changed == false then idle_message else label .. " completed")
+			refresh_metablock()
+		end, function(err)
+			history_busy = false
+			notice:set(label .. " failed: " .. tostring(err))
+		end)
+		return true
+	end
+	local function undo_canvas()
+		if move_history_for_active_scope("metablock.undo", "Undo MetaBlock change") then return true end
+		return move_history(undo_stack, redo_stack, true)
+	end
+	local function redo_canvas()
+		if move_history_for_active_scope("metablock.redo", "Redo MetaBlock change") then return true end
+		return move_history(redo_stack, undo_stack, false)
+	end
 
 	local function on_canvas_key(e)
 		local key = string.lower(tostring(e.key or ""))
@@ -1833,8 +1868,14 @@ local Page = ui.component(function()
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
-			Button { "Undo", tone = "secondary", size = "sm", disabled = function() return #undo_stack == 0 or history_busy end, on_click = undo_canvas },
-			Button { "Redo", tone = "secondary", size = "sm", disabled = function() return #redo_stack == 0 or history_busy end, on_click = redo_canvas },
+			Button { "Undo", tone = "secondary", size = "sm", disabled = function()
+				if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.undo_depth == 0 end
+				return #undo_stack == 0 or history_busy
+			end, on_click = undo_canvas },
+			Button { "Redo", tone = "secondary", size = "sm", disabled = function()
+				if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.redo_depth == 0 end
+				return #redo_stack == 0 or history_busy
+			end, on_click = redo_canvas },
 			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 		},
 		ui.row { grow = 1, min_h = 0, w_full = true, gap = "$space.3",

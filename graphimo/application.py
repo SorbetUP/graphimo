@@ -51,6 +51,8 @@ class GraphimoApplication:
             "metablock.catalog": self._catalog,
             "metablock.project": self._project,
             "metablock.apply": self._apply,
+            "metablock.undo": self._undo_metablock,
+            "metablock.redo": self._redo_metablock,
             "metablock.materialize": self._materialize,
             "metablock.invoke": self._invoke,
             "metablock.events": self._events,
@@ -108,6 +110,12 @@ class GraphimoApplication:
         return self.metablocks.apply(
             self._required(args, "metablock_id"), self._required(args, "intent")
         )
+
+    def _undo_metablock(self, args: dict[str, Any]) -> Any:
+        return self.metablocks.undo(self._required(args, "metablock_id"), args.get("scope", "root"))
+
+    def _redo_metablock(self, args: dict[str, Any]) -> Any:
+        return self.metablocks.redo(self._required(args, "metablock_id"), args.get("scope", "root"))
 
     def _materialize(self, args: dict[str, Any]) -> Any:
         return self.metablocks.materialize(

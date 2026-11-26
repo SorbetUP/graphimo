@@ -21,6 +21,8 @@ from typing import Any, Protocol, runtime_checkable
 
 META_DIALECT_ENTRY_POINT_GROUP = "graphimo.metablocks"
 MAX_STATE_BYTES = 8 * 1024 * 1024
+MAX_HISTORY_DEPTH = 50
+MAX_HISTORY_BYTES = 16 * 1024 * 1024
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _DIALECT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
@@ -35,6 +37,10 @@ class AddonUnavailableError(MetaBlockError):
 
 class MetaBlockStateError(MetaBlockError):
     """Raised when a sidecar is malformed or exceeds its persistence limit."""
+
+
+class MetaBlockHistoryError(MetaBlockError):
+    """Raised when a MetaBlock history entry no longer matches its sidecar."""
 
 
 @dataclass(frozen=True)
@@ -353,6 +359,43 @@ class MetaBlockAddonManager:
         )
         self._handlers: dict[str, MetaBlockDialect] = {}
         self._registrations: dict[str, MetaDialectRegistration] = {}
+        self._history: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _snapshot_state(state: Any) -> Any:
+        return json.loads(_encode_json(state))
+
+    def _history_state(self, metablock_id: str, revision: str) -> dict[str, Any]:
+        history = self._history.setdefault(
+            metablock_id, {"undo": [], "redo": [], "expected_revision": revision}
+        )
+        return history
+
+    @staticmethod
+    def _history_summary(history: dict[str, Any], revision: str) -> dict[str, Any]:
+        return {
+            "undo_depth": len(history["undo"]),
+            "redo_depth": len(history["redo"]),
+            "stale": history["expected_revision"] != revision,
+        }
+
+    @staticmethod
+    def _trim_history(history: dict[str, Any]) -> None:
+        def size() -> int:
+            return sum(
+                len(_encode_json(state))
+                for stack_name in ("undo", "redo")
+                for state in history[stack_name]
+            )
+
+        while (
+            len(history["undo"]) + len(history["redo"]) > MAX_HISTORY_DEPTH
+            or size() > MAX_HISTORY_BYTES
+        ):
+            stack = history["undo"] if history["undo"] else history["redo"]
+            if not stack:
+                break
+            stack.pop(0)
 
     def installed(self) -> list[MetaDialectDescriptor]:
         """List entry-point metadata without importing addon modules."""
@@ -482,6 +525,31 @@ class MetaBlockAddonManager:
             },
         )
 
+    def _projection_result(
+        self,
+        record: MetaBlockRecord,
+        scope: str,
+        handler: MetaBlockDialect,
+        *,
+        changed: bool | None = None,
+    ) -> dict[str, Any]:
+        projection = handler.project(
+            record.state, scope, self.host.for_metablock(record.metablock_id)
+        )
+        history = self._history_state(record.metablock_id, record.revision)
+        result = {
+            "available": True,
+            "metablock_id": record.metablock_id,
+            "dialect_id": record.dialect_id,
+            "addon_version": record.addon_version,
+            "revision": record.revision,
+            "projection": projection,
+            "history": self._history_summary(history, record.revision),
+        }
+        if changed is not None:
+            result["changed"] = changed
+        return result
+
     def load(self, metablock_id: str) -> MetaBlockRecord:
         raw = self.host.read_sidecar(metablock_id)
         if raw is None:
@@ -508,22 +576,16 @@ class MetaBlockAddonManager:
                 "state": state,
             }
         )
-        projection = handler.project(record.state, self.host.current_scope(), scoped_host)
         self._write_record(record)
-        return {
-            "available": True,
-            "metablock_id": record.metablock_id,
-            "dialect_id": record.dialect_id,
-            "addon_version": record.addon_version,
-            "revision": record.revision,
-            "projection": projection,
-        }
+        self._history[metablock_id] = {"undo": [], "redo": [], "expected_revision": record.revision}
+        return self._projection_result(record, self.host.current_scope(), handler)
 
     def project(self, metablock_id: str, scope: str = "root") -> dict[str, Any]:
         record = self.load(metablock_id)
         try:
             handler = self._load(record.dialect_id)
         except AddonUnavailableError:
+            history = self._history_state(record.metablock_id, record.revision)
             return {
                 "available": False,
                 "metablock_id": record.metablock_id,
@@ -531,6 +593,7 @@ class MetaBlockAddonManager:
                 "addon_version": record.addon_version,
                 "revision": record.revision,
                 "state": record.state,
+                "history": self._history_summary(history, record.revision),
                 "diagnostics": [
                     {
                         "code": "metablock_addon_unavailable",
@@ -539,15 +602,7 @@ class MetaBlockAddonManager:
                     }
                 ],
             }
-        projection = handler.project(record.state, scope, self.host.for_metablock(metablock_id))
-        return {
-            "available": True,
-            "metablock_id": record.metablock_id,
-            "dialect_id": record.dialect_id,
-            "addon_version": record.addon_version,
-            "revision": record.revision,
-            "projection": projection,
-        }
+        return self._projection_result(record, scope, handler)
 
     def catalog(self, metablock_id: str, scope: str) -> Any:
         record = self.load(metablock_id)
@@ -559,7 +614,10 @@ class MetaBlockAddonManager:
         record = self.load(metablock_id)
         handler = self._load(record.dialect_id)
         scoped_host = self.host.for_metablock(metablock_id)
-        updated = handler.apply(record.state, intent, scoped_host)
+        history = self._history_state(metablock_id, record.revision)
+        history_stale = history["expected_revision"] != record.revision
+        previous_state = self._snapshot_state(record.state)
+        updated = handler.apply(self._snapshot_state(record.state), intent, scoped_host)
         registration = self._registrations[record.dialect_id]
         next_record = _record_from_sidecar(
             {
@@ -573,6 +631,63 @@ class MetaBlockAddonManager:
         )
         projection = handler.project(next_record.state, self.host.current_scope(), scoped_host)
         self._write_record(next_record)
+        if history_stale:
+            history.update(undo=[], redo=[])
+        if next_record.revision != record.revision:
+            history["undo"].append(previous_state)
+            history["redo"].clear()
+            self._trim_history(history)
+        history["expected_revision"] = next_record.revision
+        result = {
+            "available": True,
+            "metablock_id": next_record.metablock_id,
+            "dialect_id": next_record.dialect_id,
+            "addon_version": next_record.addon_version,
+            "revision": next_record.revision,
+            "projection": projection,
+            "history": self._history_summary(history, next_record.revision),
+        }
+        return result
+
+    def undo(self, metablock_id: str, scope: str = "root") -> dict[str, Any]:
+        return self._move_history(metablock_id, scope, undoing=True)
+
+    def redo(self, metablock_id: str, scope: str = "root") -> dict[str, Any]:
+        return self._move_history(metablock_id, scope, undoing=False)
+
+    def _move_history(self, metablock_id: str, scope: str, *, undoing: bool) -> dict[str, Any]:
+        record = self.load(metablock_id)
+        handler = self._load(record.dialect_id)
+        history = self._history_state(metablock_id, record.revision)
+        if history["expected_revision"] != record.revision:
+            raise MetaBlockHistoryError(
+                "MetaBlock history is stale because its sidecar changed outside this application session"
+            )
+        source_stack = history["undo"] if undoing else history["redo"]
+        destination_stack = history["redo"] if undoing else history["undo"]
+        if not source_stack:
+            return self._projection_result(record, scope, handler, changed=False)
+
+        target_state = source_stack[-1]
+        registration = self._registrations[record.dialect_id]
+        next_record = _record_from_sidecar(
+            {
+                "format": 1,
+                "metablock_id": record.metablock_id,
+                "dialect_id": record.dialect_id,
+                "addon_version": registration.addon_version,
+                "api_version": registration.api_version,
+                "state": self._snapshot_state(target_state),
+            }
+        )
+        projection = handler.project(
+            next_record.state, scope, self.host.for_metablock(metablock_id)
+        )
+        self._write_record(next_record)
+        source_stack.pop()
+        destination_stack.append(self._snapshot_state(record.state))
+        history["expected_revision"] = next_record.revision
+        self._trim_history(history)
         return {
             "available": True,
             "metablock_id": next_record.metablock_id,
@@ -580,6 +695,8 @@ class MetaBlockAddonManager:
             "addon_version": next_record.addon_version,
             "revision": next_record.revision,
             "projection": projection,
+            "history": self._history_summary(history, next_record.revision),
+            "changed": True,
         }
 
     def materialize(self, metablock_id: str, bindings: dict[str, Any]) -> dict[str, Any]:

@@ -26,11 +26,14 @@ the application returns an unavailable placeholder with the original state
 and revision.
 
 `GraphimoApplication.execute()` is the shared action seam for host adapters.
-It routes list/create/catalog/project/apply/materialize/invoke/events operations
-to the same manager, bounds action arguments and JSON results, and leaves
-canvas state and notebook scheduling to their respective host systems. The
-`metablock.list` action reads sidecar metadata without loading addon modules;
-invalid sidecars appear as bounded warning diagnostics.
+It routes list/create/catalog/project/apply/undo/redo/materialize/invoke/events
+operations to the same manager, bounds action arguments and JSON results, and
+leaves canvas state and notebook scheduling to their respective host systems.
+MetaBlock undo/redo stores bounded opaque addon-state snapshots in the
+application session and checks the current canonical revision before applying
+one. A sidecar changed outside the session makes that history stale rather than
+being overwritten. The `metablock.list` action reads sidecar metadata without
+loading addon modules; invalid sidecars appear as bounded warning diagnostics.
 
 Canvas positions are stored separately from addon-owned semantic state in the
 project sibling file `.graphimo.json`. `GraphimoHostAPI.read_layout(scope_id)`
@@ -41,7 +44,7 @@ exposes those operations as `layout.get` and `layout.set` actions. This keeps
 renderer layout out of PyTorch graph revisions and addon sidecars.
 
 The tests use a fake entry-point addon to verify lazy discovery,
-state creation/editing, atomic failure behavior, project serialization,
+state creation/editing/undo/redo, atomic failure behavior, project serialization,
 missing-addon preservation, materialization revision checks, bounded events,
 scoped layout persistence and every addon action through the shared application
 seam. The separately installable PyTorch wheel registers through this API and
