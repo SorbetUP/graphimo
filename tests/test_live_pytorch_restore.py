@@ -153,68 +153,90 @@ def live_torch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         service.close()
 
 
+def _run_cell(project, source: str) -> dict[str, str]:
+    """Add and run one notebook cell through the service; return output previews."""
+    cell = project.execute("notebook.add_cell", {"source": source})
+    cell_id = cell["cell_id"]
+    project.execute("notebook.run", {"cell_id": cell_id})
+    snapshot = project.execute("notebook.inspect", {})
+    for item in snapshot["cells"]:
+        if item["id"] == cell_id:
+            if item.get("errors"):
+                raise AssertionError(f"cell failed: {item['errors']}")
+            return {out["name"]: out.get("preview", "") for out in item.get("outputs", [])}
+    raise AssertionError("cell missing from inspect")
+
+
+def _number(outputs: dict[str, str], name: str) -> float:
+    return float(outputs[name])
+
+
+def _text(outputs: dict[str, str], name: str) -> str:
+    value = outputs[name]
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
 def test_live_checkpoint_restore_via_service(live_torch) -> None:
     project, base, session, tmp_path = live_torch
 
     project.execute(
-        "metablock.create", {"dialect_id": "pytorch.model", "metablock_id": "restore-model"}
+        "metablock.create", {"dialect_id": "pytorch.model", "metablock_id": "restore_model"}
     )
     projection = project.execute(
-        "metablock.project", {"metablock_id": "restore-model", "scope": "root"}
+        "metablock.project", {"metablock_id": "restore_model", "scope": "root"}
     )
-    # The runtime/checkpoint revision is the addon's graph_revision of the state,
-    # exactly as the materialize path computes it.
-    revision = projection["projection"]["graph_revision"]
+    # Materialize through the service: the definition cell is inserted AND run
+    # in the live kernel by the service itself (atomic materialization).
+    materialized = project.execute(
+        "metablock.materialize", {"metablock_id": "restore_model", "bindings": {}}
+    )
+    assert materialized["materialization_state"] == "current"
+    assert isinstance(materialized["cell_id"], str) and materialized["cell_id"]
+    assert materialized["revision"] == projection["revision"]
 
-    # Materialize the definition in the kernel exactly like the production path,
-    # instantiate a live runtime, train one step with optimizer+scheduler, and
-    # persist a checkpoint.
-    sidecar = tmp_path / ".graphimo" / "metablocks" / "restore-model.pytorch.json"
-    setup_code = """
-import builtins, json, torch
-from graphimo_pytorch.model_definition import materialize_definition
-torch.manual_seed(7)
-definition = materialize_definition(state_path=SIDECAR, metablock_id='restore-model', revision=REVISION)
-model = definition.instantiate()
-info = model.__graphimo_pytorch_runtime__
-builtins._restore_model = model
-optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
-next(model.parameters()).sum().backward()
-optimizer.step()
-scheduler.step()
-model.__graphimo_pytorch_training_state__ = {'optimizer': optimizer, 'scheduler': scheduler}
-from graphimo_pytorch.checkpoint import save_checkpoint
-reference = save_checkpoint(model, optimizer=optimizer, scheduler=scheduler, metadata={'training_steps': 1})
-builtins._restore_reference = reference
-post_train = float(next(model.parameters()).sum())
-in_features = next(m for m in model.modules() if isinstance(m, torch.nn.Linear)).in_features
-print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'runtime_instance_id': info.runtime_instance_id, 'artifact_id': reference.id, 'post_train': post_train, 'in_features': in_features}))
-""".replace("REVISION", repr(revision)).replace("SIDECAR", repr(str(sidecar)))
-    setup = json.loads(_kernel_execute(base, session, setup_code))
-    assert setup["ok"] is True
-    runtime_id = setup["runtime_instance_id"]
-    artifact_id = setup["artifact_id"]
+    # Training cell: ordinary notebook cell using the materialized definition,
+    # exactly like a user pipeline. Instantiates a live runtime, trains one
+    # step with optimizer+scheduler, and saves a checkpoint.
+    train = _run_cell(
+        project,
+        "import torch\n"
+        "torch.manual_seed(7)\n"
+        "restore_model = g_pytorch_restore_model.instantiate()\n"
+        "restore_optimizer = torch.optim.SGD(restore_model.parameters(), lr=0.1, momentum=0.9)\n"
+        "restore_scheduler = torch.optim.lr_scheduler.StepLR(restore_optimizer, step_size=1)\n"
+        "next(restore_model.parameters()).sum().backward()\n"
+        "restore_optimizer.step()\n"
+        "restore_scheduler.step()\n"
+        "restore_model.__graphimo_pytorch_training_state__ = {'optimizer': restore_optimizer, 'scheduler': restore_scheduler}\n"
+        "from graphimo_pytorch.checkpoint import save_checkpoint\n"
+        "restore_reference = save_checkpoint(restore_model, optimizer=restore_optimizer, scheduler=restore_scheduler, metadata={'training_steps': 1})\n"
+        "restore_runtime = restore_model.__graphimo_pytorch_runtime__.runtime_instance_id\n"
+        "restore_artifact = restore_reference.id\n"
+        "restore_post_train = float(next(restore_model.parameters()).sum())\n"
+        "restore_in_features = next(m for m in restore_model.modules() if isinstance(m, torch.nn.Linear)).in_features\n",
+    )
+    runtime_id = _text(train, "restore_runtime")
+    artifact_id = _text(train, "restore_artifact")
+    post_train = _number(train, "restore_post_train")
+    in_features = int(_number(train, "restore_in_features"))
 
     # Drift the weights in the kernel so the restore is observable.
-    drift = json.loads(
-        _kernel_execute(
-            base,
-            session,
-            "import builtins, json, torch\n"
-            "with torch.no_grad():\n"
-            "    for p in builtins._restore_model.parameters(): p.add_(3.0)\n"
-            "before = float(next(builtins._restore_model.parameters()).sum())\n"
-            "print('GRAPHIMO_RESULT:' + json.dumps({'before': before}))",
-        )
+    drift = _run_cell(
+        project,
+        "with torch.no_grad():\n"
+        "    for p in restore_model.parameters(): p.add_(3.0)\n"
+        "restore_drifted = float(next(restore_model.parameters()).sum())\n",
     )
+    drifted = _number(drift, "restore_drifted")
 
     # Restore through the service into the live runtime, including the
     # optimizer/scheduler training state.
     restored = project.execute(
         "metablock.invoke",
         {
-            "metablock_id": "restore-model",
+            "metablock_id": "restore_model",
             "action": "checkpoint.restore",
             "args": {
                 "artifact_id": artifact_id,
@@ -233,40 +255,24 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'runtime_instance_id': info.r
     json.dumps(restored, allow_nan=False)
     assert "model" not in restored
 
-    after = json.loads(
-        _kernel_execute(
-            base,
-            session,
-            "import builtins, json, torch\n"
-            "after = float(next(builtins._restore_model.parameters()).sum())\n"
-            "optimizer = builtins._restore_model.__graphimo_pytorch_training_state__['optimizer']\n"
-            "scheduler = builtins._restore_model.__graphimo_pytorch_training_state__['scheduler']\n"
-            "print('GRAPHIMO_RESULT:' + json.dumps({'after': after, 'lr': optimizer.param_groups[0]['lr'], 'scheduler_last_epoch': scheduler.state_dict().get('last_epoch')}))",
-        )
+    after = _run_cell(
+        project,
+        "restore_after = float(next(restore_model.parameters()).sum())\n"
+        "restore_lr = restore_optimizer.param_groups[0]['lr']\n"
+        "restore_epoch = restore_scheduler.state_dict().get('last_epoch')\n",
     )
     # Weights went back to the exact checkpointed values (drift removed).
-    assert after["after"] != drift["before"]
-    assert after["after"] == pytest.approx(setup["post_train"])
-    saved = json.loads(
-        _kernel_execute(
-            base,
-            session,
-            "import builtins, json, torch\n"
-            "from graphimo_pytorch.checkpoint import load_checkpoint\n"
-            "from graphimo_pytorch.model_definition import definition_from_state\n"
-            "print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))",
-        )
-    )
-    assert saved["ok"] is True
+    assert _number(after, "restore_after") != drifted
+    assert _number(after, "restore_after") == pytest.approx(post_train)
     # StepLR(gamma=0.1) after one step: lr 0.1 -> 0.01.
-    assert after["lr"] == pytest.approx(0.01)
-    assert after["scheduler_last_epoch"] == 1
+    assert _number(after, "restore_lr") == pytest.approx(0.01)
+    assert _number(after, "restore_epoch") == 1
 
     # A fresh runtime can also be restored from the same checkpoint (new id).
     fresh = project.execute(
         "metablock.invoke",
         {
-            "metablock_id": "restore-model",
+            "metablock_id": "restore_model",
             "action": "checkpoint.restore",
             "args": {"artifact_id": artifact_id},
         },
@@ -275,7 +281,7 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'runtime_instance_id': info.r
     assert fresh["revision_match"] is True
     listing = project.execute(
         "metablock.invoke",
-        {"metablock_id": "restore-model", "action": "runtime.list", "args": {}},
+        {"metablock_id": "restore_model", "action": "runtime.list", "args": {}},
     )
     listed_ids = {item["runtime_instance_id"] for item in listing["items"]}
     assert {runtime_id, fresh["runtime_instance_id"]} <= listed_ids
@@ -284,12 +290,12 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'runtime_instance_id': info.r
     inspection = project.execute(
         "metablock.invoke",
         {
-            "metablock_id": "restore-model",
+            "metablock_id": "restore_model",
             "action": "torchlens.inspect",
             "args": {
                 "runtime_instance_id": fresh["runtime_instance_id"],
                 "logical_element_id": "backbone",
-                "inputs": {"$inputs": [[[1.0] * setup["in_features"]]]},
+                "inputs": {"$inputs": [[[1.0] * in_features]]},
             },
         },
     )
@@ -302,7 +308,7 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'runtime_instance_id': info.r
         project.execute(
             "metablock.apply",
             {
-                "metablock_id": "restore-model",
+                "metablock_id": "restore_model",
                 "intent": {"type": "set_parameter", "name": "name", "value": "Renamed"},
                 "expected_revision": "stale-revision",
             },

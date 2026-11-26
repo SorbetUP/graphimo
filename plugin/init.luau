@@ -936,6 +936,87 @@ local Page = ui.component(function()
 		end)
 	end
 
+	local addon_ui_states = {}
+
+	local function addon_ui_state(key, default)
+		local state = addon_ui_states[key]
+		if state == nil then
+			state = ui.use_state(default)
+			addon_ui_states[key] = state
+		end
+		return state
+	end
+
+	local function invoke_addon_ui_action(panel, action)
+		local metablock_id = active_metablock:peek()
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
+		if metablock_id == "" or path == "" then return end
+		local args = {}
+		for _, field in panel.fields or {} do
+			local key = tostring(panel.id) .. "/" .. tostring(field.id)
+			local state = addon_ui_states[key]
+			local value = state and state:peek() or field.default
+			if field.type == "integer" or field.type == "number" then
+				local number = tonumber(value)
+				if number == nil then notice:set("Field " .. tostring(field.label or field.id) .. " expects a number"); return end
+				if field.type == "integer" and number ~= math.floor(number) then
+					notice:set("Field " .. tostring(field.label or field.id) .. " expects an integer"); return
+				end
+				value = number
+			elseif field.type == "boolean" then
+				value = value == true
+			end
+			args[tostring(field.id)] = value
+		end
+		observe(tostring(action.label or action.id), function()
+			return Service.execute(zeron, path, "metablock.invoke", {
+				metablock_id = metablock_id,
+				action = action.invoke,
+				args = args,
+			})
+		end, function()
+			notice:set(tostring(action.label or action.id) .. " done")
+			refresh_metablock()
+		end, function(err)
+			notice:set(tostring(action.label or action.id) .. " failed: " .. tostring(err))
+		end)
+	end
+
+	local function render_addon_ui_panels()
+		local view = metablock_projection:get()
+		local contribution = view and view.ui
+		if type(contribution) ~= "table" then return nil end
+		return ui.column { w_full = true, gap = "$space.2",
+			ui.each(contribution.panels or {}, function(panel)
+				return ui.column { w_full = true, gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+					Text { tostring(panel.title or panel.id), style = "label" },
+					ui.each(panel.fields or {}, function(field)
+						local key = tostring(panel.id) .. "/" .. tostring(field.id)
+						local default = field.default
+						if default == nil and field.type == "boolean" then default = false end
+						if default == nil then default = "" end
+						local state = addon_ui_state(key, default)
+						if field.type == "boolean" then
+							return Button {
+								tostring(field.label or field.id) .. ": " .. (state:peek() == true and "on" or "off"),
+								tone = "secondary", size = "sm", w_full = true,
+								on_click = function() state:set(state:peek() ~= true) end,
+							}
+						end
+						return TextField { value = state, label = tostring(field.label or field.id), placeholder = tostring(field.default or ""), w_full = true }
+					end),
+					ui.each(panel.actions or {}, function(action)
+						return Button {
+							tostring(action.label or action.id),
+							tone = "secondary", size = "sm", w_full = true,
+							on_click = function() invoke_addon_ui_action(panel, action) end,
+						}
+					end),
+				}
+			end),
+		}
+	end
+
 	local function format_checkpoint_migration_report(report)
 		if type(report) ~= "table" then return "Migration report unavailable" end
 		local function shape_text(shape)
@@ -2451,6 +2532,10 @@ local Page = ui.component(function()
 					disabled = function() return session_id:get() == "" or (not is_local_url(url:get())) end,
 					on_click = materialize_metablock,
 				},
+				ui.show(function()
+					local view = metablock_projection:get()
+					return view ~= nil and type(view.ui) == "table"
+				end, render_addon_ui_panels()),
 				ui.row { w_full = true, items = "center", gap = "$space.1",
 					Button {
 						function() return if generated_source_open:get() then "Hide generated Python" else "Inspect generated Python" end,
