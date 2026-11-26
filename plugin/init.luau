@@ -985,7 +985,9 @@ local Page = ui.component(function()
 	local function render_addon_ui_panels()
 		local view = metablock_projection:get()
 		local contribution = view and view.ui
-		if type(contribution) ~= "table" then return nil end
+		-- ui.show requires a ui node, never nil: render an empty column when the
+		-- active MetaBlock declares no declarative UI.
+		if type(contribution) ~= "table" then return ui.column {} end
 		return ui.column { w_full = true, gap = "$space.2",
 			ui.each(contribution.panels or {}, function(panel)
 				return ui.column { w_full = true, gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
