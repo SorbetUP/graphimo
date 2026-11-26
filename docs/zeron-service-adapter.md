@@ -78,6 +78,10 @@ operation.
 - Opening the Terminal panel long-polls bounded Graphimo events and appends
   them to the existing log view. **Read Graphimo events** performs one manual
   cursor read.
+- The PyTorch MetaBlock sidebar can manually read its bounded addon event
+  stream with `metablock.events`; it retains at most 50 displayed events and
+  truncates each rendered payload. It labels these as events received by the
+  Graphimo service.
 
 ## Runtime ownership
 
@@ -93,6 +97,25 @@ rendered in the same canvas and use the same pan, zoom, card and edge renderer.
 The standalone Workbench remains the conformance surface for host-independent
 application behavior; browser-specific Zeron rendering still requires a live
 plugin check in Zeron.
+
+## Live telemetry routing boundary
+
+`metablock.events` drains the PyTorch addon's in-process event bus. The model
+runtime created inside the active marimo kernel lives in a different process
+from the Graphimo service, so Zeron cannot currently list that runtime, attach
+activation/gradient hooks to it, or receive its events through this action.
+The new event panel reports service-visible events and explicitly indicates
+this boundary; it does not present an empty service-side runtime list as proof
+that the notebook has no active model.
+
+Before live runtime inspection can be enabled in Zeron, the product contract
+still needs to decide how the marimo process publishes events and accepts
+subscription changes through the persistent service. That decision must cover
+MetaBlock/runtime correlation, event delivery and cursor ownership, bounded
+payloads, unsubscribe/cleanup on scope or run completion, and failure behavior
+when the notebook process disconnects. The current local API has the required
+generic event envelope and service long-poll endpoint, but it does not define
+that cross-process bridge.
 
 ## Agent tools
 

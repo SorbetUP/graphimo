@@ -265,6 +265,9 @@ local Page = ui.component(function()
 	local metablock_parameter_dialog = ui.use_state(false)
 	local metablock_parameter_target = ui.use_state({})
 	local metablock_parameter_value = ui.use_state("")
+	local metablock_event_cursor = ui.use_state("0")
+	local metablock_event_entries = ui.use_state({})
+	local metablock_events_open = ui.use_state(false)
 	local service_event_cursor = ui.use_state("0")
 	local service_polling = ui.use_state(false)
 	local visible_cell_ids = ui.use_state({})
@@ -592,6 +595,9 @@ local Page = ui.component(function()
 		active_metablock:set(metablock_id)
 		active_metablock_scope:set(scope or "root")
 		metablock_history:set({ undo_depth = 0, redo_depth = 0, stale = false })
+		metablock_event_cursor:set("0")
+		metablock_event_entries:set({})
+		metablock_events_open:set(false)
 		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
@@ -603,6 +609,9 @@ local Page = ui.component(function()
 		active_metablock_scope:set("root")
 		metablock_projection:set(nil)
 		metablock_history:set({ undo_depth = 0, redo_depth = 0, stale = false })
+		metablock_event_cursor:set("0")
+		metablock_event_entries:set({})
+		metablock_events_open:set(false)
 		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
@@ -691,6 +700,28 @@ local Page = ui.component(function()
 			if on_success then on_success(value) end
 		end, function(err)
 			notice:set("MetaBlock update failed: " .. tostring(err))
+		end)
+	end
+
+	local function read_metablock_events()
+		local metablock_id = active_metablock:peek()
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
+		if metablock_id == "" or path == "" then return end
+		observe("Read PyTorch MetaBlock events", function()
+			return Service.execute(zeron, path, "metablock.events", {
+				metablock_id = metablock_id, cursor = metablock_event_cursor:peek(), limit = 128,
+			})
+		end, function(result)
+			metablock_event_cursor:set(result.cursor or metablock_event_cursor:peek())
+			local next_events = table.clone(metablock_event_entries:peek())
+			for _, event in result.events or {} do table.insert(next_events, event) end
+			while #next_events > 50 do table.remove(next_events, 1) end
+			metablock_event_entries:set(next_events)
+			local count = #(result.events or {})
+			if count == 0 then notice:set("No new MetaBlock events are available in the Graphimo service")
+			else notice:set("Read " .. tostring(count) .. " MetaBlock event(s)") end
+		end, function(err)
+			notice:set("Could not read MetaBlock events: " .. tostring(err))
 		end)
 	end
 
@@ -1794,6 +1825,13 @@ local Page = ui.component(function()
 			end
 			return tostring(value)
 		end
+		local function display_meta_event(event)
+			local ok, payload = pcall(ui.json.encode, event.payload or {})
+			if not ok then payload = tostring(event.payload) end
+			local target = event.logical_element_id or event.module_path or event.runtime_instance_id or "runtime"
+			local step = if event.step ~= nil then " · step " .. tostring(event.step) else ""
+			return string.sub(tostring(event.kind or "event") .. " · " .. tostring(target) .. step .. "\n" .. tostring(payload), 1, 1800)
+		end
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
 				Text { "Controls", style = "heading" },
@@ -2021,6 +2059,21 @@ local Page = ui.component(function()
 						end,
 					}
 				end),
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					Button {
+						function() return if metablock_events_open:get() then "Runtime events −" else "Runtime events +" end,
+						tone = "secondary", size = "sm", grow = 1,
+						on_click = function() metablock_events_open:set(not metablock_events_open:peek()) end,
+					},
+					Button { "Read", tone = "secondary", size = "sm", on_click = read_metablock_events },
+				},
+				ui.show(metablock_events_open, ui.column { w_full = true, gap = "$space.1",
+					Text { "Events delivered to the Graphimo service. Events in another marimo process are not bridged yet.", style = "caption", tone = "secondary", wrap = true },
+					ui.show(function() return #metablock_event_entries:get() == 0 end, Text { "No events loaded", style = "caption", tone = "secondary" }),
+					ui.each(metablock_event_entries, function(event)
+						return Text { display_meta_event(event), style = "caption", tone = "secondary", wrap = true }
+					end),
+				}),
 			}),
 		}
 	end
