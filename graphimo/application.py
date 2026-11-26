@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .components import ComponentLibrary
 from .groups import GroupLibrary
 from .metablocks import GraphimoHostAPI, MetaBlockAddonManager
 
@@ -23,6 +24,7 @@ class GraphimoApplication:
         self.host = host
         self.metablocks = metablocks or MetaBlockAddonManager(host)
         self.groups = GroupLibrary(host.project_path)
+        self.components = ComponentLibrary(host.project_path)
         project_name = Path(host.project_path).stem or host.project_id
         self._scope_stack = [
             {
@@ -55,6 +57,10 @@ class GraphimoApplication:
             "group.create": self._create_group,
             "group.inspect": self._inspect_group,
             "group.set_contract": self._set_group_contract,
+            "component.list": self._list_components,
+            "component.write": self._write_component,
+            "component.validate": self._validate_component,
+            "component.delete": self._delete_component,
             "scope.enter": self._enter_group,
             "scope.leave": self._leave_scope,
             "scope.current": self._current_scope,
@@ -131,6 +137,18 @@ class GraphimoApplication:
         group_id = self._required(args, "group_id")
         request = args.get("contract", {})
         return self.groups.update_contract(group_id, request).to_catalog_item()
+
+    def _list_components(self, _args: dict[str, Any]) -> Any:
+        return self.components.list()
+
+    def _write_component(self, args: dict[str, Any]) -> Any:
+        return self.components.write(self._required(args, "path"), self._required(args, "source"))
+
+    def _validate_component(self, args: dict[str, Any]) -> Any:
+        return self.components.validate(self._required(args, "path"))
+
+    def _delete_component(self, args: dict[str, Any]) -> Any:
+        return self.components.delete(self._required(args, "path"))
 
     def _enter_group(self, args: dict[str, Any]) -> Any:
         group_id = self._required(args, "container_id")

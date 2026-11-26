@@ -111,6 +111,12 @@ is bounded to the response limit; if an action runs but its result cannot fit,
 the step reports `batch_response_too_large` and later work stops because the
 journal cannot fit in the response.
 
+Component actions include `component.list`, `component.write`,
+`component.validate` and recoverable `component.delete`. They are suitable for
+agent source authoring and use the same application layer as interactive
+clients. See [Agent-authored components](components.md) for the write and
+validation contract.
+
 The event route accepts `project`, `cursor`, `limit` and `wait_ms` query
 parameters. It returns `cursor`, `events` and `dropped`. The cursor is an
 increasing decimal sequence. If old events were overwritten by the bounded
