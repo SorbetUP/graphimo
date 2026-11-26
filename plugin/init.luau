@@ -2034,6 +2034,15 @@ local Page = ui.component(function()
 					local view = metablock_projection:get()
 					return if view then tostring(view.name or "PyTorch MetaBlock") .. " · " .. active_metablock_scope:get() else "MetaBlock"
 				end, style = "heading", wrap = true },
+				Text { function()
+					local view = metablock_projection:get()
+					local selector = view and view.runtime_selector
+					local items = selector and selector.items or {}
+					if #items > 0 then
+						return "Runtime visibility: " .. tostring(#items) .. " active runtime(s) in the Graphimo service process"
+					end
+					return "Runtime visibility: none in the Graphimo service. A model running in the separate marimo kernel is not visible here yet."
+				end, style = "caption", tone = "secondary", wrap = true },
 				Button {
 					"Insert generated definition",
 					tone = "primary", size = "sm", w_full = true,
