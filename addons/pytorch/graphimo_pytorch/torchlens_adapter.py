@@ -109,6 +109,37 @@ def _site_for_request(request: TorchLensRequest, registry: Any) -> tuple[Any, An
     return model, info, sites[0]
 
 
+def _trace_single_process(
+    torchlens: Any, model: Any, positional: Any, keyword: Any, **kwargs: Any
+) -> Any:
+    """Run ``torchlens.trace`` inside a marimo kernel process.
+
+    TorchLens refuses to run outside the ``MainProcess`` (its global toggle state
+    is not concurrency-safe). A marimo kernel executes cells serially in its own
+    process, so the guard is neutralized for the duration of this single call and
+    restored immediately afterwards.
+    """
+    import multiprocessing as mp
+
+    if mp.current_process().name == "MainProcess":
+        return torchlens.trace(model, positional, keyword, **kwargs)
+    guards: list[tuple[Any, Any]] = []
+    for module_name in ("torchlens.user_funcs", "torchlens._user_public_impls"):
+        try:
+            module = __import__(module_name, fromlist=["warn_parallel"])
+        except ImportError:
+            continue
+        original = getattr(module, "warn_parallel", None)
+        if original is not None:
+            module.warn_parallel = lambda: None
+            guards.append((module, original))
+    try:
+        return torchlens.trace(model, positional, keyword, **kwargs)
+    finally:
+        for module, original in guards:
+            module.warn_parallel = original
+
+
 def _normalize_inputs(inputs: object) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """Normalize explicit tensors/JSON values to TorchLens positional or keyword inputs."""
     import torch
@@ -320,7 +351,9 @@ def _perform_inspection(
         )
         kwargs["intervene"] = torchlens.when(selector, helper)
     try:
-        trace = torchlens.trace(inspection_model, positional, keyword or None, **kwargs)
+        trace = _trace_single_process(
+            torchlens, inspection_model, positional, keyword or None, **kwargs
+        )
     except Exception as exc:
         root_hook.remove()
         raise RuntimeError(f"TorchLens capture failed: {type(exc).__name__}: {exc}") from exc

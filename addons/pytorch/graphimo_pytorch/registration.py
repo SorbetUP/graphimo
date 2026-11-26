@@ -293,6 +293,7 @@ class PyTorchModelDialect:
                 "runtime.unsubscribe",
                 "runtime.unsubscribe_all",
                 "runtime.release",
+                "checkpoint.restore",
                 "torchlens.inspect",
                 "torchlens.save_inspection",
             }
@@ -397,6 +398,27 @@ class PyTorchModelDialect:
                 "materialization_key": definition.materialization_key,
                 "report": _migration_report_json(report),
             }
+        if action == "checkpoint.restore":
+            artifact_id = args.get("artifact_id")
+            if not isinstance(artifact_id, str) or not artifact_id:
+                raise ValueError("artifact_id must be non-empty text")
+            from .checkpoint import restore_checkpoint
+            from .model_definition import definition_from_state
+
+            definition = definition_from_state(
+                state_from_dict(state), external_values=args.get("external_values", {})
+            )
+            runtime_id = args.get("runtime_instance_id")
+            if runtime_id is not None and (not isinstance(runtime_id, str) or not runtime_id):
+                raise ValueError("runtime_instance_id must be non-empty text")
+            # Executed in the kernel: the nn.Module never crosses into the service.
+            return restore_checkpoint(
+                definition,
+                artifact_id,
+                runtime_instance_id=runtime_id,
+                restore_training_state=bool(args.get("restore_training_state", False)),
+                strict=bool(args.get("strict", True)),
+            )
         if action in {"torchlens.inspect", "torchlens.save_inspection"}:
             from .torchlens_adapter import (
                 TorchLensIntervention,

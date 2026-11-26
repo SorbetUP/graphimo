@@ -253,3 +253,129 @@ def test_addon_application_previews_migration_from_the_current_semantic_state(
     assert isolated_runtime.resolve(source_model.__graphimo_pytorch_runtime__.runtime_instance_id)
     assert len(isolated_runtime.list_for_metablock("prior-model")) == 1
     isolated_runtime.release(source_model)
+
+
+def test_restore_checkpoint_into_new_runtime_returns_json_metadata_only(
+    tmp_path, monkeypatch, isolated_runtime
+):
+    monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(tmp_path / "artifact-store"))
+    definition = model_definition()
+    model = definition.instantiate()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(1.0)
+    reference = checkpoint.save_checkpoint(model, metadata={"training_steps": 7})
+
+    # Keep restored models alive: the runtime registry only holds weakrefs and
+    # the kernel keeps models in cell globals.
+    kept: list = []
+    original_instantiate = definitions.PyTorchModelDefinition.instantiate
+
+    def keep_alive(self, **kwargs):
+        restored_model = original_instantiate(self, **kwargs)
+        kept.append(restored_model)
+        return restored_model
+
+    monkeypatch.setattr(definitions.PyTorchModelDefinition, "instantiate", keep_alive)
+    result = checkpoint.restore_checkpoint(definition, reference)
+
+    assert result["artifact_id"] == reference.id
+    assert result["graph_revision"] == "graph-rev-a"
+    assert result["revision_match"] is True
+    assert result["migrated"] is False
+    assert result["migration_report"] is None
+    assert result["training_steps"] == 7
+    assert isinstance(result["runtime_instance_id"], str)
+    # The registry is weak (the kernel keeps models alive via cell globals);
+    # keep a strong reference here so the restored runtime stays resolvable.
+    assert isolated_runtime.resolve(result["runtime_instance_id"]) is not None
+    import json
+
+    json.dumps(result, allow_nan=False)
+    assert "model" not in result
+    # Weight equality is covered by the existing-runtime restore below, where
+    # the test holds a strong reference to the model.
+
+
+def test_restore_checkpoint_into_existing_runtime_and_training_state(
+    tmp_path, monkeypatch, isolated_runtime
+):
+    monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(tmp_path / "artifact-store"))
+    definition = model_definition()
+    model = definition.instantiate()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
+    model(torch.ones(2, 2)).sum().backward()
+    optimizer.step()
+    scheduler.step()
+    reference = checkpoint.save_checkpoint(
+        model, optimizer=optimizer, scheduler=scheduler, metadata={"training_steps": 3}
+    )
+    info = runtime._runtime_info(model)
+
+    # Drift the weights after saving so the restore is observable.
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(5.0)
+    fresh_optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    fresh_scheduler = torch.optim.lr_scheduler.StepLR(fresh_optimizer, step_size=1)
+    model.__graphimo_pytorch_training_state__ = {
+        "optimizer": fresh_optimizer,
+        "scheduler": fresh_scheduler,
+    }
+
+    result = checkpoint.restore_checkpoint(
+        definition,
+        reference,
+        runtime_instance_id=info.runtime_instance_id,
+        restore_training_state=True,
+    )
+
+    assert result["runtime_instance_id"] == info.runtime_instance_id
+    assert result["optimizer_state_restored"] is True
+    assert result["scheduler_state_restored"] is True
+    assert result["training_steps"] == 3
+    # Weights were restored into the live model, and the optimizer state matches.
+    saved = checkpoint.load_checkpoint(definition, reference)
+    assert torch.allclose(next(model.parameters()), next(saved.parameters()))
+    assert fresh_optimizer.state_dict()["param_groups"] == optimizer.state_dict()["param_groups"]
+    assert fresh_scheduler.state_dict() == scheduler.state_dict()
+
+
+def test_restore_checkpoint_rejects_revision_mismatch_and_unknown_runtime(
+    tmp_path, monkeypatch, isolated_runtime
+):
+    monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(tmp_path / "artifact-store"))
+    definition = model_definition()
+    model = definition.instantiate()
+    reference = checkpoint.save_checkpoint(model)
+
+    other = model_definition(revision="graph-rev-b", materialization_key="mat-key-b")
+    with pytest.raises(checkpoint.CheckpointError, match="does not match") as mismatch:
+        checkpoint.restore_checkpoint(other, reference)
+    assert mismatch.value.code == "pytorch_checkpoint_revision_mismatch"
+    with pytest.raises(checkpoint.CheckpointError, match="not registered") as missing:
+        checkpoint.restore_checkpoint(definition, reference, runtime_instance_id="nope")
+    assert missing.value.code == "pytorch_checkpoint_runtime_missing"
+
+
+def test_restore_optimizer_state_returns_recorded_step_count(
+    tmp_path, monkeypatch, isolated_runtime
+):
+    monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(tmp_path / "artifact-store"))
+    definition = model_definition()
+    model = definition.instantiate()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    model(torch.ones(2, 2)).sum().backward()
+    optimizer.step()
+    reference = checkpoint.save_checkpoint(
+        model, optimizer=optimizer, metadata={"training_steps": 11}
+    )
+    fresh = torch.optim.SGD(model.parameters(), lr=0.5)
+    assert checkpoint.restore_optimizer_state(fresh, reference) == 11
+    # The recorded optimizer state (lr=0.1) replaced the constructor hyperparams.
+    assert fresh.state_dict()["param_groups"][0]["lr"] == 0.1
+    bare = checkpoint.save_checkpoint(model)
+    with pytest.raises(checkpoint.CheckpointError, match="no optimizer state") as missing:
+        checkpoint.restore_optimizer_state(fresh, bare)
+    assert missing.value.code == "pytorch_checkpoint_optimizer_missing"

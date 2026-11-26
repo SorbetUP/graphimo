@@ -740,6 +740,11 @@ class MetaBlockAddonManager:
         self.host.update_materialization_cell(
             {**result, "metablock_id": metablock_id, "dialect_id": record.dialect_id}
         )
+        # The materialized cell now matches the persisted revision; older cells
+        # materialized from a previous revision are reported as outdated by the
+        # renderer comparing graph_revision values.
+        result = dict(result)
+        result["materialization_state"] = "current"
         return result
 
     def invoke(self, metablock_id: str, action: str, args: dict[str, Any]) -> Any:

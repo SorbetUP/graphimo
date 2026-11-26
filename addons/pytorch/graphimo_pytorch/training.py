@@ -25,6 +25,8 @@ def train_pytorch_model(
     emit_grad_norm: bool = False,
     emit_cuda: bool = False,
     persist_checkpoint: bool = False,
+    scheduler: Any = None,
+    resume_from: Any = None,
 ) -> tuple[Any, dict[str, Any], Any]:
     """Train a PyTorch model definition and return model, bounded history, ArtifactRef.
 
@@ -33,6 +35,9 @@ def train_pytorch_model(
     tensors, ``{"input_ids": tokens}``, or ``(tokens, labels)``. Other models
     should provide ``loss_fn(output, target)`` and batches as input/target pairs.
     Checkpoint creation is opt-in and uses the Graphimo ArtifactStore API.
+    ``resume_from`` restores the optimizer state of a previous checkpoint so the
+    numeric schedule continues instead of restarting; ``scheduler`` (any object
+    with ``step()`` and ``state_dict()``) is stepped each iteration and persisted.
     """
     import torch
 
@@ -48,6 +53,8 @@ def train_pytorch_model(
         raise TypeError("telemetry flags must be booleans")
     if type(persist_checkpoint) is not bool:
         raise TypeError("persist_checkpoint must be a boolean")
+    if scheduler is not None and not callable(getattr(scheduler, "step", None)):
+        raise TypeError("scheduler must provide step()")
     if not callable(getattr(model_def, "instantiate", None)):
         raise TypeError("model_def must be a PyTorchModelDefinition")
 
@@ -55,9 +62,16 @@ def train_pytorch_model(
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=float(lr), weight_decay=float(weight_decay)
     )
+    step = 0
+    if resume_from is not None:
+        from .checkpoint import restore_optimizer_state
+
+        step = restore_optimizer_state(optimizer, resume_from)
+    # Keep the live training state on the model so a later checkpoint.restore
+    # with restore_training_state can rebuild optimizer/scheduler exactly.
+    model.__graphimo_pytorch_training_state__ = {"optimizer": optimizer, "scheduler": scheduler}
     history: list[dict[str, float | int]] = []
     checkpoint = None
-    step = 0
     stop = False
     for epoch in range(epochs):
         epoch_batches = batches() if callable(batches) else batches
@@ -107,6 +121,8 @@ def train_pytorch_model(
                 if norms:
                     grad_norm = torch.stack(norms).norm(2)
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
             scalar_loss = float(loss.detach().item())
             history.append({"step": step, "epoch": epoch, "loss": scalar_loss})
             if len(history) > 5000:
@@ -132,6 +148,7 @@ def train_pytorch_model(
         checkpoint = save_checkpoint(
             model,
             optimizer=optimizer,
+            scheduler=scheduler,
             metadata={"training_steps": step, "epochs_requested": epochs},
         )
     return model, {"steps": step, "history": history}, checkpoint

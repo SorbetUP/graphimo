@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from typing import Any
 
+from ..metablocks import MetaBlockError
 from .protocol import (
     MAX_REQUEST_BYTES,
     PROTOCOL_VERSION,
@@ -202,7 +203,7 @@ class GraphimoService:
             self._write_error(handler, exc.status, exc.code, str(exc))
         except KeyError as exc:
             self._write_error(handler, 404, "project_not_found", str(exc))
-        except (ValueError, TypeError, FileNotFoundError) as exc:
+        except (ValueError, TypeError, FileNotFoundError, MetaBlockError) as exc:
             self._write_error(handler, 422, _action_error_code(exc), str(exc))
         except Exception:
             self._write_error(handler, 500, "internal_error", "Graphimo service action failed")

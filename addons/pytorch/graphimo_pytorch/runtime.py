@@ -205,6 +205,7 @@ class RuntimeRegistry:
         self.event_bus = event_bus or PyTorchEventBus()
         self._models: dict[str, weakref.ReferenceType[Any]] = {}
         self._infos: dict[str, Any] = {}
+        self._pinned: dict[str, Any] = {}
         self._subscriptions: dict[str, dict[str, _Subscription]] = {}
         self._hooks: dict[tuple[str, str], _Hook] = {}
         self._last_aux_emission: dict[tuple[str, str], float] = {}
@@ -236,6 +237,17 @@ class RuntimeRegistry:
         with self._lock:
             reference = self._models.get(runtime_instance_id)
             return reference() if reference is not None else None
+
+    def pin(self, runtime_instance_id: str, model: Any) -> None:
+        """Hold a strong reference so a runtime survives until an explicit release.
+
+        Restored checkpoints are not bound to any notebook cell global, so without
+        a pin the weak registry would collect the model immediately.
+        """
+        with self._lock:
+            if runtime_instance_id not in self._infos:
+                raise ValueError(f"runtime instance {runtime_instance_id!r} is not registered")
+            self._pinned[runtime_instance_id] = model
 
     def info(self, runtime_instance_id: str) -> Any | None:
         with self._lock:
@@ -466,6 +478,7 @@ class RuntimeRegistry:
     def _remove_runtime(self, runtime_id: str) -> None:
         self._models.pop(runtime_id, None)
         self._infos.pop(runtime_id, None)
+        self._pinned.pop(runtime_id, None)
         subscriptions = self._subscriptions.pop(runtime_id, {})
         for subscription in subscriptions.values():
             key = (runtime_id, subscription.site.module_path)
