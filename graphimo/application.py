@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .components import ComponentLibrary
+from .controls import control_catalog, create_control_source
 from .groups import GroupLibrary
 from .metablocks import GraphimoHostAPI, MetaBlockAddonManager
 
@@ -57,6 +58,8 @@ class GraphimoApplication:
             "group.create": self._create_group,
             "group.inspect": self._inspect_group,
             "group.set_contract": self._set_group_contract,
+            "control.catalog": self._control_catalog,
+            "control.create": self._create_control,
             "component.list": self._list_components,
             "component.write": self._write_component,
             "component.validate": self._validate_component,
@@ -137,6 +140,14 @@ class GraphimoApplication:
         group_id = self._required(args, "group_id")
         request = args.get("contract", {})
         return self.groups.update_contract(group_id, request).to_catalog_item()
+
+    @staticmethod
+    def _control_catalog(_args: dict[str, Any]) -> Any:
+        return control_catalog()
+
+    @staticmethod
+    def _create_control(args: dict[str, Any]) -> Any:
+        return create_control_source(args)
 
     def _list_components(self, _args: dict[str, Any]) -> Any:
         return self.components.list()

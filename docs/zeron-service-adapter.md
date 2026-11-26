@@ -29,6 +29,9 @@ operation.
 
 - Opening a local project loads its layout, Group catalog, MetaBlock catalog
   and active application scope in one Graphimo service batch.
+- The normal Python palette gets its Control Block entries from
+  `control.catalog`. Selecting a control asks `control.create` for validated
+  widget/value cell source, then inserts both as ordinary marimo cells.
 - **Reusable Groups** are actionable entries. Opening one enters the matching
   Graphimo application scope, then opens its `groups/<module>.py` file as the
   live marimo notebook in the same canvas. Graphimo continues to use the root
@@ -83,6 +86,11 @@ legacy marimo tools:
 | `graphimo_component_write` | Calls `component.write` to atomically validate and create/update a reusable `@node` source file. |
 | `graphimo_validate` | Calls `component.validate` and returns contract diagnostics. |
 | `graphimo_events` | Reads bounded application/addon events by cursor. |
+
+`graphimo_inspect` includes the current Control Block catalog. Agents can call
+`graphimo_execute` with `control.create` to obtain the same validated source
+bundle as the UI. The UI inserts that source through the live marimo bridge;
+the application itself does not schedule notebook execution.
 
 Each tool accepts an optional local notebook `path`; otherwise it uses the
 active Graphimo project. The source-writing tool accepts at most 2 MiB of

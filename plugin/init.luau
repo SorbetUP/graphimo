@@ -106,7 +106,7 @@ end })
 
 local function service_project_path(args)
 	local saved = active_notebook:get()
-	local path = if type(args) == "table" and type(args.path) == "string" and args.path ~= "" then args.path else (saved.path or "")
+	local path = if type(args) == "table" and type(args.path) == "string" and args.path ~= "" then args.path else (saved.root_path or saved.path or "")
 	if path == "" then
 		return nil, { ok = false, error = { code = "selection_required", message = "Open a local project in Graphimo or provide its path" } }
 	end
@@ -125,6 +125,7 @@ zeron.tool({ name = "graphimo_inspect", run = function(args)
 			{ id = "scope", action = "scope.current", args = {} },
 			{ id = "groups", action = "group.list", args = {} },
 			{ id = "components", action = "component.list", args = {} },
+			{ id = "controls", action = "control.catalog", args = {} },
 			{ id = "metablocks", action = "metablock.list", args = {} },
 		})
 	end)
@@ -200,6 +201,7 @@ local Page = ui.component(function()
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local notebook_snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local groups = ui.use_state({})
+	local controls = ui.use_state({})
 	local metablocks = ui.use_state({})
 	local active_metablock = ui.use_state("")
 	local active_metablock_scope = ui.use_state("root")
@@ -392,6 +394,7 @@ local Page = ui.component(function()
 				observe("Load Graphimo project", function()
 					return Service.batch(zeron, project_path, {
 						{ id = "groups", action = "group.list", args = {} },
+						{ id = "controls", action = "control.catalog", args = {} },
 						{ id = "metablocks", action = "metablock.list", args = {} },
 						{ id = "scope", action = "scope.current", args = {} },
 					})
@@ -407,6 +410,7 @@ local Page = ui.component(function()
 					end
 					group_scope_stack:set(restored_groups)
 					groups:set((results.groups or {}).items or {})
+					controls:set((results.controls or {}).items or {})
 					metablocks:set((results.metablocks or {}).items or {})
 					local active_scope = (results.scope or {}).scope or {}
 					local layout_scope = active_scope.scope_id or "root"
@@ -1081,6 +1085,35 @@ local Page = ui.component(function()
 		end, function(err) notice:set("Could not delete cell: " .. tostring(err)) end)
 	end
 
+	local function add_control(kind)
+		if session_id:peek() == "" then notice:set("Open a live marimo notebook before adding a control"); return end
+		if active_metablock:peek() ~= "" then notice:set("Controls are available in normal Python scopes"); return end
+		if not is_local_url(url:peek()) then notice:set("Graphimo Controls require a local Graphimo service"); return end
+		output_counter:set(output_counter:peek() + 1)
+		local identity = kind .. "_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+		observe("Compile " .. kind .. " control", function()
+			return Service.execute(zeron, path, "control.create", { kind = kind, identity = identity })
+		end, function(compiled)
+			observe("Insert " .. kind .. " control", function()
+				return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), compiled.control_source)
+			end, function()
+				observe("Create reactive value for " .. compiled.label, function()
+					return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), compiled.value_source)
+				end, function()
+					notice:set(compiled.label .. " added; connect its value output " .. compiled.value_name)
+					refresh_graph()
+				end, function(value_error)
+					notice:set("Reactive value creation failed: " .. tostring(value_error) .. "; remove the control cell if it is no longer needed")
+				end)
+			end, function(err)
+				notice:set("Could not insert " .. compiled.label .. ": " .. tostring(err))
+			end)
+		end, function(err)
+			notice:set("Could not compile " .. kind .. " control: " .. tostring(err))
+		end)
+	end
+
 	local function add_selected_component(item, callable)
 		if not item or not callable then
 			for _, candidate in components:peek() do
@@ -1127,6 +1160,19 @@ local Page = ui.component(function()
 		end)
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
+				Text { "Controls", style = "heading" },
+				ui.each(controls, function(control)
+					local labels = {
+						slider = "Slider", range_slider = "Range Slider", number = "Number Input",
+						dropdown = "Select", checkbox = "Checkbox", text = "Text Input", run_button = "Run Trigger",
+					}
+					return Button {
+						labels[control.kind] or control.kind,
+						tone = "secondary", size = "sm", w_full = true,
+						disabled = function() return session_id:get() == "" end,
+						on_click = function() add_control(control.kind) end,
+					}
+				end),
 				Text { "MetaBlocks", style = "heading" },
 				Button {
 					"Create PyTorch MetaBlock",
