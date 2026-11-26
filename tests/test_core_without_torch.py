@@ -16,22 +16,26 @@ def test_graphimo_core_imports_and_projects_without_torch_or_addon(tmp_path: Pat
 import importlib.abc
 import sys
 from pathlib import Path
-from graphimo import GraphimoApplication
-from graphimo.metablocks import GraphimoHostAPI, MetaBlockAddonManager
 
 class BlockTorch(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == "torch" or fullname.startswith("torch.") or fullname == "torchlens" or fullname.startswith("torchlens."):
+        if any(
+            fullname == name or fullname.startswith(name + ".")
+            for name in ("torch", "torchlens", "marimo")
+        ):
             raise ModuleNotFoundError(fullname)
         return None
 
 sys.meta_path.insert(0, BlockTorch())
+from graphimo import GraphimoApplication
+from graphimo.metablocks import GraphimoHostAPI, MetaBlockAddonManager
+
 project = Path(sys.argv[1])
 host = GraphimoHostAPI("core-only", project)
 manager = MetaBlockAddonManager(host, entry_points=list)
 application = GraphimoApplication(host, manager)
 assert application.execute("metablock.list", {})["items"] == []
-assert "torch" not in sys.modules and "torchlens" not in sys.modules
+assert not any(name in sys.modules for name in ("torch", "torchlens", "marimo"))
 print("core-only-ok")
 """
     environment = os.environ.copy()

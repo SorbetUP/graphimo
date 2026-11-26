@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
+from .groups import GroupLibrary
 from .metablocks import GraphimoHostAPI, MetaBlockAddonManager
 
 
@@ -19,6 +22,17 @@ class GraphimoApplication:
     def __init__(self, host: GraphimoHostAPI, metablocks: MetaBlockAddonManager | None = None):
         self.host = host
         self.metablocks = metablocks or MetaBlockAddonManager(host)
+        self.groups = GroupLibrary(host.project_path)
+        project_name = Path(host.project_path).stem or host.project_id
+        self._scope_stack = [
+            {
+                "scope_id": "root",
+                "container_id": None,
+                "name": project_name,
+                "kind": "project",
+                "dialect_id": "python",
+            }
+        ]
 
     def execute(self, action: str, args: dict[str, Any]) -> Any:
         if not isinstance(action, str) or not action:
@@ -37,6 +51,13 @@ class GraphimoApplication:
             "metablock.materialize": self._materialize,
             "metablock.invoke": self._invoke,
             "metablock.events": self._events,
+            "group.list": self._list_groups,
+            "group.create": self._create_group,
+            "group.inspect": self._inspect_group,
+            "group.set_contract": self._set_group_contract,
+            "scope.enter": self._enter_group,
+            "scope.leave": self._leave_scope,
+            "scope.current": self._current_scope,
             "layout.get": self._get_layout,
             "layout.set": self._set_layout,
         }
@@ -95,6 +116,53 @@ class GraphimoApplication:
             args.get("cursor"),
             args.get("limit", 128),
         )
+
+    def _list_groups(self, _args: dict[str, Any]) -> Any:
+        return self.groups.list()
+
+    def _create_group(self, args: dict[str, Any]) -> Any:
+        request = args.get("request", args)
+        return self.groups.create(request).to_catalog_item()
+
+    def _inspect_group(self, args: dict[str, Any]) -> Any:
+        return self.groups.get(self._required(args, "group_id")).to_catalog_item()
+
+    def _set_group_contract(self, args: dict[str, Any]) -> Any:
+        group_id = self._required(args, "group_id")
+        request = args.get("contract", {})
+        return self.groups.update_contract(group_id, request).to_catalog_item()
+
+    def _enter_group(self, args: dict[str, Any]) -> Any:
+        group_id = self._required(args, "container_id")
+        definition = self.groups.get(group_id)
+        if definition.contract.dialect_id != self._scope_stack[-1]["dialect_id"]:
+            raise ValueError("Group Blocks must inherit their parent scope dialect")
+        if any(item.get("container_id") == group_id for item in self._scope_stack):
+            raise ValueError(f"Group nesting cycle detected for '{group_id}'")
+        scope_id = "group_" + hashlib.sha256(group_id.encode("utf-8")).hexdigest()[:32]
+        self._scope_stack.append(
+            {
+                "scope_id": scope_id,
+                "container_id": group_id,
+                "name": definition.contract.name,
+                "kind": "group",
+                "dialect_id": definition.contract.dialect_id,
+                "path": definition.relative_path,
+            }
+        )
+        return self._current_scope({})
+
+    def _leave_scope(self, _args: dict[str, Any]) -> Any:
+        if len(self._scope_stack) == 1:
+            raise ValueError("cannot leave the root Graphimo project scope")
+        self._scope_stack.pop()
+        return self._current_scope({})
+
+    def _current_scope(self, _args: dict[str, Any]) -> Any:
+        return {
+            "scope": dict(self._scope_stack[-1]),
+            "breadcrumbs": [dict(item) for item in self._scope_stack],
+        }
 
     def _get_layout(self, args: dict[str, Any]) -> Any:
         return {"layout": self.host.read_layout(self._required(args, "scope_id"))}

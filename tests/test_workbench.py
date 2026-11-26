@@ -92,6 +92,24 @@ def test_controller_forwards_actions_to_shared_application(tmp_path: Path) -> No
     assert created["result"]["projection"]["name"] == "Local model"
     assert controller.project()["metablocks"]["items"][0]["metablock_id"] == "test-block"
 
+    group = controller.action(
+        {
+            "action": "group.create",
+            "args": {
+                "request": {
+                    "group_id": "image_pipeline",
+                    "module": "image_pipeline",
+                    "name": "Image Pipeline",
+                    "inputs": ["image"],
+                    "outputs": ["normalized"],
+                }
+            },
+        }
+    )
+
+    assert group["result"]["import_source"] == ("from groups.image_pipeline import image_pipeline")
+    assert controller.project()["groups"]["items"][0]["group_id"] == "image_pipeline"
+
 
 def test_workbench_http_serves_shell_and_routes_application_actions(tmp_path: Path) -> None:
     controller = build_test_controller(tmp_path)

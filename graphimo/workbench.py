@@ -45,6 +45,7 @@ class GraphimoWorkbenchController:
             "project_name": self.project_path.name,
             "project_path": str(self.project_path),
             "metablocks": self.application.execute("metablock.list", {}),
+            "groups": self.application.execute("group.list", {}),
             "addons": [
                 {
                     "name": item.name,

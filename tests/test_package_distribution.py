@@ -70,6 +70,7 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "adapter/__init__.py" in names
     assert "adapter/graphimo_adapter.py" in names
     assert "graphimo/__init__.py" in names
+    assert "graphimo/groups.py" in names
     assert "graphimo/artifacts/__init__.py" in names
     assert "graphimo/artifacts/local.py" in names
     assert "graphimo/metablocks.py" in names
@@ -116,7 +117,7 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
         [
             sys.executable,
             "-c",
-            "import sys; from importlib.resources import files; from graphimo import GraphimoApplication, MetaBlockAddonManager, artifacts; from graphimo_core import LocalArtifactStore, WorkspaceGraph; assets=files('graphimo').joinpath('workbench'); assert all(assets.joinpath(name).is_file() for name in ('index.html','workbench.js','workbench.css')); assert callable(artifacts.put) and 'torch' not in sys.modules and 'torchlens' not in sys.modules; print('import-ok')",
+            "import sys; from importlib.resources import files; from graphimo import GraphimoApplication, MetaBlockAddonManager, artifacts, run_group; from graphimo_core import LocalArtifactStore, WorkspaceGraph; assets=files('graphimo').joinpath('workbench'); assert all(assets.joinpath(name).is_file() for name in ('index.html','workbench.js','workbench.css')); assert callable(artifacts.put) and callable(run_group) and not any(name in sys.modules for name in ('torch','torchlens','marimo')); print('import-ok')",
         ],
         cwd=tmp_path,
         env=env,

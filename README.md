@@ -130,6 +130,9 @@ The host-independent [`@node` and generated instance API](docs/node-instance-con
 keeps marimo as the reactive engine. Explicit file/directory persistence is
 available through [`graphimo.artifacts`](docs/artifacts.md); arbitrary Python
 results are not saved automatically.
+Reusable marimo sub-workflows use the reference-based
+[`Group Block API`](docs/groups.md), backed by `App.clone()` and
+`App.run(defs=...)`.
 
 Install the pinned notebook runtime and development tools, then run the local
 verification gate:

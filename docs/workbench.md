@@ -46,9 +46,10 @@ bind addresses.
 
 The standalone surface does not attach to a running marimo session, so its
 materialization action presents source for review and explicitly marks that it
-was not inserted into a live notebook cell. The exact supported marimo cell
-update mechanism remains subject to the `HUMAN DECISION REQUIRED` contract in
-the Core implementation specification.
+was not inserted into a live notebook cell. The application returns the
+canonical materialization-cell specification; connecting it to the active
+marimo process belongs to the later persistent service and host-adapter
+milestones. Graphimo does not add a second scheduler.
 
 Runtime discovery and telemetry are process-local. A model instantiated in a
 separate marimo process is not visible to this standalone Workbench; the Core
@@ -68,12 +69,15 @@ experimental copies of the selected runtime.
 
 ## HTTP/action boundary
 
-`GET /api/project` returns project metadata, persisted MetaBlock summaries and
-installed addon entry-point metadata. `POST /api/action` accepts
+`GET /api/project` returns project metadata, persisted MetaBlock summaries,
+the reusable Group catalog and installed addon entry-point metadata.
+`POST /api/action` accepts
 `{"action":"...","args":{...}}` and forwards the request to
 `GraphimoApplication.execute`. The body is limited to 256 KiB, responses use a
 bounded JSON envelope, and the server serves only files from the packaged
-Workbench assets directory. There is no renderer-side addon state mutation.
+Workbench assets directory. Group catalog/create/contract/navigation requests
+use the same application actions as other renderers. There is no renderer-side
+addon or Group state mutation.
 
 The Python controller and HTTP contract are covered by pytest independently
 of the browser. Browser interaction logic does not run Python graph rules; all

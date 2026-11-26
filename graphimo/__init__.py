@@ -15,6 +15,15 @@ from .instance import (
     reconnect_instance_source,
     result_variable,
 )
+from .groups import (
+    GroupContract,
+    GroupDefinition,
+    GroupError,
+    GroupLibrary,
+    GroupResult,
+    run_group,
+    update_group_contract,
+)
 from .metablocks import (
     AddonUnavailableError,
     GraphimoHostAPI,
@@ -35,7 +44,12 @@ __all__ = [
     "GraphScopeError",
     "GraphimoApplication",
     "GraphimoHostAPI",
+    "GroupContract",
+    "GroupDefinition",
+    "GroupError",
+    "GroupLibrary",
     "GroupBlock",
+    "GroupResult",
     "InstanceSpec",
     "MetaBlock",
     "MetaBlockAddonManager",
@@ -56,4 +70,6 @@ __all__ = [
     "preview_value",
     "reconnect_instance_source",
     "result_variable",
+    "run_group",
+    "update_group_contract",
 ]
