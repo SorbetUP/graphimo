@@ -290,3 +290,21 @@ Runtime scalar metrics retain up to 5000 points per runtime/metric with
 decimation and draw a bounded history sparkline in the inspector. The full
 template remains a code-generation and editing fixture; tests and interactive
 training use the reduced fixture.
+
+## P9 integration hardening
+
+The Core-only subprocess test blocks imports of both `torch` and `torchlens`
+while importing and opening Graphimo Core. The addon lifecycle test builds a
+wheel, installs it into an isolated target, creates/edits a MetaBlock and
+layout, projects that saved record with an empty addon entry-point set, verifies
+the sidecar bytes and layout are unchanged, then reopens through fresh
+discovery and checks the same revision, model name and layout before
+materialization/checkpoint use. This exercises the unavailable-addon manager
+path without uninstalling the developer's active Python environment.
+
+Runtime conformance also fakes the monotonic clock at a 2 Hz activation
+subscription: three ordinary forwards still return normally while the
+telemetry seam emits only two summaries. Existing bounds tests cover event
+history eviction, 128-bin histogram caps and 4096-value sample caps. The addon
+wheel check confirms its entry point and the template/training modules are in
+the separately installable distribution.

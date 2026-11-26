@@ -56,6 +56,11 @@ specification does not yet define that cross-process transport. The UI reports
 when no runtime is registered in the Workbench process instead of presenting
 stale or inferred runtime data.
 
+If a saved MetaBlock's addon entry point is unavailable, the Workbench shows an
+unavailable-addon placeholder and the opaque persisted state; the contextual
+palette is cleared. Reinstalling/discovering the addon reopens the same
+semantic graph and presentation layout.
+
 TorchLens inspection is also process-local and uses an explicit input fixture;
 it does not claim to inspect the current or next training batch. Saving an
 inspection runs a fresh pass, and intervention results are labeled as

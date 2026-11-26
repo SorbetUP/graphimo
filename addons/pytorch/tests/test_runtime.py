@@ -102,6 +102,26 @@ def test_activation_subscription_emits_bounded_histogram_and_removes_hook():
     assert len(model[0]._forward_hooks) == handle_count
 
 
+def test_activation_subscription_rate_limit_coalesces_events_without_delaying_forward(monkeypatch):
+    bus = runtime.PyTorchEventBus()
+    registry = runtime.RuntimeRegistry(bus)
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2))
+    registry.register(model, runtime_info(sites=(site(),)))
+    clock = iter((100.0, 100.1, 100.6))
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: next(clock))
+    default_spec = runtime.SubscriptionSpec("default", "runtime-1", "dense")
+    assert default_spec.rate_hz <= 10
+    registry.subscribe(
+        runtime.SubscriptionSpec("rate-limited", "runtime-1", "dense", rate_hz=2.0)
+    )
+
+    outputs = [model(torch.ones(1, 2)) for _ in range(3)]
+    events = bus.drain("model-1")["events"]
+
+    assert all(output.shape == (1, 2) for output in outputs)
+    assert len([item for item in events if item["kind"] == "activation.summary"]) == 2
+
+
 def test_gradient_subscription_preserves_gradient_and_reports_output_gradient():
     bus = runtime.PyTorchEventBus()
     registry = runtime.RuntimeRegistry(bus)

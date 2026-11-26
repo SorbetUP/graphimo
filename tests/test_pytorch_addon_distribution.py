@@ -4,6 +4,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,10 @@ def test_addon_wheel_discovers_materializes_and_preserves_state(tmp_path: Path) 
     )
     assert build.returncode == 0, f"addon wheel build failed:\n{build.stdout}\n{build.stderr}"
     wheel = next(wheelhouse.glob("graphimo_pytorch-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        packaged = set(archive.namelist())
+    assert "graphimo_pytorch/templates.py" in packaged
+    assert "graphimo_pytorch/training.py" in packaged
     install_target = tmp_path / "addon-install"
     install = subprocess.run(
         [
@@ -84,12 +89,21 @@ edited = application.execute("metablock.apply", {
     "metablock_id": "tiny", "intent": {"type": "set_model_parameter", "name": "hidden_size", "value": 12}
 })
 revision = edited["revision"]
+application.execute("layout.set", {
+    "scope_id": "tiny_root",
+    "layout": {"input": {"x": 15, "y": 25, "width": 210, "height": 120}}
+})
 sidecar = host.sidecar_path("tiny")
+sidecar_before = sidecar.read_bytes()
 missing = MetaBlockAddonManager(host, entry_points=lambda: []).project("tiny")
 assert missing["available"] is False
 assert sidecar.is_file()
+assert sidecar.read_bytes() == sidecar_before
+assert host.read_layout("tiny_root")["input"]["x"] == 15
 restored = GraphimoApplication(host).execute("metablock.project", {"metablock_id": "tiny"})
 assert restored["available"] is True and restored["revision"] == revision
+assert restored["projection"]["name"] == "Tiny"
+assert host.read_layout("tiny_root")["input"]["x"] == 15
 materialized = GraphimoApplication(host).execute("metablock.materialize", {
     "metablock_id": "tiny", "bindings": {}
 })

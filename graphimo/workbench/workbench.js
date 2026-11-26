@@ -203,10 +203,38 @@ function renderAll() {
 
 function renderUnavailable(result) {
   view = null;
+  selected.clear();
+  selectedEdge = null;
+  connectSource = null;
   $("#empty-state").classList.remove("hidden");
-  $("#empty-state").textContent = `Addon unavailable: ${result.dialect_id}`;
-  $("#source code").textContent = JSON.stringify(result.state ?? result.diagnostics, null, 2);
+  $("#empty-state").textContent = `Addon unavailable: ${result.dialect_id}. The saved MetaBlock state is preserved.`;
+  $("#source code").textContent = JSON.stringify({
+    metablock_id: result.metablock_id,
+    dialect_id: result.dialect_id,
+    addon_version: result.addon_version,
+    revision: result.revision,
+    state: result.state,
+  }, null, 2);
+  $("#generate-cell").disabled = true;
+  $("#breadcrumbs").replaceChildren();
+  const status = document.createElement("span");
+  status.textContent = `Unavailable · ${result.dialect_id}`;
+  $("#breadcrumbs").append(status);
+  const diagnostic = document.createElement("div");
+  diagnostic.className = "diagnostic warning";
+  diagnostic.textContent = `metablock_addon_unavailable: MetaBlock addon '${result.dialect_id}' is not installed. Its semantic state and layout remain available on disk.`;
+  $("#diagnostic-list").replaceChildren(diagnostic);
+  $("#diagnostic-count").textContent = "1";
+  const inspector = $("#inspector");
+  inspector.replaceChildren();
+  inspector.append(section("Addon status"));
+  inspector.append(textRow("Dialect", result.dialect_id));
+  inspector.append(textRow("MetaBlock", result.metablock_id));
+  inspector.append(textRow("Revision", result.revision));
+  inspector.append(textRow("State", "Preserved; install the addon to edit this MetaBlock."));
   palette.replaceChildren();
+  $("#palette-count").textContent = "unavailable";
+  $("#delete-selection").disabled = true;
   draw();
 }
 
