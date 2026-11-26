@@ -82,14 +82,20 @@ class MarimoKernelPort:
             "delete",
             "disable_instance",
             "enable_instance",
+            "replace_library",
         }:
             raise MarimoKernelError(
                 "notebook_action_unsupported", "notebook action is not supported"
             )
         if not isinstance(args, dict):
             raise MarimoKernelError("invalid_request", "notebook action args must be an object")
+        if "_graphimo_project_path" in args:
+            raise MarimoKernelError(
+                "invalid_request", "notebook action uses a reserved internal argument"
+            )
+        payload = {**args, "_graphimo_project_path": self.project_path}
         try:
-            encoded = json.dumps(args, ensure_ascii=False, allow_nan=False)
+            encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError, UnicodeEncodeError) as exc:
             raise MarimoKernelError(
                 "invalid_request", "notebook action must be bounded JSON"
@@ -216,28 +222,75 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "        result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': message}}",
             ]
         )
+    elif action == "replace_library":
+        common.extend(
+            [
+                "    cell_id = payload.get('cell_id'); marker = payload.get('marker'); source = payload.get('source')",
+                "    try:",
+                "        if not isinstance(cell_id, str) or not cell_id or len(cell_id) > 256: raise ValueError('cell_id must be 1-256 characters')",
+                "        if not isinstance(marker, str) or not marker.startswith('# Graphimo node library: '): raise ValueError('invalid Graphimo library marker')",
+                "        if not isinstance(source, str) or not source.startswith(marker + '\\n') or len(source.encode('utf-8')) > 1048576: raise ValueError('invalid or oversized Graphimo library source')",
+                "        compile(source, '<graphimo-library-update>', 'exec')",
+                "        cell = ctx.cells[cell_id]",
+                "        if marker not in cell.code.splitlines(): raise ValueError('selected cell is not the marked Graphimo library')",
+                "        ctx.edit_cell(cell.id, code=source)",
+                "        result = {'ok': True, 'cell_id': str(cell.id), 'changed': True}",
+                "    except (TypeError, ValueError, KeyError) as error:",
+                "        message = 'cell not found' if isinstance(error, KeyError) else str(error)[:2000]",
+                "        result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': message}}",
+            ]
+        )
     elif action == "connect":
         common.extend(
             [
-                "    import ast",
+                "    import importlib, pathlib, sys",
+                "    from graphimo import inspect_node, output_expression, parse_instance_source, reconnect_instance_source",
                 "    source_id = payload.get('from_cell_id'); target_id = payload.get('to_cell_id')",
                 "    variable = payload.get('variable'); input_ref = payload.get('input_ref')",
                 "    if any(not isinstance(item, str) or not item or len(item) > 256 for item in (source_id, target_id)): raise ValueError('cell IDs must contain 1-256 characters')",
                 "    if any(not isinstance(item, str) or not item.isidentifier() for item in (variable, input_ref)): raise ValueError('connection ports must be Python identifiers')",
                 "    source = ctx.cells[source_id]; target = ctx.cells[target_id]",
                 "    source_impl = ctx.graph.cells.get(source.id); target_impl = ctx.graph.cells.get(target.id)",
-                "    if not source_impl or not target_impl or variable not in getattr(source_impl, 'defs', set()) or input_ref not in getattr(target_impl, 'refs', set()) or variable in getattr(target_impl, 'defs', set()): raise ValueError('unsafe_edit: selected cells or ports are stale')",
-                "    tree = ast.parse(target.code)",
-                "    if len(tree.body) != 1 or not isinstance(tree.body[0], (ast.Assign, ast.AnnAssign)): raise ValueError('unsafe_edit: target must be one assignment')",
-                "    assignment = tree.body[0]",
-                "    if isinstance(assignment, ast.Assign) and (len(assignment.targets) != 1 or not isinstance(assignment.targets[0], ast.Name)): raise ValueError('unsafe_edit: target assignment is ambiguous')",
-                "    if isinstance(assignment, ast.AnnAssign) and not isinstance(assignment.target, ast.Name): raise ValueError('unsafe_edit: target assignment is ambiguous')",
-                "    call = assignment.value",
-                "    if not isinstance(call, ast.Call) or not isinstance(call.func, (ast.Name, ast.Attribute)) or not call.args or call.keywords or not all(isinstance(arg, ast.Name) for arg in call.args): raise ValueError('unsafe_edit: target call is ambiguous')",
-                "    matches = [arg for arg in call.args if arg.id == input_ref]",
-                "    if len(matches) != 1: raise ValueError('unsafe_edit: selected reference is not a unique positional argument')",
-                "    arg = matches[0]; lines = target.code.splitlines(keepends=True); raw = lines[arg.lineno - 1].encode('utf-8')",
-                "    updated = ''.join(lines[:arg.lineno - 1]) + raw[:arg.col_offset].decode('utf-8') + variable + raw[arg.end_col_offset:].decode('utf-8') + ''.join(lines[arg.lineno:])",
+                "    target_instance = parse_instance_source(target.code)",
+                "    if target_instance is None: raise ValueError('unsafe_edit: target is not a Graphimo-owned node instance')",
+                "    if not source_impl or not target_impl: raise ValueError('unsafe_edit: selected source or target is stale')",
+                "    def _resolve_node(name):",
+                "        project_root = pathlib.Path(payload['_graphimo_project_path']).resolve().parent",
+                "        if str(project_root) not in sys.path: sys.path.insert(0, str(project_root))",
+                "        for library_cell in ctx.cells:",
+                "            for line in library_cell.code.splitlines():",
+                "                prefix = '# Graphimo node library: '",
+                "                if not line.startswith(prefix): continue",
+                "                relative, separator, exported = line[len(prefix):].rpartition(':')",
+                "                if not separator or exported != name: continue",
+                "                path = pathlib.PurePosixPath(relative)",
+                "                if path.is_absolute() or '..' in path.parts or path.suffix != '.py': raise ValueError('unsafe_edit: invalid node library marker')",
+                "                module_path = path.parent if path.name == '__init__.py' else path.with_suffix('')",
+                "                parts = ['components', *module_path.parts]",
+                "                module_name = '.'.join(parts)",
+                "                module = importlib.import_module(module_name)",
+                "                function = getattr(module, name, None)",
+                "                if function is not None: return function",
+                "        return ctx.globals.get(name)",
+                "    target_function = _resolve_node(target_instance.node_name)",
+                "    if target_function is None: raise ValueError('unsafe_edit: target node definition is unavailable')",
+                "    target_spec = inspect_node(target_function)",
+                "    if input_ref not in {port.name for port in target_spec.inputs}: raise ValueError('invalid_connection: target node has no input named ' + input_ref)",
+                "    source_instance = parse_instance_source(source.code)",
+                "    if source_instance is not None:",
+                "        if source_instance.result_var not in getattr(source_impl, 'defs', set()): raise ValueError('unsafe_edit: selected source output is stale')",
+                "        source_function = _resolve_node(source_instance.node_name)",
+                "        if source_function is None: raise ValueError('unsafe_edit: source node definition is unavailable')",
+                "        source_spec = inspect_node(source_function)",
+                "        output_index = payload.get('output_index')",
+                "        if output_index is None:",
+                "            if len(source_spec.outputs) != 1: raise ValueError('output_index_required: choose an output port')",
+                "            output_index = 0",
+                "        expression = output_expression(source_instance, output_index, len(source_spec.outputs))",
+                "    else:",
+                "        if variable not in getattr(source_impl, 'defs', set()): raise ValueError('unsafe_edit: selected source variable is stale')",
+                "        expression = variable",
+                "    updated = reconnect_instance_source(target.code, input_name=input_ref, expression=expression)",
                 "    compile(updated, '<graphimo-connect>', 'exec')",
                 "    ctx.edit_cell(target.id, code=updated)",
                 "    result = {'ok': True, 'changed': True, 'source': updated, 'cell_id': str(target.id)}",

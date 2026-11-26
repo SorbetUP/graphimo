@@ -293,17 +293,19 @@ class GraphimoProject:
         variable: str,
         target_cell_id: str,
         input_ref: str,
+        *,
+        output_index: int | None = None,
     ) -> dict[str, Any]:
-        """Connect a live marimo definition to one unambiguous call argument."""
-        return self.execute(
-            "notebook.connect",
-            {
-                "from_cell_id": source_cell_id,
-                "variable": variable,
-                "to_cell_id": target_cell_id,
-                "input_ref": input_ref,
-            },
-        )
+        """Connect a definition or Graphimo node output to a node input."""
+        args: dict[str, Any] = {
+            "from_cell_id": source_cell_id,
+            "variable": variable,
+            "to_cell_id": target_cell_id,
+            "input_ref": input_ref,
+        }
+        if output_index is not None:
+            args["output_index"] = output_index
+        return self.execute("notebook.connect", args)
 
     def run(self, cell_id: str) -> dict[str, Any]:
         """Ask marimo to run one cell after Graphimo's disabled-dependency check."""

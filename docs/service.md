@@ -171,9 +171,11 @@ instance-source contract.
 and `notebook.delete` are bounded host intents forwarded to the attached
 marimo code-mode context. They do not maintain a second graph or execution
 queue. `notebook.run` asks marimo to queue the requested cell; marimo owns the
-resulting reactive execution. `notebook.connect` accepts only the supported
-single-assignment function-call shape and checks that the selected live cells
-and ports still exist before editing.
+resulting reactive execution. `notebook.connect` accepts only a canonical
+Graphimo `@node` instance as its target, validates the declared input and
+selected live source, then regenerates the instance through the Core source
+builder. Ordinary user assignments are never rewritten. Component insertion
+creates a separate reusable definition cell and canonical instance cell.
 
 The event route accepts `project`, `cursor`, `limit` and `wait_ms` query
 parameters. It returns `cursor`, `events` and `dropped`. The cursor is an

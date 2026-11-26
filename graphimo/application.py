@@ -208,8 +208,38 @@ class GraphimoApplication:
 
     def _add_component(self, args: dict[str, Any]) -> Any:
         built = self._component_instance_source(args)
+        library_cell_id = None
+        library_source = built.get("library_source")
+        library_marker = built.get("library_marker")
+        if isinstance(library_source, str) and isinstance(library_marker, str):
+            snapshot = self._invoke_notebook("inspect", {})
+            cells = snapshot.get("cells", []) if isinstance(snapshot, dict) else []
+            library_cell = next(
+                (
+                    cell
+                    for cell in cells
+                    if isinstance(cell, dict) and library_marker in cell.get("source", "")
+                ),
+                None,
+            )
+            if library_cell is None:
+                library_cell = self._invoke_notebook("add_cell", {"source": library_source})
+                library_cell_id = library_cell.get("cell_id")
+            else:
+                library_cell_id = library_cell.get("id")
+                if library_cell.get("source") != library_source:
+                    self._invoke_notebook(
+                        "replace_library",
+                        {
+                            "cell_id": library_cell_id,
+                            "marker": library_marker,
+                            "source": library_source,
+                        },
+                    )
+            if isinstance(library_cell_id, str):
+                self._invoke_notebook("run", {"cell_id": library_cell_id})
         inserted = self._invoke_notebook("add_cell", {"source": built["source"]})
-        return {**built, **inserted}
+        return {**built, **inserted, "library_cell_id": library_cell_id}
 
     def _delete_component(self, args: dict[str, Any]) -> Any:
         return self.components.delete(self._required(args, "path"))

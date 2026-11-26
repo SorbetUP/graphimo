@@ -64,9 +64,13 @@ def test_component_instance_source_uses_validated_ports_and_readable_python(tmp_
         {"value": {"variable": "data"}, "scale": {"literal": 2.5}},
     )
 
-    assert instance["source_sha256"] in instance["source"]
-    assert "components.processing.normalize" in instance["source"]
-    assert "normalize(value=data, scale=__import__('json').loads('2.5'))" in instance["source"]
+    assert instance["source_sha256"] in instance["library_source"]
+    assert "components.processing.normalize" in instance["library_source"]
+    assert "normalize(" in instance["source"]
+    assert "value=data," in instance["source"]
+    assert "scale=__import__('json').loads('2.5')," in instance["source"]
+    assert instance["canonical_instance"] is True
+    assert instance["result_var"].startswith("g_normalize_")
     compile(instance["source"], "<component-instance>", "exec")
 
 
@@ -172,7 +176,7 @@ def test_component_packages_can_export_nodes_from_init_file(tmp_path: Path) -> N
         "normalized",
         {"value": {"variable": "data"}},
     )
-    assert "import_module('components.math_nodes')" in instance["source"]
+    assert "import_module('components.math_nodes')" in instance["library_source"]
 
 
 def test_component_paths_cannot_escape_or_follow_symlinks(tmp_path: Path) -> None:
@@ -264,9 +268,17 @@ def test_application_add_component_uses_the_attached_marimo_host(tmp_path: Path)
     )
 
     assert result["cell_id"] == "cell-new"
-    assert "normalize(value=data)" in result["source"]
-    assert inserted[0]["action"] == "add_cell"
-    assert inserted[0]["source"] == result["source"]
+    assert "normalize(" in result["source"]
+    assert "value=data," in result["source"]
+    assert result["canonical_instance"] is True
+    assert [item["action"] for item in inserted] == [
+        "inspect",
+        "add_cell",
+        "run",
+        "add_cell",
+    ]
+    assert inserted[1]["source"] == result["library_source"]
+    assert inserted[3]["source"] == result["source"]
 
 
 def test_notebook_intent_requires_attached_kernel(tmp_path: Path) -> None:

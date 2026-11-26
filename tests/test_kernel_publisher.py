@@ -336,44 +336,63 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 output_name="normalized",
                 bindings={"value": {"variable": "data"}},
             )
-            assert "normalize(value=data)" in component_cell["source"]
-            function_cell = project.execute(
-                "notebook.add_cell",
-                {"source": "def transform(value):\n    return value * 2"},
-            )
-            target_cell = project.execute(
-                "notebook.add_cell", {"source": "result = transform(input_value)"}
+            assert "normalize(" in component_cell["source"]
+            assert "value=data," in component_cell["source"]
+            target_cell = project.add_component(
+                "normalize.py",
+                "normalize",
+                output_name="reconnected",
+                bindings={"value": {"literal": 1}},
             )
             snapshot = project.inspect_notebook()
+            library_projection = next(
+                cell
+                for cell in snapshot["cells"]
+                if "# Graphimo node library: normalize.py:normalize" in cell["source"]
+            )
+            assert not library_projection["errors"], library_projection
             assert any(cell["id"] == data_cell["cell_id"] for cell in snapshot["cells"])
-            assert any(cell["id"] == function_cell["cell_id"] for cell in snapshot["cells"])
             assert any(cell["id"] == component_cell["cell_id"] for cell in snapshot["cells"])
+            assert any(cell["id"] == target_cell["cell_id"] for cell in snapshot["cells"])
             assert any(
                 edge["source_cell_id"] == data_cell["cell_id"]
                 and edge["target_cell_id"] == component_cell["cell_id"]
                 and edge["variable"] == "data"
                 for edge in snapshot["edges"]
             )
-            assert any(
-                edge["source_cell_id"] == function_cell["cell_id"]
-                and edge["target_cell_id"] == target_cell["cell_id"]
-                and edge["variable"] == "transform"
-                for edge in snapshot["edges"]
-            )
             connected = project.connect(
-                data_cell["cell_id"], "data", target_cell["cell_id"], "input_value"
+                data_cell["cell_id"], "data", target_cell["cell_id"], "value"
             )
             assert connected["changed"] is True
-            assert "transform(data)" in connected["source"]
+            assert "normalize(" in connected["source"]
+            assert "value=data," in connected["source"]
             reconnected = project.inspect_notebook()
             reconnected_target = next(
                 cell for cell in reconnected["cells"] if cell["id"] == target_cell["cell_id"]
             )
             assert "data" in reconnected_target["refs"]
-            assert "input_value" not in reconnected_target["refs"]
-            project.run(function_cell["cell_id"])
+            assert "__import__('json').loads('1')" not in reconnected_target["source"]
+            chained_cell = project.add_component(
+                "normalize.py",
+                "normalize",
+                output_name="chained",
+                bindings={"value": {"literal": 0}},
+            )
+            chained = project.connect(
+                target_cell["cell_id"],
+                target_cell["result_var"],
+                chained_cell["cell_id"],
+                "value",
+                output_index=0,
+            )
+            assert target_cell["result_var"] in chained["source"]
+            unsafe_target = project.execute(
+                "notebook.add_cell", {"source": "unsafe_result = int(data)"}
+            )
+            with pytest.raises(GraphimoServiceError, match="not a Graphimo-owned node instance"):
+                project.connect(data_cell["cell_id"], "data", unsafe_target["cell_id"], "data")
             project.run(data_cell["cell_id"])
-            assert project.run(target_cell["cell_id"])["status"] == "queued"
+            assert project.run(chained_cell["cell_id"])["status"] == "queued"
             deadline = time.monotonic() + 4
             result_preview = None
             target_projection = None
@@ -383,7 +402,11 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                     cell for cell in after_run["cells"] if cell["id"] == target_cell["cell_id"]
                 )
                 result_preview = next(
-                    (item for item in target_projection["outputs"] if item["name"] == "result"),
+                    (
+                        item
+                        for item in target_projection["outputs"]
+                        if item["name"] == target_cell["result_var"]
+                    ),
                     None,
                 )
                 if result_preview is None:
@@ -391,6 +414,35 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             assert result_preview is not None, target_projection["output"]
             assert result_preview["runtime_type"] == "int"
             assert result_preview["preview"] == "6"
+            chained_projection = next(
+                cell for cell in after_run["cells"] if cell["id"] == chained_cell["cell_id"]
+            )
+            chained_preview = next(
+                item
+                for item in chained_projection["outputs"]
+                if item["name"] == chained_cell["result_var"]
+            )
+            assert chained_preview["preview"] == "12"
+            updated_component_source = component_source.replace("value * 2", "value * 3")
+            updated_write = project.execute(
+                "component.write",
+                {"path": "normalize.py", "source": updated_component_source},
+            )
+            assert updated_write["valid"]
+            updated_instance = project.add_component(
+                "normalize.py",
+                "normalize",
+                output_name="updated",
+                bindings={"value": {"literal": 2}},
+            )
+            assert updated_instance["library_cell_id"] == component_cell["library_cell_id"]
+            updated_snapshot = project.inspect_notebook()
+            updated_library = next(
+                cell
+                for cell in updated_snapshot["cells"]
+                if cell["id"] == component_cell["library_cell_id"]
+            )
+            assert updated_write["sha256"] in updated_library["source"]
             from graphimo.instance import build_instance_source
 
             disabled_source, disabled_spec = build_instance_source(

@@ -39,11 +39,21 @@ import project components. `component.delete` moves a file into
 remove the source.
 
 `component.instance_source` generates readable ordinary Python from a
-validated `@node` contract. Bindings are either live Python variable names or
-bounded JSON literals. Positional-only parameters are emitted positionally;
-the builder reports when an omitted preceding default cannot be represented
-safely. `component.add` inserts that source into an attached
-marimo session and returns its cell ID; it fails if there is no live kernel.
+validated `@node` contract. For keyword-bindable nodes, the library import and
+canonical instance are separate cells: the import cell defines the reusable
+node callable, while the instance source has the stable Graphimo markers and
+its `g_<node>_<id>` output symbol. `component.add` inserts both into an
+attached marimo session, schedules the import cell through marimo, and returns
+the instance cell ID and output symbol. Reusing a component updates the
+existing marked import cell when its validated source hash changes. Bindings
+are live Python names or bounded JSON literals.
+
+Python positional-only parameters cannot be represented by the canonical
+keyword-binding instance format. To preserve valid Python calls, such
+components currently use a direct imported call and are marked
+`canonical_instance: false`; the safe Graphimo-only connect/disable actions do
+not edit those cells. When an omitted earlier positional-only default would
+make the call ambiguous, the builder refuses to generate it.
 
 Each operation uses the same `GraphimoApplication` route as service clients and
 Zeron tools. Multiple writes/edits can be sequenced in `execute_batch`; later

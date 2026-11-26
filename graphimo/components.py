@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .instance import build_instance_source
+
 MAX_COMPONENT_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_VALIDATION_OUTPUT_BYTES = 64 * 1024
 _COMPONENT_ID = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py$")
@@ -218,11 +220,6 @@ class ComponentLibrary:
         rendered = positional + keywords
 
         relative = Path(path)
-        module_path = (
-            relative.parent if relative.name == "__init__.py" else relative.with_suffix("")
-        )
-        module_rel = module_path.as_posix().replace("/", ".")
-        module_name = "components" if module_rel in {"", "."} else f"components.{module_rel}"
         digest_builder = hashlib.sha256()
         if relative.name == "__init__.py":
             package_root = target.parent
@@ -234,18 +231,71 @@ class ComponentLibrary:
         else:
             digest_builder.update(target.read_bytes())
         digest = digest_builder.hexdigest()
-        called = (
-            f"__import__('importlib').reload("
-            f"__import__('importlib').import_module({module_name!r})).{callable_name}"
+        if positional_only_indexes:
+            # Python cannot call positional-only parameters through the
+            # canonical keyword-binding instance format. Preserve the valid
+            # Python call and report that this is not a canonical instance.
+            module_path = (
+                relative.parent if relative.name == "__init__.py" else relative.with_suffix("")
+            )
+            module_parts = [
+                "components",
+                *(part for part in module_path.parts if part not in ("", ".")),
+            ]
+            module_name = ".".join(module_parts)
+            called = (
+                "__import__('importlib').reload("
+                f"__import__('importlib').import_module({module_name!r})).{callable_name}"
+            )
+            source = (
+                f"# Graphimo component: {path}\n"
+                f"# Graphimo source sha256: {digest}\n"
+                f"# Graphimo callable: {callable_name}\n"
+                f"{output_name} = {called}({', '.join(rendered)})\n"
+            )
+            compile(source, "<graphimo-component-instance>", "exec")
+            return {
+                "source": source,
+                "library_source": None,
+                "library_marker": None,
+                "source_sha256": digest,
+                "output_name": output_name,
+                "result_var": output_name,
+                "instance_id": None,
+                "canonical_instance": False,
+            }
+        source, instance = build_instance_source(callable_name, expressions)
+        module_path = (
+            relative.parent if relative.name == "__init__.py" else relative.with_suffix("")
         )
-        source = (
-            f"# Graphimo component: {path}\n"
-            f"# Graphimo source sha256: {digest}\n"
-            f"# Graphimo callable: {callable_name}\n"
-            f"{output_name} = {called}({', '.join(rendered)})\n"
+        module_parts = [
+            "components",
+            *(part for part in module_path.parts if part not in ("", ".")),
+        ]
+        module_name = ".".join(module_parts)
+        library_marker = f"# Graphimo node library: {path}:{callable_name}"
+        library_source = (
+            f"{library_marker}\n"
+            f"# Graphimo node source sha256: {digest}\n"
+            "import sys as _graphimo_sys\n"
+            f"_graphimo_root = {str(self.root.resolve().parent)!r}\n"
+            "if _graphimo_root not in _graphimo_sys.path:\n"
+            "    _graphimo_sys.path.insert(0, _graphimo_root)\n"
+            "import importlib as _graphimo_importlib\n"
+            f"_graphimo_module = _graphimo_importlib.reload(_graphimo_importlib.import_module({module_name!r}))\n"
+            f"{callable_name} = _graphimo_module.{callable_name}\n"
         )
         compile(source, "<graphimo-component-instance>", "exec")
-        return {"source": source, "source_sha256": digest, "output_name": output_name}
+        return {
+            "source": source,
+            "library_source": library_source,
+            "library_marker": library_marker,
+            "source_sha256": digest,
+            "output_name": output_name,
+            "result_var": instance.result_var,
+            "instance_id": instance.instance_id,
+            "canonical_instance": True,
+        }
 
     def list(self) -> dict[str, Any]:
         """List Python files with public ``@node`` declarations without importing them."""
