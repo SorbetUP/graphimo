@@ -354,6 +354,15 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             assert any(cell["id"] == data_cell["cell_id"] for cell in snapshot["cells"])
             assert any(cell["id"] == component_cell["cell_id"] for cell in snapshot["cells"])
             assert any(cell["id"] == target_cell["cell_id"] for cell in snapshot["cells"])
+            component_projection = next(
+                cell for cell in snapshot["cells"] if cell["id"] == component_cell["cell_id"]
+            )
+            assert component_projection["graphimo_instance"]["node"] == "normalize"
+            assert (
+                component_projection["graphimo_instance"]["result_var"]
+                == component_cell["result_var"]
+            )
+            assert component_projection["graphimo_instance"]["outputs"][0]["declared_type"] == "int"
             assert any(
                 edge["source_cell_id"] == data_cell["cell_id"]
                 and edge["target_cell_id"] == component_cell["cell_id"]

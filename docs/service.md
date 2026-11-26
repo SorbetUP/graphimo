@@ -170,7 +170,9 @@ instance-source contract.
 `notebook.inspect`, `notebook.add_cell`, `notebook.connect`, `notebook.run`
 and `notebook.delete` are bounded host intents forwarded to the attached
 marimo code-mode context. They do not maintain a second graph or execution
-queue. `notebook.run` asks marimo to queue the requested cell; marimo owns the
+queue. `notebook.inspect` identifies canonical Graphimo instances, their
+bindings and declared output ports alongside marimo's live definitions,
+references, previews and errors. `notebook.run` asks marimo to queue the requested cell; marimo owns the
 resulting reactive execution. `notebook.connect` accepts only a canonical
 Graphimo `@node` instance as its target, validates the declared input and
 selected live source, then regenerates the instance through the Core source
