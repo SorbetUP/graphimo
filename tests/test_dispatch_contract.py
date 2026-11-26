@@ -408,6 +408,22 @@ def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
             "variable": instance.result_var,
         }
     ]
+    host.marimo.snapshot["cells"].append(
+        {
+            "id": "downstream",
+            "name": None,
+            "source": "report = summarize(x)",
+            "defs": ["report"],
+            "refs": ["x", "summarize"],
+            "parents": [{"cell_id": "arbitrary", "variables": ["x"]}],
+            "children": [],
+            "status": "success",
+            "output": {"value": "previous result"},
+        }
+    )
+    host.marimo.snapshot["edges"].append(
+        {"source_cell_id": "arbitrary", "target_cell_id": "downstream", "variable": "x"}
+    )
     disabled = dispatch(
         {
             "op": "set_instance_enabled",
@@ -433,6 +449,24 @@ def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
         }
     ]
     assert snapshot["edges"][0]["status"] == "stale"
+    assert next(cell for cell in snapshot["cells"] if cell["id"] == "arbitrary")[
+        "graphimo_dependency_state"
+    ] == {"state": "blocked", "blocked_by": ["normalize"], "stale": True}
+    assert next(cell for cell in snapshot["cells"] if cell["id"] == "downstream")[
+        "graphimo_dependency_state"
+    ] == {"state": "blocked", "blocked_by": ["normalize"], "stale": True}
+    assert snapshot["edges"] == host.marimo.snapshot["edges"] or all(
+        edge["status"] == "stale" for edge in snapshot["edges"]
+    )
+    assert host.marimo.snapshot["cells"][-1]["source"] == "report = summarize(x)"
+
+    host.marimo.runs.clear()
+    blocked_run = dispatch(
+        {"op": "run", "session_id": "fixture", "cell_id": "downstream"}, host.context
+    )
+    assert_error(blocked_run, "blocked_by_disabled_dependency", "downstream")
+    assert blocked_run["error"]["blocked_by"] == ["normalize"]
+    assert host.marimo.runs == []
 
     enabled = dispatch(
         {
@@ -449,3 +483,12 @@ def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
     assert "graphimo_disabled_instance" not in next(
         item for item in reopened["cells"] if item["id"] == "normalize"
     )
+    assert all(
+        "graphimo_dependency_state" not in item
+        for item in reopened["cells"]
+        if item["id"] in {"arbitrary", "downstream"}
+    )
+    resumed = dispatch(
+        {"op": "run", "session_id": "fixture", "cell_id": "downstream"}, host.context
+    )
+    assert resumed["ok"] is True

@@ -39,10 +39,18 @@ _SAFE_SCALAR_ANNOTATIONS = {"bool", "float", "int", "str"}
 
 
 class _RequestError(Exception):
-    def __init__(self, code: str, message: str, cell_id: str | None = None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        cell_id: str | None = None,
+        *,
+        blocked_by: list[str] | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.cell_id = cell_id
+        self.blocked_by = blocked_by
 
 
 def _error(code: str, message: str, cell_id: str | None = None) -> dict[str, Any]:
@@ -201,9 +209,49 @@ def _snapshot(context: Any, session_id: str) -> dict[str, Any]:
                     }
                 )
                 known.add(edge_key)
+    # A disabled node invalidates its outputs and every value derived from them.
+    # Keep the graph intact and annotate affected descendants instead of changing
+    # their source or cascading the user's explicit disabled state.
+    blocked_by: dict[str, set[str]] = {}
+    cell_ids = {item.get("id") for item in cells if isinstance(item, dict)}
+    changed = True
+    while changed:
+        changed = False
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            source_id = edge.get("source_cell_id")
+            target_id = edge.get("target_cell_id")
+            if target_id not in cell_ids:
+                continue
+            roots = set()
+            if source_id in disabled:
+                roots.add(source_id)
+            roots.update(blocked_by.get(source_id, set()))
+            if roots - blocked_by.get(target_id, set()):
+                blocked_by.setdefault(target_id, set()).update(roots)
+                changed = True
+    for item in cells:
+        if not isinstance(item, dict):
+            continue
+        cell_id = item.get("id")
+        if cell_id in disabled:
+            item["graphimo_dependency_state"] = {
+                "state": "disabled",
+                "blocked_by": [cell_id],
+            }
+        elif blocked_by.get(cell_id):
+            item["graphimo_dependency_state"] = {
+                "state": "blocked",
+                "blocked_by": sorted(blocked_by[cell_id]),
+                "stale": True,
+            }
     for edge in edges:
-        if isinstance(edge, dict) and edge.get("source_cell_id") in disabled:
-            edge.setdefault("status", "stale")
+        if isinstance(edge, dict) and (
+            edge.get("source_cell_id") in disabled
+            or edge.get("source_cell_id") in blocked_by
+        ):
+            edge["status"] = "stale"
     projected["cells"] = cells
     projected["edges"] = edges
     return projected
@@ -1016,6 +1064,17 @@ def dispatch(request: Any, context: Any) -> dict[str, Any]:
         cell_id = _required_string(request, "cell_id")
         _cell(snapshot, cell_id)
         if operation == "run":
+            target = _cell(snapshot, cell_id)
+            blocked = target.get("graphimo_dependency_state", {})
+            if blocked.get("state") == "blocked":
+                roots = blocked.get("blocked_by", [])
+                labels = ", ".join(str(item) for item in roots)
+                raise _RequestError(
+                    "blocked_by_disabled_dependency",
+                    f"Cell '{cell_id}' is blocked by disabled upstream cell(s): {labels}",
+                    cell_id,
+                    blocked_by=roots,
+                )
             state = context.marimo.run_cell(session_id, cell_id)
             return {"ok": True, **(state if isinstance(state, dict) else {"status": str(state)})}
         if operation == "delete":
@@ -1030,6 +1089,8 @@ def dispatch(request: Any, context: Any) -> dict[str, Any]:
         return {"ok": True, "opened": True}
     except _RequestError as exc:
         result = _error(exc.code, str(exc), exc.cell_id)
+        if exc.blocked_by is not None:
+            result["error"]["blocked_by"] = exc.blocked_by
         if hasattr(exc, "sessions"):
             result["sessions"] = exc.sessions
         return result
