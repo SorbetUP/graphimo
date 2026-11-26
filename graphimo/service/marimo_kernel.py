@@ -197,8 +197,14 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
         common.extend(
             [
                 "    import importlib, inspect, pathlib, sys",
+                "    from marimo._runtime.commands import ExecuteCellCommand",
                 "    from graphimo.dependencies import blocked_dependencies_for_graph",
                 "    from graphimo.instance import parse_instance_source",
+                "    async def _run_cell_with_stale_ancestors(target_id):",
+                "        roots = {target_id}",
+                "        roots.update(ancestor_id for ancestor_id in ctx.graph.ancestors(target_id) if ctx.cells[ancestor_id].status == 'stale')",
+                "        requests = [ExecuteCellCommand(cell_id=run_id, code=ctx.cells[run_id].code) for run_id in roots]",
+                "        await ctx._kernel.run(requests)",
                 "    cell_id = payload.get('cell_id')",
                 "    if not isinstance(cell_id, str) or not cell_id or len(cell_id) > 256: raise ValueError('cell_id must be 1-256 characters')",
                 "    blocked_by = blocked_dependencies_for_graph(ctx.graph.cells, cell_id)",
@@ -229,9 +235,9 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "                bound = {binding.input_name for binding in instance.bindings}",
                 "                missing = [name for name, parameter in parameters.items() if parameter.default is inspect.Parameter.empty and parameter.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD) and name not in bound]",
                 "                if missing: result = {'ok': False, 'error': {'code': 'missing_required_binding', 'message': 'Required node input(s) are not connected: ' + ', '.join(missing), 'inputs': missing}}",
-                "                else: ctx.run_cell(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
-                "            else: ctx.run_cell(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
-                "        else: ctx.run_cell(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
+                "                else: await _run_cell_with_stale_ancestors(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
+                "            else: await _run_cell_with_stale_ancestors(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
+                "        else: await _run_cell_with_stale_ancestors(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
             ]
         )
     elif action in {"disable_instance", "enable_instance"}:

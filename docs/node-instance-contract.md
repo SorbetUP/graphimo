@@ -37,6 +37,11 @@ Use `output_expression(spec, output_index, output_count)` to create a downstream
 
 These APIs generate source and describe contracts. Marimo remains responsible for dependency analysis and reactive execution.
 
+The service's `notebook.run` action submits the selected cell and its stale
+ancestors to the marimo kernel. Marimo orders those requests and performs
+normal reactive execution; Graphimo does not run a separate scheduler or run
+unrelated stale cells elsewhere in the notebook.
+
 The Python adapter's `inspect_node_instance` operation reads the result global through the host-supplied `MarimoPort.inspect_value(session_id, variable)` boundary. A host that does not expose that live namespace operation returns `runtime_inspection_unavailable`; Graphimo never evaluates cell code in a parallel namespace.
 
 ## Disable and restore an instance

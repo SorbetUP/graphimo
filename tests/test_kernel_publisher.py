@@ -428,7 +428,6 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             )
             with pytest.raises(GraphimoServiceError, match="not a Graphimo-owned node instance"):
                 project.connect(data_cell["cell_id"], "data", unsafe_target["cell_id"], "data")
-            project.run(data_cell["cell_id"])
             assert project.run(chained_cell["cell_id"])["status"] == "queued"
             deadline = time.monotonic() + 4
             result_preview = None
