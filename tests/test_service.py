@@ -6,6 +6,8 @@ import json
 import os
 import signal
 import socket
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -195,5 +197,38 @@ def test_client_exposes_service_errors_with_stable_codes(tmp_path: Path) -> None
             client.execute("missing-project", "scope.current")
         assert error.value.code == "project_not_found"
         assert error.value.status == 404
+    finally:
+        service.close()
+
+
+def test_stdio_adapter_invokes_the_same_application_api(tmp_path: Path) -> None:
+    project_path = tmp_path / "notebook.py"
+    project_path.write_text("# service adapter fixture\n", encoding="utf-8")
+    state_home = tmp_path / "state"
+    manifest_path = state_home / "graphimo" / "service.json"
+    service = GraphimoService(manifest_path=manifest_path).start()
+    try:
+        root = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["XDG_STATE_HOME"] = str(state_home)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            [str(root), str(root / "core"), environment.get("PYTHONPATH", "")]
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "graphimo.service.invoke"],
+            input=json.dumps(
+                {"path": str(project_path), "operation": "execute", "action": "scope.current"}
+            ),
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+        response = json.loads(result.stdout)
+        assert response["ok"] is True
+        assert response["result"]["scope"]["kind"] == "project"
     finally:
         service.close()

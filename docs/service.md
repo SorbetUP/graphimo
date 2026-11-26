@@ -61,6 +61,20 @@ subscriptions when their addon supports unsubscribe. Closing a client does not
 stop the shared service. Stop the foreground service with Ctrl+C; a detached
 service can be stopped by terminating the PID recorded in the manifest.
 
+The Zeron adapter uses the same `GraphimoClient` transport through a small
+stdio command, without exposing the service token to Luau:
+
+```bash
+printf '%s\n' '{"path":"/path/to/notebook.py","operation":"execute","action":"scope.current","args":{}}' \
+  | python3 -m graphimo.service.invoke
+```
+
+The command accepts `execute`, `batch` and `events` requests and returns the
+same `{ok,result}` or `{ok:false,error}` JSON envelope. The Python environment
+selected by Zeron must have the Graphimo distribution installed. The command
+is transport-only; application actions and persistence remain in Graphimo's
+Python Core.
+
 ## HTTP protocol
 
 Every route uses JSON envelopes:
@@ -118,5 +132,5 @@ journal.
 
 The service does not expose arbitrary shell execution. It exposes only
 `GraphimoApplication.execute` actions, batch execution of those actions and
-the bounded project event stream. Zeron integration remains an adapter
-milestone and must use this same service/application contract.
+the bounded project event stream. The service does not replace the separate
+marimo session bridge for ordinary notebook execution.

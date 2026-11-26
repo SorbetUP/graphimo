@@ -179,6 +179,16 @@ def main() -> int:
         env["GRAPHIMO_MARIMO_PYTHON"] = marimo_python.stdout.strip()
     if args.full:
         require("luau", "install the Luau CLI for live Graphimo bridge tests")
+        luau_compile = require(
+            "luau-compile", "install the Luau compiler for plugin adapter syntax checks"
+        )
+        run(
+            "Zeron service adapter syntax",
+            luau_compile,
+            "--only-parse",
+            "plugin/service_bridge.luau",
+            "plugin/init.luau",
+        )
 
     with tempfile.TemporaryDirectory(prefix="graphimo-check-") as temporary:
         if args.full:

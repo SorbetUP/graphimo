@@ -171,8 +171,9 @@ class GraphimoHostAPI:
     def presentation_path(self) -> Path:
         return self.project_path.parent / ".graphimo.json"
 
-    def read_layout(self, scope_id: str) -> dict[str, dict[str, float]]:
+    def read_layout(self, scope_id: str) -> dict[str, dict[str, Any]]:
         _validate_scope_id(scope_id)
+        scoped_key = _layout_scope_key(self.project_path, scope_id)
         path = self.presentation_path
         try:
             raw = path.read_bytes()
@@ -184,34 +185,63 @@ class GraphimoHostAPI:
             document = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise MetaBlockStateError(f"invalid Graphimo presentation JSON: {exc}") from exc
-        if not isinstance(document, dict) or document.get("format") != 1:
+        if not isinstance(document, dict):
+            raise MetaBlockStateError("unsupported Graphimo presentation format")
+        if document.get("format") not in {None, 1} or document.get("version") not in {None, 1}:
             raise MetaBlockStateError("unsupported Graphimo presentation format")
         layout = document.get("layout", {})
-        if not isinstance(layout, dict) or not isinstance(layout.get(scope_id, {}), dict):
+        if not isinstance(layout, dict):
             raise MetaBlockStateError("Graphimo presentation layout must be an object")
-        return _validate_layout(layout.get(scope_id, {}))
+        if scoped_key in layout:
+            return _validate_layout(layout[scoped_key])
+        if scope_id in layout:
+            # Read early Graphimo presentation files whose scope IDs were global.
+            return _validate_layout(layout[scope_id])
+        if scope_id == "root":
+            notebooks = document.get("notebooks", {})
+            if not isinstance(notebooks, dict):
+                raise MetaBlockStateError("legacy Graphimo notebook layouts must be an object")
+            notebook = notebooks.get(str(self.project_path.resolve()), {})
+            if not isinstance(notebook, dict):
+                raise MetaBlockStateError("legacy Graphimo notebook layout must be an object")
+            return _validate_layout(notebook.get("cells", {}))
+        return {}
 
     def write_layout(self, scope_id: str, layout: dict[str, Any]) -> None:
         _validate_scope_id(scope_id)
         validated = _validate_layout(layout)
         path = self.presentation_path
-        document: dict[str, Any] = {"format": 1, "layout": {}}
+        document: dict[str, Any] = {"format": 1, "version": 1, "layout": {}, "notebooks": {}}
         if path.exists():
             try:
                 raw = path.read_bytes()
                 if len(raw) > MAX_STATE_BYTES:
                     raise MetaBlockStateError("Graphimo presentation file exceeds the 8 MiB limit")
                 existing = json.loads(raw)
-                if not isinstance(existing, dict) or existing.get("format") != 1:
+                if not isinstance(existing, dict):
+                    raise MetaBlockStateError("unsupported Graphimo presentation format")
+                if existing.get("format") not in {None, 1} or existing.get("version") not in {
+                    None,
+                    1,
+                }:
                     raise MetaBlockStateError("unsupported Graphimo presentation format")
                 document = dict(existing)
                 layout_root = existing.get("layout", {})
                 if not isinstance(layout_root, dict):
                     raise MetaBlockStateError("Graphimo presentation layout must be an object")
                 document["layout"] = dict(layout_root)
+                notebook_root = existing.get("notebooks", {})
+                if not isinstance(notebook_root, dict):
+                    raise MetaBlockStateError("legacy Graphimo notebook layouts must be an object")
+                document["notebooks"] = dict(notebook_root)
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise MetaBlockStateError(f"invalid Graphimo presentation JSON: {exc}") from exc
-        document["layout"][scope_id] = validated
+        scoped_key = _layout_scope_key(self.project_path, scope_id)
+        document["layout"][scoped_key] = validated
+        document["format"] = 1
+        document["version"] = 1
+        if scope_id == "root":
+            document["notebooks"][str(self.project_path.resolve())] = {"cells": validated}
         encoded = _encode_json(document)
         if len(encoded) > MAX_STATE_BYTES:
             raise MetaBlockStateError("Graphimo presentation file exceeds the 8 MiB limit")
@@ -249,22 +279,40 @@ def _validate_scope_id(value: str) -> None:
         raise ValueError("scope ID must contain 1-128 letters, digits, '_' or '-'")
 
 
-def _validate_layout(value: Any) -> dict[str, dict[str, float]]:
+def _layout_scope_key(project_path: Path, scope_id: str) -> str:
+    project = str(project_path.expanduser().resolve())
+    project_key = hashlib.sha256(project.encode("utf-8")).hexdigest()[:20]
+    return f"project_{project_key}_{scope_id}"
+
+
+def _validate_layout(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         raise MetaBlockStateError("Graphimo layout must be an object")
-    result: dict[str, dict[str, float]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for element_id, rect in value.items():
         if not isinstance(element_id, str) or not _ID_RE.fullmatch(element_id):
             raise MetaBlockStateError("Graphimo layout has an invalid element ID")
-        if not isinstance(rect, dict) or set(rect) != {"x", "y", "width", "height"}:
-            raise MetaBlockStateError("Graphimo element layout requires x, y, width and height")
-        normalized: dict[str, float] = {}
-        for key, number in rect.items():
+        if not isinstance(rect, dict) or not {"x", "y"}.issubset(rect):
+            raise MetaBlockStateError("Graphimo element layout requires x and y")
+        allowed = {"x", "y", "width", "height", "collapsed", "group"}
+        if set(rect) - allowed:
+            raise MetaBlockStateError("Graphimo element layout contains unsupported fields")
+        normalized: dict[str, Any] = {}
+        for key in {"x", "y", "width", "height"} & set(rect):
+            number = rect[key]
             if type(number) not in {int, float} or not math.isfinite(number):
                 raise MetaBlockStateError("Graphimo layout coordinates must be finite numbers")
             normalized[key] = float(number)
-        if normalized["width"] <= 0 or normalized["height"] <= 0:
+        if any(normalized[key] <= 0 for key in {"width", "height"} & set(normalized)):
             raise MetaBlockStateError("Graphimo layout width and height must be positive")
+        if "collapsed" in rect:
+            if type(rect["collapsed"]) is not bool:
+                raise MetaBlockStateError("Graphimo collapsed layout state must be boolean")
+            normalized["collapsed"] = rect["collapsed"]
+        if "group" in rect:
+            if not isinstance(rect["group"], str):
+                raise MetaBlockStateError("Graphimo layout group metadata must be text")
+            normalized["group"] = rect["group"]
         result[element_id] = normalized
     return result
 

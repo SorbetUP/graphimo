@@ -327,6 +327,44 @@ def test_layout_persists_per_scope_and_preserves_other_document_metadata(tmp_pat
     assert document["camera"] == {"zoom": 1.2}
 
 
+def test_layout_reads_migrates_and_mirrors_existing_plugin_layouts(tmp_path: Path) -> None:
+    host, _manager, _entry = setup_manager(tmp_path)
+    host.project_path.write_text("# notebook\n", encoding="utf-8")
+    other_path = tmp_path / "other.py"
+    other_path.write_text("# other notebook\n", encoding="utf-8")
+    host.presentation_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "notebooks": {
+                    str(host.project_path.resolve()): {
+                        "cells": {"block_1": {"x": 14, "y": 25, "collapsed": True}}
+                    },
+                    str(other_path.resolve()): {"cells": {"other": {"x": 90, "y": 20}}},
+                },
+                "camera": {"zoom": 0.8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert host.read_layout("root") == {"block_1": {"x": 14.0, "y": 25.0, "collapsed": True}}
+    host.write_layout("root", {"block_1": {"x": 40, "y": 50, "collapsed": False}})
+
+    document = json.loads(host.presentation_path.read_text(encoding="utf-8"))
+    project_key = (
+        f"project_{hashlib.sha256(str(host.project_path.resolve()).encode()).hexdigest()[:20]}_root"
+    )
+    assert document["format"] == document["version"] == 1
+    assert document["layout"][project_key]["block_1"]["x"] == 40
+    assert document["notebooks"][str(host.project_path.resolve())]["cells"]["block_1"]["x"] == 40
+    assert document["notebooks"][str(other_path.resolve())]["cells"]["other"]["x"] == 90
+    assert document["camera"] == {"zoom": 0.8}
+
+    other_host = GraphimoHostAPI("other", other_path)
+    assert other_host.read_layout("root") == {"other": {"x": 90.0, "y": 20.0}}
+
+
 @pytest.mark.parametrize(
     ("scope_id", "layout", "message"),
     [

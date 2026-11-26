@@ -1,5 +1,6 @@
 local zeron = require("./zeron")("graphimo")
 local Bridge = require("./marimo_bridge")
+local Service = require("./service_bridge")
 local Layout = require("./layout")
 local Canvas = require("./canvas")
 local BaseBlock = require("./base_block")
@@ -109,6 +110,8 @@ local Page = ui.component(function()
 	local session_id = ui.use_state(saved.session_id or "")
 	local sessions = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
+	local groups = ui.use_state({})
+	local metablocks = ui.use_state({})
 	local visible_cell_ids = ui.use_state({})
 	local log_entries = ui.use_state(saved_logs:peek() or {})
 	local problem_entries = ui.use_state(saved_problems:peek() or {})
@@ -284,11 +287,30 @@ local Page = ui.component(function()
 				end, function(err) notice:set("Component discovery failed: " .. tostring(err)) end)
 			end
 			if is_local_url(url:peek()) then
-				Layout.load(zeron, path, function(saved_positions, err)
-					if err then log("Load canvas layout failed: " .. tostring(err)) end
-					apply_layout(saved_positions)
+				observe("Load Graphimo project", function()
+					return Service.batch(zeron, path, {
+						{ id = "layout", action = "layout.get", args = { scope_id = "root" } },
+						{ id = "groups", action = "group.list", args = {} },
+						{ id = "metablocks", action = "metablock.list", args = {} },
+						{ id = "scope", action = "scope.current", args = {} },
+					})
+				end, function(batch)
+					local results = {}
+					for _, item in batch.operations or {} do
+						if item.status == "ok" then results[item.id] = item.result end
+					end
+					groups:set((results.groups or {}).items or {})
+					metablocks:set((results.metablocks or {}).items or {})
+					apply_layout((results.layout or {}).layout or {})
+				end, function(err)
+					log("Graphimo service unavailable; loading legacy canvas layout: " .. tostring(err), "error")
+					Layout.load(zeron, path, function(saved_positions, layout_error)
+						if layout_error then log("Load canvas layout failed: " .. tostring(layout_error)) end
+						apply_layout(saved_positions)
+					end)
 				end)
 			else
+				groups:set({}); metablocks:set({})
 				apply_layout({})
 			end
 		end, function(err) notice:set("Could not inspect marimo: " .. tostring(err)) end)
@@ -297,12 +319,17 @@ local Page = ui.component(function()
 	local function save_positions()
 		local path = snapshot:peek().notebook.path
 		if not path or path == "" or not is_local_url(url:peek()) then return end
-		Layout.save(zeron, path, positions:peek(), function(ok, err)
-			if ok then log("Canvas layout saved") else
-				local message = "Layout save failed: " .. tostring(err)
-				log(message)
-				notice:set(message)
-			end
+		local scope_id = "root"
+		observe("Save canvas layout", function()
+			return Service.execute(zeron, path, "layout.set", { scope_id = scope_id, layout = positions:peek() })
+		end, function() log("Canvas layout saved through Graphimo Core") end, function(err)
+			Layout.save(zeron, path, positions:peek(), function(ok, layout_error)
+				if ok then log("Canvas layout saved through the legacy compatibility path") else
+					local message = "Layout save failed: " .. tostring(layout_error or err)
+					log(message, "error")
+					notice:set(message)
+				end
+			end)
 		end)
 	end
 
