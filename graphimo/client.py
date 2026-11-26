@@ -309,6 +309,14 @@ class GraphimoProject:
         """Ask marimo to run one cell after Graphimo's disabled-dependency check."""
         return self.execute("notebook.run", {"cell_id": cell_id})
 
+    def disable_instance(self, cell_id: str) -> dict[str, Any]:
+        """Disable a canonical Graphimo node instance without changing its edges."""
+        return self.execute("notebook.disable_instance", {"cell_id": cell_id})
+
+    def enable_instance(self, cell_id: str) -> dict[str, Any]:
+        """Re-enable a canonical Graphimo node instance in the live notebook."""
+        return self.execute("notebook.enable_instance", {"cell_id": cell_id})
+
     def inspect_artifact(self, artifact_id: str) -> dict[str, Any]:
         """Read an ArtifactStore reference without exposing its storage backend."""
         return self.execute("artifact.inspect", {"artifact_id": artifact_id})

@@ -83,7 +83,11 @@ checks disabled dependencies, then asks marimo to run that cell and its normal
 reactive dependents. `notebook.add_cell` is available for explicitly supplied
 cell code; reusable components should use `component.add` or
 `GraphimoProject.add_component` so component validation and source markers are
-preserved. Notebook actions fail with `no live marimo kernel is attached` until
+preserved. `project.disable_instance(cell_id)` and
+`project.enable_instance(cell_id)` operate only on canonical Graphimo node
+instance cells; disabling keeps source connections intact, and blocked
+descendants are rejected by `run` until the upstream instance is enabled.
+Notebook actions fail with `no live marimo kernel is attached` until
 the project has been attached through this method or the Zeron session flow.
 
 `GraphimoProject` is a convenience handle for execute, batch, events, ordinary

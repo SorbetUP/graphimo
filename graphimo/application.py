@@ -77,6 +77,12 @@ class GraphimoApplication:
             "notebook.connect": lambda value: self._invoke_notebook("connect", value),
             "notebook.run": lambda value: self._invoke_notebook("run", value),
             "notebook.delete": lambda value: self._invoke_notebook("delete", value),
+            "notebook.disable_instance": lambda value: self._invoke_notebook(
+                "disable_instance", value
+            ),
+            "notebook.enable_instance": lambda value: self._invoke_notebook(
+                "enable_instance", value
+            ),
             "scope.enter": self._enter_group,
             "scope.leave": self._leave_scope,
             "scope.current": self._current_scope,

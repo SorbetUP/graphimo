@@ -391,17 +391,28 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             assert result_preview is not None, target_projection["output"]
             assert result_preview["runtime_type"] == "int"
             assert result_preview["preview"] == "6"
-            from graphimo.instance import build_instance_source, disable_instance_source
+            from graphimo.instance import build_instance_source
 
             disabled_source, disabled_spec = build_instance_source(
                 "disabled_source", {}, instance_id="deadbeef"
             )
-            disabled_cell = project.execute(
-                "notebook.add_cell", {"source": disable_instance_source(disabled_source)}
+            project.execute(
+                "notebook.add_cell",
+                {"source": "def disabled_source():\n    return 4"},
             )
+            disabled_cell = project.execute("notebook.add_cell", {"source": disabled_source})
             blocked_cell = project.execute(
                 "notebook.add_cell",
                 {"source": f"blocked_value = {disabled_spec.result_var}"},
+            )
+            disabled = project.disable_instance(disabled_cell["cell_id"])
+            assert disabled["changed"] is True
+            blocked_snapshot = project.inspect_notebook()
+            assert blocked_cell["cell_id"] in blocked_snapshot["blocked_by"]
+            assert any(
+                edge["source_cell_id"] == disabled_cell["cell_id"]
+                and edge["target_cell_id"] == blocked_cell["cell_id"]
+                for edge in blocked_snapshot["edges"]
             )
             with pytest.raises(
                 GraphimoServiceError, match="Cell is blocked by disabled upstream"
@@ -409,6 +420,9 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 project.run(blocked_cell["cell_id"])
             assert getattr(blocked.value, "code", None) == "blocked_by_disabled_dependency"
             assert disabled_cell["cell_id"] in str(blocked.value)
+            enabled = project.enable_instance(disabled_cell["cell_id"])
+            assert enabled["changed"] is True
+            assert project.run(blocked_cell["cell_id"])["status"] == "queued"
 
             config = {
                 "service_url": first.url,

@@ -74,7 +74,15 @@ class MarimoKernelPort:
 
     def invoke_notebook(self, action: str, args: dict[str, Any]) -> Any:
         """Invoke a bounded ordinary notebook operation in the live marimo kernel."""
-        if action not in {"inspect", "add_cell", "connect", "run", "delete"}:
+        if action not in {
+            "inspect",
+            "add_cell",
+            "connect",
+            "run",
+            "delete",
+            "disable_instance",
+            "enable_instance",
+        }:
             raise MarimoKernelError(
                 "notebook_action_unsupported", "notebook action is not supported"
             )
@@ -188,6 +196,26 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "    else: ctx.run_cell(cell_id); result = {'ok': True, 'cell_id': cell_id, 'status': 'queued'}",
             ]
         )
+    elif action in {"disable_instance", "enable_instance"}:
+        operation = (
+            "disable_instance_source" if action == "disable_instance" else "enable_instance_source"
+        )
+        common.extend(
+            [
+                "    from graphimo.instance import " + operation,
+                "    cell_id = payload.get('cell_id')",
+                "    try:",
+                "        if not isinstance(cell_id, str) or not cell_id or len(cell_id) > 256: raise ValueError('cell_id must be 1-256 characters')",
+                "        cell = ctx.cells[cell_id]",
+                f"        updated = {operation}(cell.code)",
+                "        changed = updated != cell.code",
+                "        ctx.edit_cell(cell.id, code=updated)",
+                "        result = {'ok': True, 'cell_id': str(cell.id), 'changed': changed, 'source': updated}",
+                "    except (TypeError, ValueError, KeyError) as error:",
+                "        message = 'cell not found' if isinstance(error, KeyError) else str(error)[:2000]",
+                "        result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': message}}",
+            ]
+        )
     elif action == "connect":
         common.extend(
             [
@@ -275,8 +303,18 @@ def _parse_result(text: str) -> dict[str, Any]:
     marker = "GRAPHIMO_KERNEL_RESULT:"
     position = joined.find(marker)
     if position < 0:
+        diagnostics: list[str] = []
+        current_event = None
+        for line in text.splitlines():
+            if line.startswith("event:"):
+                current_event = line.partition(":")[2].strip()
+            elif line.startswith("data:") and current_event in {"stderr", "error"}:
+                diagnostics.append(line.partition(":")[2].strip())
+        detail = " ".join(diagnostics)[:500]
         raise MarimoKernelError(
-            "kernel_action_failed", "marimo did not return a structured Graphimo action result"
+            "kernel_action_failed",
+            "marimo did not return a structured Graphimo action result"
+            + (f": {detail}" if detail else ""),
         )
     line = joined[position + len(marker) :].splitlines()[0]
     try:
