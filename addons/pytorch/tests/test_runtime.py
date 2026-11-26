@@ -111,9 +111,7 @@ def test_activation_subscription_rate_limit_coalesces_events_without_delaying_fo
     monkeypatch.setattr(runtime.time, "monotonic", lambda: next(clock))
     default_spec = runtime.SubscriptionSpec("default", "runtime-1", "dense")
     assert default_spec.rate_hz <= 10
-    registry.subscribe(
-        runtime.SubscriptionSpec("rate-limited", "runtime-1", "dense", rate_hz=2.0)
-    )
+    registry.subscribe(runtime.SubscriptionSpec("rate-limited", "runtime-1", "dense", rate_hz=2.0))
 
     outputs = [model(torch.ones(1, 2)) for _ in range(3)]
     events = bus.drain("model-1")["events"]

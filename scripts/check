@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,7 @@ def lint_paths() -> list[str]:
         "tests/test_core_vertical_slice.py",
         "tests/test_artifact_api.py",
         "tests/test_base_block_contract.py",
+        "tests/test_core_without_torch.py",
         "tests/test_component_parameter_metadata.py",
         "tests/test_dispatch_contract.py",
         "tests/test_graph_scopes.py",
@@ -96,6 +98,51 @@ def lint_paths() -> list[str]:
     ]
 
 
+def generated_artifacts() -> set[str]:
+    """Return generated build paths currently present in the repository."""
+    artifacts: set[str] = set()
+    pruned = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"}
+    for directory, child_dirs, files in os.walk(ROOT):
+        child_dirs[:] = [name for name in child_dirs if name not in pruned]
+        current = Path(directory)
+        for name in (*child_dirs, *files):
+            path = current / name
+            if name in {"build", "dist"} or name.endswith(".egg-info"):
+                artifacts.add(path.relative_to(ROOT).as_posix())
+                if path.is_dir():
+                    artifacts.update(
+                        child.relative_to(ROOT).as_posix() for child in path.rglob("*")
+                    )
+    return artifacts
+
+
+def tracked_generated_artifacts(git: str) -> list[str]:
+    result = subprocess.run([git, "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True)
+    tracked = result.stdout.decode().split("\0")
+    return [
+        path
+        for path in tracked
+        if path
+        and any(
+            part in {"build", "dist"} or part.endswith(".egg-info") for part in Path(path).parts
+        )
+    ]
+
+
+def verify_generated_artifact_hygiene(before: set[str], *, baseline_tracked: Iterable[str]) -> None:
+    tracked = list(baseline_tracked)
+    if tracked:
+        raise SystemExit(
+            "Generated package artifacts must not be tracked by Git:\n- " + "\n- ".join(tracked)
+        )
+    created = sorted(generated_artifacts() - before)
+    if created:
+        raise SystemExit(
+            "The verification gate created build artifacts in the repository; build outputs "
+            "must stay in temporary directories:\n- " + "\n- ".join(created)
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -104,6 +151,10 @@ def main() -> int:
     args = parser.parse_args()
     mode = "full" if args.full else "fast"
     check_dependencies(mode)
+
+    git = require("git", "run the local verification gate from a Git checkout")
+    tracked_artifacts = tracked_generated_artifacts(git)
+    artifact_baseline = generated_artifacts()
 
     ruff = require("ruff", "install the 'dev' extra")
     py_paths = python_paths()
@@ -134,8 +185,13 @@ def main() -> int:
                 build_root,
                 ignore=shutil.ignore_patterns(
                     ".git",
+                    ".venv",
                     ".pytest_cache",
                     ".ruff_cache",
+                    ".marimo",
+                    ".mypy_cache",
+                    ".tox",
+                    "node_modules",
                     "__pycache__",
                     "build",
                     "dist",
@@ -206,6 +262,9 @@ def main() -> int:
         if args.fast:
             pytest_args.extend(["-m", "not full"])
         run("Python and marimo contracts", sys.executable, "-m", "pytest", *pytest_args, env=env)
+
+    verify_generated_artifact_hygiene(artifact_baseline, baseline_tracked=tracked_artifacts)
+    print("Generated-artifact hygiene passed.", flush=True)
 
     print(f"\nGraphimo {mode} verification passed.", flush=True)
     return 0

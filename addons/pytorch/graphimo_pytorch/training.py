@@ -52,7 +52,9 @@ def train_pytorch_model(
         raise TypeError("model_def must be a PyTorchModelDefinition")
 
     model = model_def.instantiate(device=device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=float(lr), weight_decay=float(weight_decay)
+    )
     history: list[dict[str, float | int]] = []
     checkpoint = None
     step = 0
@@ -89,13 +91,19 @@ def train_pytorch_model(
                     logits = logits.get("logits", next(iter(logits.values())))
                 loss = model.loss(logits, input_ids)
             else:
-                raise ValueError("provide loss_fn for models without a loss(logits, input_ids) method")
+                raise ValueError(
+                    "provide loss_fn for models without a loss(logits, input_ids) method"
+                )
             if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
                 raise ValueError("training loss must be a scalar PyTorch tensor")
             loss.backward()
             grad_norm = None
             if emit_grad_norm:
-                norms = [parameter.grad.detach().norm(2) for parameter in model.parameters() if parameter.grad is not None]
+                norms = [
+                    parameter.grad.detach().norm(2)
+                    for parameter in model.parameters()
+                    if parameter.grad is not None
+                ]
                 if norms:
                     grad_norm = torch.stack(norms).norm(2)
             optimizer.step()

@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+.venv/
 .pytest_cache/
 .graphimo.json
 build/
@@ -7,3 +8,6 @@ dist/
 *.egg-info/
 .ruff_cache/
 .marimo/
+.mypy_cache/
+.tox/
+.DS_Store

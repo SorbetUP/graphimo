@@ -105,10 +105,13 @@ The host-independent MetaBlock entry-point and application contracts live in
 [`graphimo/application.py`](graphimo/application.py) and
 [`docs/metablock-host-api.md`](docs/metablock-host-api.md). Core preserves
 addon-owned sidecar state when an addon is missing. The separate PyTorch
-distribution now registers through this API; its visual graph/compiler and
-runtime capabilities are still being implemented milestone by milestone.
-The addon schema and current milestone boundary are documented in
-[`docs/pytorch-addon.md`](docs/pytorch-addon.md).
+distribution registers through this API. Its P1-P9 implementation includes
+semantic graph editing, model compilation, live runtime inspection, checkpoints,
+TorchLens integration, Llama templates, and package/unavailable-addon lifecycle
+coverage. The host-independent application API is the current integration seam;
+the later persistent service and Zeron migration remain separate milestones.
+See [`docs/pytorch-addon.md`](docs/pytorch-addon.md) for the implemented surface
+and its process-boundary limitations.
 
 The standalone Workbench exercises the shared application layer without
 Zeron. After installing the PyTorch addon, run

@@ -338,8 +338,12 @@ def _emit_graph(
                 method_call = element.metadata.get("method_call")
                 if method_call == "forward":
                     call_args = element.metadata.get("arguments", [])
-                    if not isinstance(call_args, list) or any(item not in input_names for item in call_args):
-                        raise ValueError("forward method-call metadata must reference method inputs")
+                    if not isinstance(call_args, list) or any(
+                        item not in input_names for item in call_args
+                    ):
+                        raise ValueError(
+                            "forward method-call metadata must reference method inputs"
+                        )
                     lines.append(
                         f"{indent}{output_var} = self.forward({', '.join(_identifier(item, 'input') for item in call_args)})"
                     )
@@ -373,8 +377,12 @@ def _emit_graph(
                 )
                 if element.metadata.get("method_call") == "forward":
                     call_args = element.metadata.get("arguments", [])
-                    if not isinstance(call_args, list) or any(item not in input_names for item in call_args):
-                        raise ValueError("forward method-call metadata must reference method inputs")
+                    if not isinstance(call_args, list) or any(
+                        item not in input_names for item in call_args
+                    ):
+                        raise ValueError(
+                            "forward method-call metadata must reference method inputs"
+                        )
                     lines.append(
                         f"{indent}{output_var} = self.forward({', '.join(_identifier(item, 'input') for item in call_args)})"
                     )
@@ -392,7 +400,11 @@ def _emit_graph(
                 if llama_model
                 else f"layers.{module_key}"
             )
-            if register_sites and not element.metadata.get("method_call") and not (llama_group and element.kind == "input"):
+            if (
+                register_sites
+                and not element.metadata.get("method_call")
+                and not (llama_group and element.kind == "input")
+            ):
                 bindings.append(RuntimeSite(element.id, module_path, group_path, True))
         else:
             instance = instances[identity]
@@ -437,7 +449,9 @@ def _emit_graph(
                         identity, f"repeat_{index}", f"{instance.name}_repeat_{index}"
                     )
                     call = "self.layers" if llama_repeated else f"self.groups[{_quote(group_key)}]"
-                    lines.append(f"{indent}{result_var} = {call}[{index}]({', '.join(current_args)})")
+                    lines.append(
+                        f"{indent}{result_var} = {call}[{index}]({', '.join(current_args)})"
+                    )
                     current_args = [f"{result_var}[0]"] if len(definition.outputs) == 1 else []
                     if len(definition.outputs) > 1:
                         current_args = [
@@ -559,24 +573,36 @@ def _emit_group_class(
     for instance in group.group_instances:
         nested = groups.get(instance.group_id)
         if nested:
-            lines.extend(_emit_group_class(nested, groups, by_id, bindings, emitted, llama_template))
+            lines.extend(
+                _emit_group_class(nested, groups, by_id, bindings, emitted, llama_template)
+            )
     emitted.add(group.id)
     class_name = _class_name(group.name, "Group")
     args = ", ".join(_identifier(port.name, "input") for port in group.inputs)
     direct = llama_template and group.name == "LlamaDecoderLayer"
-    lines.extend([f"class {class_name}(nn.Module):", "    def __init__(self):", "        super().__init__()"])
+    lines.extend(
+        [f"class {class_name}(nn.Module):", "    def __init__(self):", "        super().__init__()"]
+    )
     if not direct:
-        lines.extend(["        self.layers = nn.ModuleDict()", "        self.groups = nn.ModuleDict()"])
+        lines.extend(
+            ["        self.layers = nn.ModuleDict()", "        self.groups = nn.ModuleDict()"]
+        )
     for element in group.elements:
         if element.kind == "input" and direct:
             continue
         if direct:
-            lines.append(f"        self.{_identifier(element.name)} = {_module_expression(element, by_id)}")
+            lines.append(
+                f"        self.{_identifier(element.name)} = {_module_expression(element, by_id)}"
+            )
             params = _resolved_params(element, by_id)
             if element.kind in {"embedding", "linear"} and params.get("init_std") is not None:
-                lines.append(f"        nn.init.normal_(self.{_identifier(element.name)}.weight, mean=0.0, std={params['init_std']!r})")
+                lines.append(
+                    f"        nn.init.normal_(self.{_identifier(element.name)}.weight, mean=0.0, std={params['init_std']!r})"
+                )
         else:
-            lines.append(f"        self.layers[{_quote(element.name)}] = {_module_expression(element, by_id)}")
+            lines.append(
+                f"        self.layers[{_quote(element.name)}] = {_module_expression(element, by_id)}"
+            )
     for instance in group.group_instances:
         nested = groups[instance.group_id]
         nested_name = _class_name(nested.name, "Group")
@@ -628,7 +654,9 @@ def _generate_source(
     llama_template = state.metadata.get("template") in {"llama_causal_lm", "llama_decoder_layer"}
     for group in state.groups:
         lines.extend(_emit_group_class(group, groups, by_id, bindings, emitted, llama_template))
-    model_class = str(state.metadata.get("generated_class_name") or _class_name(state.name, "GraphimoModel"))
+    model_class = str(
+        state.metadata.get("generated_class_name") or _class_name(state.name, "GraphimoModel")
+    )
     llama_model = state.metadata.get("template") == "llama_causal_lm"
     lines.extend(
         [
@@ -640,7 +668,9 @@ def _generate_source(
     if llama_model:
         lines.append("        self.operations = nn.ModuleDict()")
     else:
-        lines.extend(["        self.layers = nn.ModuleDict()", "        self.groups = nn.ModuleDict()"])
+        lines.extend(
+            ["        self.layers = nn.ModuleDict()", "        self.groups = nn.ModuleDict()"]
+        )
     for method in state.entrypoints:
         prefix = method.name
         for element in method.elements:
