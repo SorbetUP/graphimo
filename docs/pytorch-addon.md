@@ -51,6 +51,17 @@ semantic metadata and revision; Graphimo's presentation store owns that data.
 Ordered scientific lists remain ordered, so element, edge, method and repeat
 changes affect the revision.
 
+## Importing an existing MetaBlock
+
+The Zeron **Import PyTorch state** action accepts a Graphimo-PyTorch semantic
+JSON state or a `pytorch.model` sidecar envelope. It creates a new MetaBlock
+sidecar in the active project, assigns the new project-local MetaBlock ID, and
+preserves the imported name and graph. Import input is limited to 3 MiB.
+Existing project sidecars are reopened through the normal MetaBlock list.
+Arbitrary Python `nn.Module` source is not parsed into a visual graph; the
+addon returns `pytorch_import_unsupported` with an explanation instead of
+creating a partial model.
+
 ## Current milestone boundary
 
 P1 supplies the semantic schema. P2 adds the exact V1 element catalog,

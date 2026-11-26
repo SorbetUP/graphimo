@@ -962,6 +962,52 @@ local Page = ui.component(function()
 		end)
 	end
 
+	local function import_metablock_state()
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+		if path == "" then notice:set("Open a local notebook before importing a MetaBlock"); return end
+		ui.open_files({
+			title = "Import Graphimo PyTorch state",
+			filters = { { "Graphimo-PyTorch state or source", { "json", "py" } } },
+		}):after(function(files)
+			local file = files and files[1]
+			if not file then return end
+			ui.read_file(file):after(function(source)
+				if type(source) ~= "string" then
+					notice:set("Could not read the selected MetaBlock file")
+					return
+				end
+				if #source > 3 * 1024 * 1024 then
+					notice:set("Selected MetaBlock state exceeds the 3 MiB import limit")
+					return
+				end
+				output_counter:set(output_counter:peek() + 1)
+				local metablock_id = "model_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
+				observe("Import Graphimo PyTorch MetaBlock", function()
+					return Service.execute(zeron, path, "metablock.create", {
+						dialect_id = "pytorch.model",
+						metablock_id = metablock_id,
+						request = { semantic_state_json = source },
+					})
+				end, function(created)
+					local next = table.clone(metablocks:peek())
+					table.insert(next, {
+						metablock_id = created.metablock_id,
+						dialect_id = created.dialect_id,
+						addon_version = created.addon_version,
+					})
+					metablocks:set(next)
+					open_metablock(created.metablock_id, "root")
+				end, function(err)
+					notice:set("Could not import PyTorch MetaBlock: " .. tostring(err))
+				end)
+			end, function(err)
+				notice:set("Could not read the selected MetaBlock file: " .. tostring(err))
+			end)
+		end, function(err)
+			notice:set("Could not choose a MetaBlock file: " .. tostring(err))
+		end)
+	end
+
 	local function materialize_metablock()
 		local metablock_id = active_metablock:peek()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
@@ -1976,6 +2022,12 @@ local Page = ui.component(function()
 					tone = "secondary", size = "sm", w_full = true,
 					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
 					on_click = create_metablock,
+				},
+				Button {
+					"Import PyTorch state",
+					tone = "secondary", size = "sm", w_full = true,
+					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+					on_click = import_metablock_state,
 				},
 				ui.show(function() return #metablocks:get() == 0 end, Text { "No saved MetaBlocks", style = "caption", tone = "secondary" }),
 				ui.each(metablocks, function(item)

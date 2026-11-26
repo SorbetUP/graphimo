@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -23,6 +24,7 @@ from .schema import (
     MethodOutput,
     ParameterBinding,
     PyTorchMetaBlockState,
+    PyTorchSchemaError,
     graph_revision,
     state_from_dict,
     state_to_dict,
@@ -39,6 +41,45 @@ def _create_state(request: dict[str, Any], context: GraphimoHostAPI) -> dict[str
     metablock_id = context.current_metablock_id
     if not metablock_id:
         raise ValueError("PyTorch MetaBlock creation requires a scoped MetaBlock ID")
+    if "semantic_state_json" in request:
+        source = request["semantic_state_json"]
+        if not isinstance(source, str):
+            raise PyTorchSchemaError(
+                "pytorch_import_unsupported", "PyTorch import source must be JSON text"
+            )
+        try:
+            source_bytes = source.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise PyTorchSchemaError(
+                "pytorch_import_unsupported", "PyTorch import source must be valid UTF-8"
+            ) from exc
+        if len(source_bytes) > 3 * 1024 * 1024:
+            raise PyTorchSchemaError(
+                "pytorch_import_unsupported",
+                "PyTorch semantic state exceeds the 3 MiB import limit",
+            )
+        try:
+            imported = json.loads(source)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PyTorchSchemaError(
+                "pytorch_import_unsupported",
+                "Arbitrary PyTorch source cannot be imported into an editable graph; "
+                "import a Graphimo-PyTorch semantic JSON state instead.",
+            ) from exc
+        if isinstance(imported, dict) and imported.get("format") == 1:
+            if imported.get("dialect_id") != "pytorch.model":
+                raise PyTorchSchemaError(
+                    "pytorch_import_unsupported",
+                    "The saved MetaBlock sidecar does not use the pytorch.model dialect.",
+                )
+            imported = imported.get("state")
+        if not isinstance(imported, dict) or "schema_version" not in imported:
+            raise PyTorchSchemaError(
+                "pytorch_import_unsupported",
+                "The selected JSON is not a Graphimo-PyTorch semantic state.",
+            )
+        semantic = state_from_dict(imported)
+        return state_to_dict(replace(semantic, metablock_id=metablock_id))
     template = request.get("template", "multihead_mlp")
     if template != "multihead_mlp":
         state = create_template_state(

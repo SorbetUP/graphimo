@@ -57,7 +57,9 @@ operation.
   `layout.get` / `layout.set` actions. Root layout reads and writes the legacy
   Graphimo plugin file shape so old notebook positions remain available.
 - The **MetaBlocks** section lists saved addon-owned models and creates a
-  `pytorch.model` MetaBlock through `metablock.create`.
+  `pytorch.model` MetaBlock through `metablock.create`. **Import PyTorch state**
+  creates a new MetaBlock from a bounded semantic JSON state or PyTorch sidecar
+  envelope; arbitrary Python source is explicitly rejected by the addon.
 - Selecting a model calls `metablock.project`; the renderer maps its elements,
   ports, edges, shapes and diagnostics into the existing Graphimo canvas.
 - The PyTorch sidebar can inspect the addon's read-only generated Python for
