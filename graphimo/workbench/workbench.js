@@ -891,6 +891,14 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(start.x, start.y);
       ctx.lineTo(pointer.current.x, pointer.current.y); ctx.strokeStyle = "#81a9ff"; ctx.stroke();
     }
+    if (pointer.target?.direction === "input" && pointer.target.element.id !== connectSource?.element_id) {
+      const targetRect = locations.get(pointer.target.element.id);
+      if (targetRect) {
+        const target = portPosition(pointer.target.element, targetRect, pointer.target.port, "input");
+        ctx.beginPath(); ctx.arc(target.x, target.y, 9, 0, Math.PI * 2);
+        ctx.fillStyle = "#81a9ff"; ctx.fill();
+      }
+    }
   }
   ctx.restore();
 }
@@ -985,7 +993,8 @@ canvas.addEventListener("pointerdown", (event) => {
   if (port?.direction === "output") {
     selectedEdge = null;
     connectSource = { element_id: port.element.id, port: port.port };
-    pointer = { mode: "connect", current: point };
+    pointer = { mode: "connect", current: point, start: point, target: null };
+    canvas.setPointerCapture(event.pointerId);
     renderInspector(); draw(); return;
   }
   if (port?.direction === "input" && connectSource) {
@@ -1025,12 +1034,35 @@ canvas.addEventListener("pointermove", (event) => {
     cameraTouched = true;
     camera.x += event.clientX - pointer.lastX; camera.y += event.clientY - pointer.lastY;
     pointer.lastX = event.clientX; pointer.lastY = event.clientY;
-  } else if (pointer.mode === "connect") pointer.current = point;
+  } else if (pointer.mode === "connect") {
+    pointer.current = point;
+    pointer.target = hitPort(point);
+  }
   draw();
 });
-canvas.addEventListener("pointerup", async () => {
+canvas.addEventListener("pointerup", async (event) => {
   if (pointer?.mode === "move") await persistLayout();
+  else if (pointer?.mode === "connect") {
+    const point = worldPoint(event);
+    const target = hitPort(point);
+    const moved = Math.hypot(point.x - pointer.start.x, point.y - pointer.start.y) > 8;
+    pointer = null;
+    if (target?.direction === "input" && target.element.id !== connectSource?.element_id) {
+      const intent = {
+        type: "connect",
+        scope,
+        source: connectSource,
+        target: { element_id: target.element.id, port: target.port },
+      };
+      connectSource = null;
+      await sendIntent(intent);
+    } else if (moved) {
+      connectSource = null;
+      renderInspector();
+    }
+  }
   pointer = null;
+  draw();
 });
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();

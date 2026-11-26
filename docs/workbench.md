@@ -62,10 +62,28 @@ unavailable-addon placeholder and the opaque persisted state; the contextual
 palette is cleared. Reinstalling/discovering the addon reopens the same
 semantic graph and presentation layout.
 
+Connections are created by dragging from an output port to an input port.
+While dragging, the preview follows the pointer and a valid input is highlighted.
+The canvas commits the connection only on drop; dropping elsewhere cancels the
+preview. After an accepted connection, the projection refreshes from the addon
+and the edge remains after reloading the Workbench.
+
 TorchLens inspection is also process-local and uses an explicit input fixture;
 it does not claim to inspect the current or next training batch. Saving an
 inspection runs a fresh pass, and intervention results are labeled as
 experimental copies of the selected runtime.
+
+## Manual canvas validation
+
+The browser canvas was exercised against `examples/simple_pipeline.py` with
+`graphimo-pytorch` installed in the Workbench interpreter. The check created a
+Multihead MLP MetaBlock, added a Linear element, connected its input by dragging
+an output port, confirmed that the projection cleared the unconnected-input
+diagnostics, reloaded the page and confirmed the edge remained, then requested
+the generated marimo definition. This exposed and fixed a pointer-up path that
+previously discarded a dragged edge before submitting the application intent.
+The standalone Workbench preview correctly reports that it did not insert the
+definition into a live marimo session.
 
 ## HTTP/action boundary
 
