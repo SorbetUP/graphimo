@@ -356,6 +356,187 @@ def create_group_file(
     return load_group_definition(path)
 
 
+def create_group_from_selection(
+    project_path: str | Path,
+    *,
+    name: str,
+    module: str,
+    cells: Sequence[Mapping[str, Any]],
+    selected_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Create a marimo-backed Group from selected live cell snapshots.
+
+    Parent relationships crossing the selection become Group inputs and
+    outputs. The returned replacement cell source is inserted by the live
+    marimo host after it rechecks each selected cell's source hash.
+    """
+    if isinstance(cells, (str, bytes)) or not isinstance(cells, Sequence):
+        raise GroupError("Group selection cells must be a sequence")
+    if isinstance(selected_ids, (str, bytes)) or not isinstance(selected_ids, Sequence):
+        raise GroupError("selected_ids must be a sequence of cell IDs")
+    if not 2 <= len(selected_ids) <= 128:
+        raise GroupError("select between 2 and 128 cells to create a Group Block")
+    if len(cells) > 2048:
+        raise GroupError("Group selection snapshot exceeds 2048 cells")
+    if any(not isinstance(cell_id, str) or not cell_id for cell_id in selected_ids):
+        raise GroupError("selected_ids must contain non-empty cell IDs")
+
+    records: dict[str, Mapping[str, Any]] = {}
+    ordered_ids: list[str] = []
+    for item in cells:
+        if not isinstance(item, Mapping):
+            raise GroupError("each Group selection cell must be an object")
+        cell_id = item.get("id")
+        source = item.get("source")
+        if not isinstance(cell_id, str) or not cell_id or not isinstance(source, str):
+            raise GroupError("each Group selection cell needs a string id and source")
+        if cell_id in records:
+            raise GroupError(f"duplicate cell ID in Group selection snapshot: {cell_id}")
+        records[cell_id] = item
+        ordered_ids.append(cell_id)
+    selected = set(selected_ids)
+    if len(selected) != len(selected_ids):
+        raise GroupError("selected_ids must be unique")
+    if not selected.issubset(records):
+        raise GroupError("one or more selected marimo cells are stale")
+    ordered_selected = [cell_id for cell_id in ordered_ids if cell_id in selected]
+
+    def parent_edges(item: Mapping[str, Any]) -> list[tuple[str, set[str]]]:
+        parents = item.get("parents", [])
+        if isinstance(parents, (str, bytes)) or not isinstance(parents, Sequence):
+            raise GroupError("marimo cell parent metadata must be a sequence")
+        result = []
+        for parent in parents:
+            if not isinstance(parent, Mapping) or not isinstance(parent.get("cell_id"), str):
+                raise GroupError("marimo parent metadata is malformed")
+            variables = parent.get("variables", [])
+            if isinstance(variables, (str, bytes)) or not isinstance(variables, Sequence):
+                raise GroupError("marimo parent variables must be a sequence")
+            if any(not isinstance(name, str) or not name.isidentifier() for name in variables):
+                raise GroupError("marimo parent variables must be Python identifiers")
+            names = set(variables)
+            if parent["cell_id"] not in records:
+                raise GroupError(
+                    "marimo parent metadata references a cell outside the inspected graph"
+                )
+            result.append((parent["cell_id"], names))
+        return result
+
+    external_inputs: set[str] = set()
+    for cell_id in ordered_selected:
+        for parent_id, variables in parent_edges(records[cell_id]):
+            if parent_id not in records:
+                raise GroupError(
+                    f"cell '{cell_id}' references a parent outside the inspected graph"
+                )
+            if parent_id not in selected:
+                external_inputs.update(variables)
+
+    output_names: set[str] = set()
+    for cell_id, item in records.items():
+        if cell_id in selected:
+            continue
+        for parent_id, variables in parent_edges(item):
+            if parent_id in selected:
+                output_names.update(variables)
+
+    cell_definitions: dict[str, str] = {}
+    chunks: list[str] = []
+    total_source_bytes = 0
+    for index, cell_id in enumerate(ordered_selected, start=1):
+        item = records[cell_id]
+        source = item["source"]
+        total_source_bytes += len(source.encode("utf-8"))
+        if total_source_bytes > MAX_GROUP_FILE_BYTES // 2:
+            raise GroupError("selected cell source exceeds the Group creation limit")
+        try:
+            tree = ast.parse(source or "pass")
+        except SyntaxError as exc:
+            raise GroupError(f"selected cell '{cell_id}' has invalid Python source: {exc}") from exc
+        raw_defs = item.get("defs", [])
+        if isinstance(raw_defs, (str, bytes)) or not isinstance(raw_defs, Sequence):
+            raise GroupError("marimo cell definitions must be a sequence")
+        if any(
+            not isinstance(definition, str) or not definition.isidentifier()
+            for definition in raw_defs
+        ):
+            raise GroupError("marimo cell definitions must be Python identifiers")
+        definitions = sorted(set(raw_defs))
+        for definition in definitions:
+            if definition in cell_definitions:
+                raise GroupError(f"selected cells define '{definition}' more than once")
+            cell_definitions[definition] = cell_id
+
+        refs: set[str] = set()
+        for parent_id, variables in parent_edges(item):
+            if parent_id in selected:
+                refs.update(variables)
+            else:
+                refs.update(variables.intersection(external_inputs))
+        function_name = f"graphimo_group_cell_{index}"
+        async_cell = any(
+            isinstance(node, (ast.Await, ast.AsyncFor, ast.AsyncWith)) for node in ast.walk(tree)
+        )
+        parameters = ", ".join(sorted(refs))
+        chunks.extend(
+            [
+                "@app.cell",
+                f"{'async def' if async_cell else 'def'} {function_name}({parameters}):",
+                *["    " + line for line in (source or "pass").splitlines()],
+            ]
+        )
+        if definitions:
+            returned = ", ".join(definitions)
+            if len(definitions) == 1:
+                returned += ","
+            chunks.append(f"    return ({returned})")
+        else:
+            chunks.append("    return")
+        chunks.append("")
+
+    if not output_names.issubset(cell_definitions):
+        raise GroupError("a crossing Group output is not defined by the selected cells")
+    for cell_id in ordered_selected:
+        for parent_id, variables in parent_edges(records[cell_id]):
+            if parent_id in selected and not variables.issubset(cell_definitions):
+                raise GroupError(f"selected cell '{cell_id}' has an unresolved internal dependency")
+            if parent_id not in selected and not variables.issubset(external_inputs):
+                raise GroupError(f"selected cell '{cell_id}' has an unresolved external dependency")
+
+    group = GroupLibrary(project_path).create(
+        {
+            "name": name,
+            "module": module,
+            "inputs": sorted(external_inputs),
+            "outputs": sorted(output_names),
+            "body_source": "\n".join(chunks),
+        }
+    )
+    suffix = group.contract.group_id.replace("-", "_")
+    result_name = f"__graphimo_group_result_{suffix}"
+    arguments = ", ".join(f"{name}={name}" for name in sorted(external_inputs))
+    parent_lines = [
+        f"# Graphimo group: {group.contract.group_id}",
+        f"from {group.import_path} import {group.callable_name}",
+    ]
+    if output_names:
+        parent_lines.append(f"{result_name} = {group.callable_name}({arguments})")
+        parent_lines.extend(f"{name} = {result_name}.{name}" for name in sorted(output_names))
+    else:
+        parent_lines.append(f"{group.callable_name}({arguments})")
+    return {
+        "group": group.to_catalog_item(),
+        "selected_ids": ordered_selected,
+        "source_hashes": {
+            cell_id: hashlib.sha256(records[cell_id]["source"].encode("utf-8")).hexdigest()
+            for cell_id in ordered_selected
+        },
+        "parent_source": "\n".join(parent_lines) + "\n",
+        "inputs": sorted(external_inputs),
+        "outputs": sorted(output_names),
+    }
+
+
 def update_group_contract(
     path: str | Path,
     *,

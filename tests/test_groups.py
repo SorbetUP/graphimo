@@ -255,3 +255,67 @@ def test_group_contract_updates_preserve_workflow_cells(tmp_path: Path) -> None:
     assert updated.contract.name == "Multiply Values"
     assert "@app.cell\ndef calculate(value, factor):" in updated.path.read_text(encoding="utf-8")
     assert run_group(updated.path, inputs={"value": 3, "factor": 5}).result == 15
+
+
+def test_application_creates_group_from_selection_and_preserves_crossing_ports(
+    tmp_path: Path,
+) -> None:
+    application = GraphimoApplication(GraphimoHostAPI("selected-group", tmp_path / "main.py"))
+    cells = [
+        {"id": "input", "source": "raw = 2", "defs": ["raw"], "parents": []},
+        {
+            "id": "clean",
+            "source": "cleaned = raw + 1",
+            "defs": ["cleaned"],
+            "parents": [{"cell_id": "input", "variables": ["raw"]}],
+        },
+        {
+            "id": "scale",
+            "source": "result = cleaned * 3",
+            "defs": ["result"],
+            "parents": [{"cell_id": "clean", "variables": ["cleaned"]}],
+        },
+        {
+            "id": "sink",
+            "source": "final = result + 4",
+            "defs": ["final"],
+            "parents": [{"cell_id": "scale", "variables": ["result"]}],
+        },
+    ]
+
+    created = application.execute(
+        "group.create_from_selection",
+        {
+            "name": "Clean and Scale",
+            "module": "clean_and_scale",
+            "cells": cells,
+            "selected_ids": ["clean", "scale"],
+        },
+    )
+
+    assert created["inputs"] == ["raw"]
+    assert created["outputs"] == ["result"]
+    assert created["selected_ids"] == ["clean", "scale"]
+    assert "raw=raw" in created["parent_source"]
+    assert "result = __graphimo_group_result_" in created["parent_source"]
+    group = GroupLibrary(tmp_path / "main.py").get(created["group"]["group_id"])
+    assert group.contract.inputs == ("raw",)
+    assert group.contract.outputs == ("result",)
+    assert run_group(group.path, inputs={"raw": 2}).result == 9
+
+
+def test_group_selection_rejects_stale_cells_without_creating_a_file(tmp_path: Path) -> None:
+    application = GraphimoApplication(GraphimoHostAPI("stale-group", tmp_path / "main.py"))
+
+    with pytest.raises(ValueError, match="stale"):
+        application.execute(
+            "group.create_from_selection",
+            {
+                "name": "Stale",
+                "module": "stale_group",
+                "cells": [{"id": "one", "source": "x = 1", "defs": ["x"], "parents": []}],
+                "selected_ids": ["one", "two"],
+            },
+        )
+
+    assert not (tmp_path / "groups" / "stale_group.py").exists()

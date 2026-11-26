@@ -625,6 +625,59 @@ local function code_for(operation, args)
 			"    cell_id = ctx.create_cell(" .. ui.json.encode(args.source) .. ", hide_code=False)",
 			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'cell_id': str(cell_id), 'source': " .. ui.json.encode(args.source) .. "}))",
 		}, "\n")
+	elseif operation == "replace_group_selection" then
+		return table.concat({
+			"import ast, hashlib, json",
+			"import marimo._code_mode as cm",
+			"selected_ids = " .. ui.json.encode(args.selected_ids or {}),
+			"source_hashes = " .. ui.json.encode(args.source_hashes or {}),
+			"replacement_source = " .. ui.json.encode(args.parent_source or ""),
+			"result = {'ok': False}",
+			"async with cm.get_context() as ctx:",
+			"    cells = {str(cell.id): cell for cell in ctx.cells}",
+			"    if not isinstance(selected_ids, list) or not 2 <= len(selected_ids) <= 128 or any(not isinstance(cell_id, str) or not cell_id for cell_id in selected_ids) or len(set(selected_ids)) != len(selected_ids):",
+			"        result = {'ok': False, 'error': 'invalid_selection: choose 2-128 unique cells'}",
+			"    elif not isinstance(source_hashes, dict) or any(cell_id not in cells or not isinstance(source_hashes.get(cell_id), str) or hashlib.sha256(cells[cell_id].code.encode('utf-8')).hexdigest() != source_hashes[cell_id] for cell_id in selected_ids):",
+			"        result = {'ok': False, 'error': 'unsafe_edit: selected cell source changed; inspect the graph and retry'}",
+			"    elif not replacement_source.strip():",
+			"        result = {'ok': False, 'error': 'invalid_replacement: generated Group call source is empty'}",
+			"    elif len(replacement_source.encode('utf-8')) > 1048576:",
+			"        result = {'ok': False, 'error': 'invalid_replacement: generated Group call source exceeds 1 MiB'}",
+			"    else:",
+			"        originals = {cell_id: cells[cell_id].code for cell_id in selected_ids}",
+			"        removed = []",
+			"        try:",
+			"            compile(replacement_source, '<graphimo-group-call>', 'exec')",
+			"            if not replacement_source.startswith('# Graphimo group: '): raise ValueError('missing Graphimo Group marker')",
+			"            statements = ast.parse(replacement_source).body",
+			"            if len(statements) < 2 or not isinstance(statements[0], ast.ImportFrom) or not isinstance(statements[0].module, str) or not statements[0].module.startswith('groups.') or len(statements[0].names) != 1: raise ValueError('replacement must import exactly one project Group')",
+			"            imported = statements[0].names[0]",
+			"            if imported.asname is not None or not imported.name.isidentifier() or imported.name.startswith('__'): raise ValueError('invalid project Group callable')",
+			"            if len(statements) == 2 and isinstance(statements[1], ast.Expr):",
+			"                invocation = statements[1].value",
+			"                if not isinstance(invocation, ast.Call) or not isinstance(invocation.func, ast.Name) or invocation.func.id != imported.name: raise ValueError('replacement must call the imported Group')",
+			"                result_name = None",
+			"            else:",
+			"                call_statement = statements[1]",
+			"                if not isinstance(call_statement, ast.Assign) or len(call_statement.targets) != 1 or not isinstance(call_statement.targets[0], ast.Name) or not call_statement.targets[0].id.startswith('__graphimo_group_result_'): raise ValueError('replacement must capture the imported Group result')",
+			"                result_name = call_statement.targets[0].id; invocation = call_statement.value",
+			"                if not isinstance(invocation, ast.Call) or not isinstance(invocation.func, ast.Name) or invocation.func.id != imported.name: raise ValueError('replacement must call the imported Group')",
+			"                for output in statements[2:]:",
+			"                    if not isinstance(output, ast.Assign) or len(output.targets) != 1 or not isinstance(output.targets[0], ast.Name) or not isinstance(output.value, ast.Attribute) or not isinstance(output.value.value, ast.Name) or output.value.value.id != result_name: raise ValueError('replacement contains an invalid Group output binding')",
+			"            if any(keyword.arg is None or not keyword.arg.isidentifier() or not isinstance(keyword.value, ast.Name) for keyword in invocation.keywords) or invocation.args: raise ValueError('Group inputs must be simple named Python variables')",
+			"            for cell_id in selected_ids:",
+			"                ctx.delete_cell(cells[cell_id].id); removed.append(cell_id)",
+			"            replacement_id = ctx.create_cell(replacement_source, hide_code=False)",
+			"            result = {'ok': True, 'cell_id': str(replacement_id), 'deleted_cell_ids': selected_ids, 'source': replacement_source}",
+			"        except Exception as exc:",
+			"            restored = []",
+			"            rollback_errors = []",
+			"            for cell_id in removed:",
+			"                try: restored.append(str(ctx.create_cell(originals[cell_id], hide_code=False)))",
+			"                except Exception as rollback_exc: rollback_errors.append(str(rollback_exc))",
+			"            result = {'ok': False, 'error': 'replacement_failed: ' + str(exc), 'restored_cell_ids': restored, 'rollback_errors': rollback_errors}",
+			"print('GRAPHIMO_RESULT:' + json.dumps(result, separators=(',', ':'))) ",
+		}, "\n")
 	elseif operation == "delete" then
 		return table.concat({
 			"import json",
@@ -814,6 +867,17 @@ end
 
 function Bridge.add_cell(zeron, base, token, session_id, source)
 	return execute(zeron, base, token, session_id, code_for("add_cell", { source = source }), 60)
+end
+
+function Bridge.replace_group_selection(zeron, base, token, session_id, compiled_group)
+	return execute(
+		zeron,
+		base,
+		token,
+		session_id,
+		code_for("replace_group_selection", compiled_group),
+		90
+	)
 end
 
 function Bridge.delete(zeron, base, token, session_id, cell_id)

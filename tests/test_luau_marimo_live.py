@@ -685,6 +685,83 @@ print("GRAPHIMO_RESULT:" + json.dumps({{"ok": True}}))
         unchanged = json.loads(_execute(base, session, inspect_code))
         unchanged_target = next(cell for cell in unchanged["cells"] if cell["id"] == target["id"])
         assert unchanged_target["source"] == "prediction = transform(data, fallback=1)"
+
+        inserted = '''import json
+import marimo._code_mode as cm
+async with cm.get_context() as ctx:
+    source_id = ctx.create_cell("number = 3", hide_code=False)
+    middle_id = ctx.create_cell("doubled = number * 2", hide_code=False)
+    sink_id = ctx.create_cell("report = doubled + 1\\nreport", hide_code=False)
+print("GRAPHIMO_RESULT:" + json.dumps({"ok": True, "source_id": str(source_id), "middle_id": str(middle_id), "sink_id": str(sink_id)}))
+'''
+        inserted_ids = json.loads(_execute(base, session, inserted))
+        grouping_snapshot = json.loads(_execute(base, session, inspect_code))
+        from graphimo.application import GraphimoApplication
+        from graphimo.metablocks import GraphimoHostAPI
+
+        application = GraphimoApplication(GraphimoHostAPI("live-group-test", notebook))
+        compiled_group = application.execute(
+            "group.create_from_selection",
+            {
+                "name": "Double number",
+                "module": "double_number",
+                "cells": grouping_snapshot["cells"],
+                "selected_ids": [inserted_ids["source_id"], inserted_ids["middle_id"]],
+            },
+        )
+        assert compiled_group["inputs"] == []
+        assert compiled_group["outputs"] == ["doubled"]
+        stale_code = _bridge_code(
+            "replace_group_selection",
+            notebook_path,
+            inserted_ids["source_id"],
+            "0" * 64,
+            inserted_ids["middle_id"],
+            compiled_group["source_hashes"][inserted_ids["middle_id"]],
+            "",
+            "",
+            compiled_group["parent_source"],
+        )[0]
+        stale_result = json.loads(_execute(base, session, stale_code))
+        assert stale_result["ok"] is False
+        assert stale_result["error"].startswith("unsafe_edit:")
+        stale_snapshot = json.loads(_execute(base, session, inspect_code))
+        stale_ids = {cell["id"] for cell in stale_snapshot["cells"]}
+        assert {inserted_ids["source_id"], inserted_ids["middle_id"]} <= stale_ids
+        replacement_code = _bridge_code(
+            "replace_group_selection",
+            notebook_path,
+            inserted_ids["source_id"],
+            compiled_group["source_hashes"][inserted_ids["source_id"]],
+            inserted_ids["middle_id"],
+            compiled_group["source_hashes"][inserted_ids["middle_id"]],
+            "",
+            "",
+            compiled_group["parent_source"],
+        )[0]
+        replaced = json.loads(_execute(base, session, replacement_code))
+        assert replaced["ok"] is True
+        assert set(replaced["deleted_cell_ids"]) == {inserted_ids["source_id"], inserted_ids["middle_id"]}
+        grouped_snapshot = json.loads(_execute(base, session, inspect_code))
+        assert all(cell["id"] not in replaced["deleted_cell_ids"] for cell in grouped_snapshot["cells"])
+        assert any(
+            edge["source_cell_id"] == replaced["cell_id"]
+            and edge["target_cell_id"] == inserted_ids["sink_id"]
+            and edge["variable"] == "doubled"
+            for edge in grouped_snapshot["edges"]
+        )
+        run_group_code = _bridge_code("run", notebook_path, "", "", "", "", replaced["cell_id"])[0]
+        assert json.loads(_execute(base, session, run_group_code))["ok"] is True
+        final_grouped = None
+        group_deadline = time.monotonic() + 10
+        while time.monotonic() < group_deadline:
+            grouped_snapshot = json.loads(_execute(base, session, inspect_code))
+            final_grouped = next(cell for cell in grouped_snapshot["cells"] if cell["id"] == inserted_ids["sink_id"])
+            if final_grouped["status"] not in {"stale", "queued", "running"}:
+                break
+            time.sleep(0.2)
+        assert final_grouped is not None and not final_grouped["errors"]
+        assert "7" in final_grouped["output"]["preview"]
     finally:
         if websocket is not None:
             websocket.close()

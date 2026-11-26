@@ -37,7 +37,7 @@ local function json_encode(value)
 	return encoded
 end
 
-local mode, notebook_path, from_cell_id, variable, to_cell_id, input_ref, cell_id = ...
+local mode, notebook_path, from_cell_id, variable, to_cell_id, input_ref, cell_id, source_hash, replacement_source = ...
 mode = mode or "inspect"
 notebook_path = notebook_path or "/tmp/graphimo-live.py"
 local session_object = { s_live = { session_id = "stable-live", filename = notebook_path, path = notebook_path } }
@@ -232,6 +232,21 @@ elseif mode == "tool_adapter" then
 	result = Bridge.append_problem(logger, "test problem")
 elseif mode == "connect" then
 	result = Bridge.connect(zeron, "http://127.0.0.1:2718", "", "s_live", from_cell_id or "source-cell", variable or "data", to_cell_id or "target-cell", input_ref or "processed")
+	elseif mode == "replace_group_selection" then
+		result = Bridge.replace_group_selection(zeron, "http://127.0.0.1:2718", "", "s_live", {
+			selected_ids = { from_cell_id or "selected-a", to_cell_id or "selected-b" },
+			source_hashes = {
+				[from_cell_id or "selected-a"] = variable or string.rep("a", 64),
+				[to_cell_id or "selected-b"] = input_ref or string.rep("b", 64),
+			},
+			parent_source = replacement_source or "# Graphimo group: group_1\\nfrom groups.group_1 import group_1\\nresult = group_1()\\n",
+		})
+	elseif mode == "replace_group_selection_invalid_ids" then
+		result = Bridge.replace_group_selection(zeron, "http://127.0.0.1:2718", "", "s_live", {
+			selected_ids = { { "not-a-cell-id" }, "selected-b" },
+			source_hashes = {},
+			parent_source = "# Graphimo group: group_1\\nfrom groups.group_1 import group_1\\nresult = group_1()\\n",
+		})
 else
 	error("unknown test mode: " .. tostring(mode))
 end

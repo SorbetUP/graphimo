@@ -9,7 +9,7 @@ from typing import Any
 
 from .components import ComponentLibrary
 from .controls import control_catalog, create_control_source
-from .groups import GroupLibrary
+from .groups import GroupLibrary, create_group_from_selection
 from .metablocks import GraphimoHostAPI, MetaBlockAddonManager
 
 
@@ -56,6 +56,7 @@ class GraphimoApplication:
             "metablock.events": self._events,
             "group.list": self._list_groups,
             "group.create": self._create_group,
+            "group.create_from_selection": self._create_group_from_selection,
             "group.inspect": self._inspect_group,
             "group.set_contract": self._set_group_contract,
             "control.catalog": self._control_catalog,
@@ -132,6 +133,15 @@ class GraphimoApplication:
     def _create_group(self, args: dict[str, Any]) -> Any:
         request = args.get("request", args)
         return self.groups.create(request).to_catalog_item()
+
+    def _create_group_from_selection(self, args: dict[str, Any]) -> Any:
+        return create_group_from_selection(
+            self.host.project_path,
+            name=self._required(args, "name"),
+            module=self._required(args, "module"),
+            cells=self._required(args, "cells"),
+            selected_ids=self._required(args, "selected_ids"),
+        )
 
     def _inspect_group(self, args: dict[str, Any]) -> Any:
         return self.groups.get(self._required(args, "group_id")).to_catalog_item()

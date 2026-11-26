@@ -37,6 +37,12 @@ operation.
   live marimo notebook in the same canvas. Graphimo continues to use the root
   project path for Group catalog, scope and layout operations, while marimo
   owns the opened Group file's cells and execution.
+- Shift-click selects multiple ordinary marimo cells. Right-clicking the
+  selection offers **Create Group Block**; the dialog collects a display name,
+  Graphimo Core derives the module and infers boundary ports from the inspected
+  graph, and the marimo bridge replaces the cells only if their source hashes
+  still match. The replacement remains a normal marimo cell and the downstream
+  marimo dependencies reconnect to the Group's inferred output definitions.
 - A breadcrumb above the canvas returns to the project or to an ancestor
   Group. Each scope uses its stable `scope_id` for its saved canvas layout.
   The active project root is kept separately from the currently opened Group
@@ -82,6 +88,7 @@ legacy marimo tools:
 | --- | --- |
 | `graphimo_inspect` | Batch reads the active scope, Group catalog, component catalog and MetaBlock catalog; includes the live marimo snapshot when a session is selected. |
 | `graphimo_execute` | Routes one named application action through the local service. |
+| `graphimo_group_from_selection` | Inspects the active marimo graph, creates a Group through `group.create_from_selection`, then replaces the explicit selected cell IDs after checking their live source hashes. |
 | `graphimo_execute_batch` | Routes an ordered action plan through the service batch journal, including result references. |
 | `graphimo_component_write` | Calls `component.write` to atomically validate and create/update a reusable `@node` source file. |
 | `graphimo_validate` | Calls `component.validate` and returns contract diagnostics. |
@@ -91,6 +98,9 @@ legacy marimo tools:
 `graphimo_execute` with `control.create` to obtain the same validated source
 bundle as the UI. The UI inserts that source through the live marimo bridge;
 the application itself does not schedule notebook execution.
+Agents can call `graphimo_group_from_selection` with an explicit selection,
+name and Python module identifier to use the same Group inference and safe
+replacement flow as the canvas context menu.
 
 Each tool accepts an optional local notebook `path`; otherwise it uses the
 active Graphimo project. The source-writing tool accepts at most 2 MiB of

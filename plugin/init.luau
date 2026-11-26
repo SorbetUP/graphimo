@@ -11,6 +11,9 @@ local Button = require("@ds/button")
 local Glass = require("@ds/glass")
 local Markdown = require("@ds/markdown")
 local SearchField = require("@ds/search_field")
+local ContextMenu = require("@ds/context_menu")
+local Dialog = require("@ds/dialog").Dialog
+local TextField = require("@ds/text_field")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -149,6 +152,36 @@ zeron.tool({ name = "graphimo_execute", run = function(args)
 	end)
 end })
 
+zeron.tool({ name = "graphimo_group_from_selection", run = function(args)
+	args = args or {}
+	local path, err = service_project_path(args)
+	if err then return err end
+	local saved = active_notebook:get()
+	local url = args.url or saved.url or ""
+	local session = args.session_id or saved.session_id or ""
+	if url == "" or session == "" then
+		return { ok = false, error = { code = "selection_required", message = "Open a live marimo notebook in Graphimo before grouping cells" } }
+	end
+	if type(args.selected_ids) ~= "table" or #args.selected_ids < 2 or #args.selected_ids > 128 then
+		return { ok = false, error = { code = "invalid_selection", message = "Provide between 2 and 128 selected marimo cell IDs" } }
+	end
+	return Bridge.inspect(zeron, url, "", session):after(function(graph)
+		if type(graph) ~= "table" or graph.ok == false then return graph end
+		return Service.execute(zeron, path, "group.create_from_selection", {
+			name = args.name,
+			module = args.module,
+			cells = graph.cells or {},
+			selected_ids = args.selected_ids,
+		}):after(function(compiled)
+			if type(compiled) ~= "table" or compiled.ok == false then return compiled end
+			return Bridge.replace_group_selection(zeron, url, "", session, compiled):after(function(replaced)
+				if type(replaced) ~= "table" or replaced.ok == false then return replaced end
+				return { ok = true, group = compiled.group, replacement = replaced, inputs = compiled.inputs, outputs = compiled.outputs }
+			end)
+		end)
+	end)
+end })
+
 zeron.tool({ name = "graphimo_execute_batch", run = function(args)
 	local path, err = service_project_path(args or {})
 	if err then return err end
@@ -222,6 +255,9 @@ local Page = ui.component(function()
 	local component_id = ui.use_state("")
 	local callable_name = ui.use_state("")
 	local selected = ui.use_state("")
+	local selected_many = ui.use_state({})
+	local group_dialog = ui.use_state(false)
+	local group_name = ui.use_state("")
 	local zoom = ui.use_state(0.85)
 	local pan_x = ui.use_state(24)
 	local pan_y = ui.use_state(24)
@@ -337,7 +373,7 @@ local Page = ui.component(function()
 			if session_id:peek() == "" then
 				snapshot:set({ notebook = {}, cells = {}, edges = {} })
 				visible_cell_ids:set({})
-				positions:set({}); components:set({}); selected:set("")
+				positions:set({}); components:set({}); selected:set(""); selected_many:set({})
 			end
 			notice:set(if #items == 0 then "No active marimo notebooks found" else "Found " .. tostring(#items) .. " active notebook(s)")
 			if session_id:peek() ~= "" then refresh_graph() end
@@ -373,7 +409,12 @@ local Page = ui.component(function()
 					}
 				end
 				positions:set(merged)
-				if selected:peek() ~= "" and not active[selected:peek()] then selected:set("") end
+				local next_selected, first_selected = {}, ""
+				for id in selected_many:peek() do
+					if active[id] then next_selected[id] = true; if first_selected == "" then first_selected = id end end
+				end
+				selected_many:set(next_selected)
+				if not active[selected:peek()] then selected:set(first_selected) end
 				notice:set("Showing " .. tostring(#value.cells) .. " marimo cells")
 				observe("Discover components", function()
 					return Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, project_path)
@@ -498,7 +539,12 @@ local Page = ui.component(function()
 			for _, cell in projected.cells do table.insert(visible, cell.id) end
 			positions:set(merged)
 			visible_cell_ids:set(visible)
-			if selected:peek() ~= "" and not ids[selected:peek()] then selected:set("") end
+			local next_selected, first_selected = {}, ""
+			for id in selected_many:peek() do
+				if ids[id] then next_selected[id] = true; if first_selected == "" then first_selected = id end end
+			end
+			selected_many:set(next_selected)
+			if not ids[selected:peek()] then selected:set(first_selected) end
 			snapshot:set(projected)
 			notice:set(
 				if projection
@@ -515,6 +561,7 @@ local Page = ui.component(function()
 		active_metablock:set(metablock_id)
 		active_metablock_scope:set(scope or "root")
 		selected:set("")
+		selected_many:set({})
 		refresh_metablock()
 	end
 
@@ -523,6 +570,7 @@ local Page = ui.component(function()
 		active_metablock_scope:set("root")
 		metablock_projection:set(nil)
 		selected:set("")
+		selected_many:set({})
 		snapshot:set(notebook_snapshot:peek())
 		refresh_graph()
 	end
@@ -887,7 +935,7 @@ local Page = ui.component(function()
 			rounded = "$radius.lg",
 			pointer_events = "none",
 		}, "island")
-		style.border_color = function() return if selected:get() == id then "$accent" else "$border.strong" end
+		style.border_color = function() return if selected_many:get()[id] then "$accent" else "$border.strong" end
 		style.bg = "$zeron.secondary.bg"
 		table.insert(style, ui.column { w_full = true, h_full = true, gap = "$space.1", p = "$space.3",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
@@ -965,6 +1013,37 @@ local Page = ui.component(function()
 		zoom:set(scale); pan_x:set((w - (right - left) * scale) / 2 - left * scale); pan_y:set((h - (bottom - top) * scale) / 2 - top * scale)
 	end
 
+	local function select_cell(id, additive)
+		if additive then
+			local many = table.clone(selected_many:peek())
+			many[id] = if many[id] then nil else true
+			selected_many:set(many)
+			if many[id] then
+				selected:set(id)
+			elseif selected:peek() == id then
+				local next_id = ""
+				for candidate in many do next_id = candidate; break end
+				selected:set(next_id)
+			end
+		else
+			selected_many:set({ [id] = true })
+			selected:set(id)
+		end
+	end
+
+	local function selected_ids()
+		local many = selected_many:peek()
+		local ids = {}
+		for _, cell in snapshot:peek().cells or {} do
+			if many[cell.id] then table.insert(ids, cell.id) end
+		end
+		return ids
+	end
+
+	local function selected_set()
+		return selected_many:peek()
+	end
+
 	local function on_press(e)
 		local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
 		local current_cells = snapshot:peek().cells or {}
@@ -974,18 +1053,28 @@ local Page = ui.component(function()
 			local pos = ps[cell.id] or { x = 0, y = 0 }
 			for _, variable in cell.defs or {} do
 				if Canvas.near(x, y, pos.x + Canvas.width, pos.y + Canvas.port(cell, variable, true), 12 / zoom:peek()) then
-					selected:set(cell.id); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
+					select_cell(cell.id, e.shift == true); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
 				end
 			end
 			for _, variable in cell.refs or {} do
-				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, variable, false), 12 / zoom:peek()) then selected:set(cell.id); return end
+				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, variable, false), 12 / zoom:peek()) then select_cell(cell.id, e.shift == true); return end
 			end
 			local height = Canvas.height(cell, base_summaries:peek()[cell.id])
 			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
-				selected:set(cell.id)
-				drag = { kind = "node", id = cell.id, x = x, y = y, nx = pos.x, ny = pos.y }
+				select_cell(cell.id, e.shift == true)
+				local origins = {}
+				for _, moving_id in selected_ids() do
+					local origin = ps[moving_id]
+					if origin then origins[moving_id] = { x = origin.x or 0, y = origin.y or 0 } end
+				end
+				if not origins[cell.id] then origins[cell.id] = { x = pos.x, y = pos.y } end
+				drag = { kind = "node", x = x, y = y, origins = origins }
 				return
 			end
+		end
+		if not e.shift then
+			selected_many:set({})
+			selected:set("")
 		end
 		drag = { kind = "pan", x = e.local_x or 0, y = e.local_y or 0, px = pan_x:peek(), py = pan_y:peek() }
 	end
@@ -996,7 +1085,13 @@ local Page = ui.component(function()
 			pan_x:set(drag.px + (e.local_x or 0) - drag.x); pan_y:set(drag.py + (e.local_y or 0) - drag.y)
 		elseif drag.kind == "node" then
 			local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
-			local next = table.clone(positions:peek()); next[drag.id] = { x = drag.nx + x - drag.x, y = drag.ny + y - drag.y }; positions:set(next)
+			local next = table.clone(positions:peek())
+			for id, origin in drag.origins do
+				local position = table.clone(next[id] or {})
+				position.x, position.y = origin.x + x - drag.x, origin.y + y - drag.y
+				next[id] = position
+			end
+			positions:set(next)
 		end
 	end
 
@@ -1037,6 +1132,101 @@ local Page = ui.component(function()
 
 	local function selected_cell()
 		return Canvas.node(snapshot:peek().cells or {}, selected:peek())
+	end
+
+	local function start_group_from_selection()
+		local ids = selected_ids()
+		if #ids < 2 then
+			notice:set("Shift-click at least two blocks, then right-click to create a Group Block")
+			return
+		end
+		if active_metablock:peek() ~= "" then
+			notice:set("Group Blocks can be created from normal marimo cells")
+			return
+		end
+		local name = string.gsub(group_name:peek(), "^%s*(.-)%s*$", "%1")
+		if name == "" then notice:set("Enter a Group Block name"); return end
+		local module = string.lower(name)
+		module = string.gsub(module, "[^%w_]+", "_")
+		module = string.gsub(module, "^_+", "")
+		module = string.gsub(module, "_+$", "")
+		if module == "" then module = "group" end
+		if string.match(module, "^%d") then module = "group_" .. module end
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or snapshot:peek().notebook.path or ""
+		if path == "" then notice:set("Open a project notebook before creating a Group Block"); return end
+		local selected_positions = positions:peek()
+		local left, top = math.huge, math.huge
+		for _, id in ids do
+			local point = selected_positions[id] or { x = 0, y = 0 }
+			left = math.min(left, point.x or 0)
+			top = math.min(top, point.y or 0)
+		end
+		observe("Inspect selected marimo cells", function()
+			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
+		end, function(graph)
+			observe("Create Group Block definition", function()
+				return Service.execute(zeron, path, "group.create_from_selection", {
+					name = name, module = module, cells = graph.cells or {}, selected_ids = ids,
+				})
+			end, function(compiled)
+				observe("Replace selected cells with Group Block", function()
+					return Bridge.replace_group_selection(zeron, url:peek(), token:peek(), session_id:peek(), compiled)
+				end, function(replaced)
+					group_dialog:set(false)
+					local next_positions = table.clone(positions:peek())
+					for _, id in ids do next_positions[id] = nil end
+					next_positions[replaced.cell_id] = { x = left, y = top }
+					positions:set(next_positions)
+					selected_many:set({ [replaced.cell_id] = true })
+					selected:set(replaced.cell_id)
+					local stack = group_scope_stack:peek()
+					local active_scope = stack[#stack]
+					local scope_id = if active_scope then active_scope.scope_id else "root"
+					observe("Save Group Block layout", function()
+						return Service.execute(zeron, path, "layout.set", { scope_id = scope_id, layout = next_positions })
+					end, function()
+						notice:set("Created Group Block " .. tostring(compiled.group.name) .. " with " .. tostring(#ids) .. " cells")
+						refresh_graph()
+					end, function(err)
+						notice:set("Group Block created, but its canvas position could not be saved: " .. tostring(err))
+						refresh_graph()
+					end)
+				end, function(err)
+					notice:set("Could not replace selected cells: " .. tostring(err))
+				end)
+			end, function(err)
+				notice:set("Could not create Group Block: " .. tostring(err))
+			end)
+		end, function(err)
+			notice:set("Could not inspect selected cells: " .. tostring(err))
+		end)
+	end
+
+	local function block_at(at)
+		local x, y = Canvas.point(at, zoom:peek(), pan_x:peek(), pan_y:peek())
+		local current_cells = snapshot:peek().cells or {}
+		local ps = positions:peek()
+		for index = #current_cells, 1, -1 do
+			local cell = current_cells[index]
+			local point = ps[cell.id] or { x = 0, y = 0 }
+			if x >= point.x and x <= point.x + Canvas.width and y >= point.y and y <= point.y + Canvas.height(cell, base_summaries:peek()[cell.id]) then
+				return cell
+			end
+		end
+		return nil
+	end
+
+	local function canvas_menu(at)
+		if session_id:peek() == "" or active_metablock:peek() ~= "" then return {} end
+		local hit = block_at(at)
+		if hit and not selected_many:peek()[hit.id] then select_cell(hit.id, false) end
+		if #selected_ids() < 2 then return {} end
+		return {
+			{ label = "Create Group Block…", on_select = function()
+				group_name:set("New group")
+				group_dialog:set(true)
+			end },
+		}
 	end
 
 	local function run_selected()
@@ -1324,6 +1514,10 @@ local Page = ui.component(function()
 			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
 				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
 			},
+			ContextMenu {
+				items = canvas_menu,
+				label = "Graphimo canvas actions",
+				absolute = true, left = 0, top = 0, right = 0, bottom = 0,
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
 				on_mount = function()
 					ui.after(150, function()
@@ -1336,6 +1530,7 @@ local Page = ui.component(function()
 					if e.dy ~= 0 then zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), e.local_x or (canvas.width or 0) / 2, e.local_y or (canvas.height or 0) / 2) end
 					return true
 				end,
+			},
 			},
 			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
@@ -1361,6 +1556,13 @@ local Page = ui.component(function()
 			}),
 			},
 			},
+		Dialog {
+			open = group_dialog,
+			title = "Create Group Block",
+			body = "Shift-click blocks to select them. The selected cells become one reusable Group Block; marimo keeps the data dependencies between this Group and the surrounding notebook.",
+			confirm = { label = "Create Group Block", on_click = start_group_from_selection, disabled = function() return group_name:get() == "" or #selected_ids() < 2 end },
+			TextField { value = group_name, label = "Name", placeholder = "Clean and scale", w_full = true, autofocus = true },
+		},
 	}
 end)
 

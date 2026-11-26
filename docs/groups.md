@@ -72,6 +72,37 @@ print(scaled.result)
 supports named attribute access and mapping access, for example
 `scaled.result` or `scaled["result"]`.
 
+## Create a Group Block from live cells
+
+The `group.create_from_selection` application action accepts a snapshot of
+live marimo cells and their selected IDs. Graphimo Core preserves the selected
+cell source in the group's marimo app and infers the Group contract from graph
+edges crossing the selection boundary:
+
+- dependencies from unselected parent cells become Group inputs;
+- definitions consumed by unselected child cells become Group outputs;
+- dependencies wholly inside the selection remain internal to the Group.
+
+The result contains the new Group catalog item, generated parent-call source,
+ordered selected IDs and SHA-256 hashes of the selected cell sources. A host
+must check those hashes against the current marimo cells before replacing
+anything. The Zeron bridge performs that check and replaces the selection in
+one marimo code-mode request; if marimo mutation fails, it attempts to restore
+the original source for every cell already removed. This prevents an agent or
+user action based on an outdated graph snapshot from deleting newer edits.
+
+In the Graphimo canvas, Shift-click to select multiple cells, then right-click
+and choose **Create Group Block**. The agent tool
+`graphimo_group_from_selection` performs the same Core operation and
+hash-checked marimo replacement from explicit cell IDs. Both surfaces use the
+same `GraphimoApplication` action; the renderer/bridge only supplies the live
+marimo snapshot and applies the safe replacement.
+
+The selection action accepts 2–128 unique live cells and a snapshot of no more
+than 2048 cells. Selected source is bounded before it is written as a Group
+file. Duplicate definitions, malformed dependency metadata, invalid Python,
+and stale/missing cell IDs are rejected before the group is created.
+
 ## Execution semantics
 
 `run_group(path, inputs=..., outputs=...)` reads the saved contract and checks
