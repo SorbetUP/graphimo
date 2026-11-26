@@ -79,6 +79,32 @@ Bridge inspection can inventory live marimo `slider` and `dropdown` widgets on t
 pinned marimo 0.25.2 runtime, but Graphimo does not render or edit those controls;
 use marimo for widget interaction.
 
+## Command line (agents and scripts)
+
+Any agent with a shell — no MCP connector needed — can drive the same local
+service through the `graphimo` CLI (also `python3 -m graphimo ...`). Results
+are JSON on stdout (`{"ok": true, "result": ...}`); service errors are a
+structured `{"ok": false, "error": {"code", "message"}}` on stderr with exit
+code 1. The local service is auto-started on first use.
+
+```bash
+graphimo health
+graphimo --path /proj/nb.py attach --url http://127.0.0.1:2719 --session-id live-1
+graphimo --path /proj/nb.py inspect
+graphimo --path /proj/nb.py run Hbol
+graphimo --path /proj/nb.py connect --from-cell Hbol --variable data --to-cell zKhV --input-ref values
+graphimo --path /proj/nb.py set-literal --instance-id ab12cd34 --input values --value '[1, 2]'
+graphimo --path /proj/nb.py components
+graphimo --path /proj/nb.py addons            # or: addons --addon graphimo.pytorch
+graphimo --path /proj/nb.py metablock-create --dialect pytorch.model --id m1
+graphimo --path /proj/nb.py events --follow    # stream service events
+graphimo --path /proj/nb.py do metablock.apply '{"metablock_id": "m1", ...}'   # any action
+```
+
+The project path can also come from `GRAPHIMO_PROJECT`; `--compact` prints
+single-line JSON. `graphimo-adapter` (stdin JSON `{"path", "operation", ...}`)
+remains the low-level entry point used by the Zeron plugin.
+
 ## Persistence and boundaries
 
 `.graphimo.json` contains only visual metadata (`x`, `y`, collapse/size hints,

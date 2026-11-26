@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.scripts]
+graphimo = "graphimo.cli:main"
 graphimo-service = "graphimo.service.server:main"
 graphimo-adapter = "graphimo.service.invoke:main"
 
