@@ -147,8 +147,10 @@ stops, forward/backward and training continue; events retry until the bounded
 queue fills, then losses are counted and a `telemetry.dropped` event is sent
 when connectivity returns. A later attach reconfigures the existing publisher
 with the new URL/token and preserves queued events. Closing a project asks the
-kernel to remove tracked subscriptions and stop the publisher; cleanup is
-best-effort if the kernel is already gone.
+kernel to remove tracked subscriptions and stop the publisher. Attaching a
+different marimo session to the same project first cleans the prior kernel's
+subscriptions and publisher. Cleanup is best-effort if the old kernel is
+already gone.
 
 ## Agent tools
 

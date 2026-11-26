@@ -19,6 +19,7 @@ from graphimo.client import GraphimoClient, GraphimoServiceError
 from graphimo.service.events import EventJournal
 from graphimo.service.protocol import MAX_REQUEST_BYTES, execute_batch, parse_json_object
 from graphimo.service.server import GraphimoService
+from graphimo.service.sessions import ProjectSessionManager
 
 
 def test_event_journal_bounds_history_and_reports_cursor_drops() -> None:
@@ -158,6 +159,46 @@ def test_authenticated_kernel_event_bridge_publishes_to_project_spool(tmp_path: 
         client.close()
     finally:
         service.close()
+
+
+def test_attaching_a_new_marimo_session_cleans_the_previous_kernel(tmp_path: Path) -> None:
+    notebook = tmp_path / "switch.py"
+    notebook.write_text("# session switching\n", encoding="utf-8")
+    session, _ = ProjectSessionManager().open_project(notebook)
+
+    class PreviousKernel:
+        url = "http://127.0.0.1:1234"
+        session_id = "old-session"
+        stopped = False
+
+        def stop_publisher(self):
+            self.stopped = True
+
+    previous = PreviousKernel()
+    session._kernel_port = previous
+    session._subscriptions.add(("model-switch", "runtime-old", "subscription-old"))
+    actions = []
+    session.application.execute = lambda action, args: actions.append((action, args)) or {}
+
+    session.attach_kernel(
+        url="http://127.0.0.1:5678", token="new-marimo-token", session_id="new-session"
+    )
+
+    assert previous.stopped is True
+    assert session._subscriptions == set()
+    assert actions == [
+        (
+            "metablock.invoke",
+            {
+                "metablock_id": "model-switch",
+                "action": "runtime.unsubscribe_all",
+                "args": {},
+            },
+        )
+    ]
+    assert session._kernel_port.session_id == "new-session"
+    session._kernel_port = None
+    session.close()
 
 
 def test_service_rejects_unauthorized_requests_and_non_loopback_bind(tmp_path: Path) -> None:

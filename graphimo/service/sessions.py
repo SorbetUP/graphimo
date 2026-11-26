@@ -84,6 +84,28 @@ class ProjectSession:
         )
         with self._lock:
             self._ensure_open()
+            previous = self._kernel_port
+            if previous is not None and (
+                previous.url != port.url or previous.session_id != port.session_id
+            ):
+                metablock_ids = {item[0] for item in self._subscriptions}
+                self._subscriptions.clear()
+                for metablock_id in metablock_ids:
+                    try:
+                        self.application.execute(
+                            "metablock.invoke",
+                            {
+                                "metablock_id": metablock_id,
+                                "action": "runtime.unsubscribe_all",
+                                "args": {},
+                            },
+                        )
+                    except Exception:
+                        continue
+                try:
+                    previous.stop_publisher()
+                except Exception:
+                    pass
             self._kernel_port = port
         return {"attached": True, "session_id": session_id}
 
