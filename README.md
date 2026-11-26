@@ -106,12 +106,12 @@ The host-independent MetaBlock entry-point and application contracts live in
 [`docs/metablock-host-api.md`](docs/metablock-host-api.md). Core preserves
 addon-owned sidecar state when an addon is missing. The separate PyTorch
 distribution registers through this API. Its implementation includes semantic
-graph editing and JSON import, model compilation, process-local runtime
-inspection, checkpoints, TorchLens integration, Llama templates, and
-package/unavailable-addon lifecycle coverage. The Zeron plugin routes
-MetaBlock semantics through the persistent local service while the marimo
-bridge continues to own notebook cell operations. A model running in the
-separate marimo kernel is not yet visible to service-side runtime inspection.
+graph editing and JSON import, model compilation, runtime inspection in the
+attached marimo kernel, checkpoints, TorchLens integration, Llama templates,
+and package/unavailable-addon lifecycle coverage. The Zeron plugin routes
+MetaBlock semantics and runtime inspection through the persistent local
+service. Bounded telemetry events are pushed from the kernel to the service;
+the marimo bridge continues to own ordinary notebook cell operations.
 See [`docs/pytorch-addon.md`](docs/pytorch-addon.md) and
 [`docs/zeron-service-adapter.md`](docs/zeron-service-adapter.md) for the tested
 surface and current process-boundary limitations.

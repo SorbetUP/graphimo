@@ -86,9 +86,9 @@ operation.
 - The PyTorch MetaBlock sidebar can manually read its bounded addon event
   stream with `metablock.events`; it retains at most 50 displayed events and
   truncates each rendered payload. It labels these as events received by the
-  Graphimo service. The sidebar also shows how many runtimes are visible in
-  the service process and explains that a runtime in the separate marimo
-  kernel is currently outside that view.
+  Graphimo service. Runtime list and inspection requests execute in the
+  attached marimo kernel, where the model and runtime registry live. Bounded
+  telemetry events from that kernel are pushed into the service journal.
 - The MetaBlock checkpoint panel inspects an explicit Artifact ID and offers
   exact-shape migration preview only when graph revisions differ. The preview
   summarizes copied names, missing names and shape mismatches, with a bounded

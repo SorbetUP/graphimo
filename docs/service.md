@@ -104,6 +104,8 @@ The versioned routes are:
 | `POST /v1/execute` | Call one application action with project, action and args |
 | `POST /v1/batch` | Run ordered application actions with a per-step journal |
 | `GET /v1/events` | Read a project event stream by cursor |
+| `POST /v1/kernels/attach` | Attach an authenticated loopback marimo kernel port to a project session |
+| `POST /v1/events/publish` | Ingest a bounded JSON event batch from the attached kernel |
 
 The `/v1/execute` body is `{"project":"<id>","action":"scope.current","args":{}}`.
 Batch operations use the same actions. A reference such as
@@ -129,6 +131,13 @@ history, `dropped` reports how many sequences fell behind the supplied cursor.
 The default page limit is 128, the maximum is 256, and long polling is capped
 at one second. Host and addon events are JSON-bounded before entering the
 journal.
+
+Kernel attachment and event publication require the same owner-only service
+bearer token as other routes. Attach accepts a loopback URL, marimo token and
+session identity in the request body; the service keeps that configuration in
+memory for the project session. Event publication accepts bounded JSON only
+and validates the attached project/session identity. These credentials are
+not saved in notebook source or project sidecars.
 
 ## Request and trust bounds
 
