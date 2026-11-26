@@ -6,6 +6,7 @@ from .model_definition import (
     RuntimeBindingMap,
     RuntimeModelInfo,
     RuntimeSite,
+    definition_from_state,
     materialize_definition,
 )
 from .compiler import CompileResult, PyTorchCompilationError, compile_model
@@ -30,11 +31,21 @@ from .runtime import (
     summarize_tensor,
     summarize_tree,
 )
+from .checkpoint import (
+    CheckpointError,
+    get_migration_report,
+    inspect_checkpoint,
+    load_checkpoint,
+    preview_checkpoint_migration,
+    save_checkpoint,
+)
+from .migration import ShapeMismatch, WeightMigrationReport, migrate_state_dict
 
 __all__ = [
     "ELEMENT_REGISTRY",
     "Dim",
     "CompileResult",
+    "CheckpointError",
     "ElementKind",
     "ParameterSpec",
     "PortSpec",
@@ -45,6 +56,9 @@ __all__ = [
     "RuntimeBindingMap",
     "RuntimeModelInfo",
     "RuntimeSite",
+    "definition_from_state",
+    "ShapeMismatch",
+    "WeightMigrationReport",
     "RuntimeRegistry",
     "SubscriptionSpec",
     "PyTorchCompilationError",
@@ -57,8 +71,14 @@ __all__ = [
     "emit_cuda_resources",
     "emit_metric",
     "materialize_definition",
+    "load_checkpoint",
+    "preview_checkpoint_migration",
+    "inspect_checkpoint",
+    "get_migration_report",
+    "migrate_state_dict",
     "release_runtime_model",
     "summarize_tensor",
     "summarize_tree",
+    "save_checkpoint",
     "validate_model_graph",
 ]

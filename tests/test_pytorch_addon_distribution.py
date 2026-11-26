@@ -66,12 +66,15 @@ def test_addon_wheel_discovers_materializes_and_preserves_state(tmp_path: Path) 
     notebook.write_text("# Graphimo addon lifecycle fixture\n", encoding="utf-8")
     code = r"""
 import json
+import os
 import sys
 from pathlib import Path
 from graphimo.application import GraphimoApplication
 from graphimo.metablocks import GraphimoHostAPI, MetaBlockAddonManager
+from graphimo_pytorch import inspect_checkpoint, load_checkpoint, save_checkpoint
 
 root = Path(sys.argv[1])
+os.environ["GRAPHIMO_ARTIFACT_STORE"] = str(root / "artifacts")
 host = GraphimoHostAPI("test-project", root / "project.py")
 application = GraphimoApplication(host)
 created = application.execute("metablock.create", {
@@ -97,7 +100,13 @@ model = definition.instantiate()
 assert isinstance(model(__import__("torch").ones(2, 4)), dict)
 assert model.__graphimo_pytorch_runtime__.graph_revision == definition.graph_revision
 assert definition.graph_revision in definition.generated_source
-print(json.dumps({"revision": revision, "parameters": definition.total_parameters}))
+reference = save_checkpoint(model, metadata={"epoch": 2})
+checkpoint = inspect_checkpoint(reference)
+restored = load_checkpoint(definition, reference)
+assert checkpoint["artifact_kind"] == "pytorch-checkpoint"
+assert checkpoint["metadata"] == {"epoch": 2}
+assert restored.__graphimo_pytorch_runtime__.graph_revision == definition.graph_revision
+print(json.dumps({"revision": revision, "parameters": definition.total_parameters, "checkpoint": reference.kind}))
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
@@ -114,3 +123,4 @@ print(json.dumps({"revision": revision, "parameters": definition.total_parameter
     )
     assert result.returncode == 0, f"addon lifecycle failed:\n{result.stdout}\n{result.stderr}"
     assert '"parameters": 73' in result.stdout
+    assert '"checkpoint": "pytorch-checkpoint"' in result.stdout

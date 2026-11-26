@@ -153,5 +153,41 @@ not invent one. A host adapter that shares the Python process can use the same
 application actions today; marimo-to-Workbench live routing remains pending
 that product/architecture decision.
 
-P6 checkpoint migration, P7 TorchLens workflows, P8 Llama templates and P9
-integration hardening remain later milestones.
+## P6 checkpoints and conservative migration
+
+`save_checkpoint(model, optimizer=None, scheduler=None, metadata=None)` returns
+an `ArtifactRef` of kind `pytorch-checkpoint`. It stores `state_dict()` values,
+runtime provenance, the resolved external parameters, PyTorch/addon versions,
+optional optimizer and safely representable scheduler state, and JSON user
+metadata through Graphimo's ArtifactStore. It never serializes an arbitrary
+model object. The helper rejects custom non-tensor model state and unsupported
+optimizer/scheduler values before writing an artifact.
+
+`load_checkpoint(model_def, artifact, strict=True)` restores a matching graph
+revision after validating tensor names and shapes before copying weights. A
+revision mismatch fails with
+`CheckpointError(code="pytorch_checkpoint_revision_mismatch")`. Matching graph
+revisions also compare materialized tensor names/shapes, so structural
+external-parameter changes cannot partially overwrite a model. `strict=False`
+uses `migrate_state_dict` and attaches a `WeightMigrationReport` to the returned
+model; `get_migration_report(model)` returns it. Optimizer state is preserved
+in the artifact but is never migrated automatically.
+
+`migrate_state_dict(source_state, target_model)` copies only exact-name,
+exact-shape tensors. It reports `copied`, `missing_in_source`,
+`missing_in_target` and each `ShapeMismatch`; it never slices, interpolates or
+resizes weights. `preview_checkpoint_migration(model_def, artifact)` creates a
+fresh temporary target model and returns the report without changing a live
+runtime. `inspect_checkpoint(artifact)` returns provenance without allocating
+the model weights in host memory.
+
+The Workbench can inspect an artifact ID, compare checkpoint graph revision
+with the current graph, and explicitly request an exact-shape migration
+preview. Save at a chosen training boundary by calling `save_checkpoint` from
+normal Python code; pass the optimizer/scheduler when their state should be
+included. After reviewing a migration report, call
+`load_checkpoint(..., strict=False)` explicitly to create the migrated model.
+The Workbench never treats a preview as an applied migration.
+
+P7 TorchLens workflows, P8 Llama templates and P9 integration hardening remain
+later milestones.

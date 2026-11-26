@@ -22,6 +22,7 @@ let runtimeEventCursor = "0";
 let runtimeEvents = [];
 let activeSubscriptions = new Map();
 let runtimeRepetitionIndex = 0;
+let checkpointDetails = null;
 
 async function api(action, args = {}) {
   const response = await fetch("/api/action", {
@@ -78,6 +79,7 @@ async function openMetaBlock(id, initialProjection = null) {
     activeRuntimeId = null;
     runtimeEventCursor = "0";
     runtimeEvents = [];
+    checkpointDetails = null;
   }
   metablockId = id;
   scope = "root";
@@ -352,6 +354,7 @@ function renderRuntimeOverview(root) {
   const metrics = runtimeEvents.filter((item) => item.runtime_instance_id === runtime.runtime_instance_id && item.kind === "metric.scalar");
   const latestMetric = metrics.at(-1);
   if (latestMetric) root.append(textRow(`Metric ${latestMetric.payload.name}`, latestMetric.payload.value));
+  renderCheckpointInspector(root);
 }
 
 function runtimeSelector(items) {
@@ -408,6 +411,9 @@ function renderRuntimeInspector(root, element) {
   root.append(textRow("Runtime", runtime.runtime_instance_id));
   root.append(textRow("Module path", binding.module_path));
   root.append(textRow("Parameters", binding.parameter_count ?? 0));
+  if (runtime.graph_revision !== view.graph_revision) {
+    root.append(textRow("Revision status", "This runtime uses an older graph revision."));
+  }
   const matchingEvents = runtimeEvents.filter((item) => item.runtime_instance_id === runtime.runtime_instance_id && item.logical_element_id === element.id);
   const activation = [...matchingEvents].reverse().find((item) => item.kind === "activation.summary");
   const gradient = [...matchingEvents].reverse().find((item) => item.kind === "gradient.summary");
@@ -430,6 +436,77 @@ function renderRuntimeInspector(root, element) {
   stop.textContent = "Stop live inspection";
   stop.addEventListener("click", () => stopRuntimeSubscriptions(element, runtime).catch(showError));
   root.append(stop);
+  renderCheckpointInspector(root);
+}
+
+function renderCheckpointInspector(root) {
+  root.append(section("Checkpoint"));
+  const row = document.createElement("div");
+  row.className = "field";
+  const label = document.createElement("label"); label.textContent = "Inspect artifact ID";
+  const input = document.createElement("input"); input.type = "text"; input.placeholder = "Graphimo Artifact ID";
+  if (checkpointDetails) input.value = checkpointDetails.artifact_id;
+  const inspect = document.createElement("button"); inspect.textContent = "Inspect checkpoint";
+  inspect.addEventListener("click", async () => {
+    try {
+      checkpointDetails = await api("metablock.invoke", {
+        metablock_id: metablockId,
+        action: "checkpoint.inspect",
+        args: { artifact_id: input.value.trim() },
+      });
+      renderInspector();
+    } catch (error) { showError(error); }
+  });
+  row.append(label, input, inspect); root.append(row);
+  if (!checkpointDetails) return;
+  const details = checkpointDetails;
+  for (const [labelText, value] of [
+    ["Artifact ID", details.artifact_id],
+    ["MetaBlock ID", details.metablock_id],
+    ["Graph revision", details.graph_revision],
+    ["Materialization key", details.materialization_key],
+    ["Model", details.model_name || "unknown"],
+    ["PyTorch", details.pytorch_version],
+    ["Addon", details.addon_version],
+    ["Saved step/epoch", details.metadata?.step ?? details.metadata?.epoch ?? "not supplied"],
+    ["Optimizer state", details.optimizer_state_present ? "yes" : "no"],
+    ["Scheduler state", details.scheduler_state_present ? "yes" : "no"],
+    ["Compatibility", details.graph_revision === view.graph_revision ? "same graph revision" : "migration required"],
+  ]) root.append(textRow(labelText, value));
+  if (details.graph_revision !== view.graph_revision) {
+    const preview = document.createElement("button");
+    preview.textContent = "Preview exact-shape migration";
+    preview.addEventListener("click", async () => {
+      try {
+        const externalValues = Object.fromEntries(
+          (view.external_parameters || []).map((item) => [item.id, item.default]),
+        );
+        details.migration_preview = await api("metablock.invoke", {
+          metablock_id: metablockId,
+          action: "checkpoint.preview_migration",
+          args: { artifact_id: details.artifact_id, external_values: externalValues },
+        });
+        renderInspector();
+      } catch (error) { showError(error); }
+    });
+    root.append(preview);
+    if (details.migration_preview?.report) {
+      const report = details.migration_preview.report;
+      root.append(textRow("Copied exact matches", report.copied.join(", ") || "none"));
+      root.append(textRow("Missing in source", report.missing_in_source.join(", ") || "none"));
+      root.append(textRow("Missing in target", report.missing_in_target.join(", ") || "none"));
+      for (const mismatch of report.shape_mismatch) {
+        root.append(textRow(
+          `Shape mismatch ${mismatch.name}`,
+          `${mismatch.source_shape.join(" × ")} → ${mismatch.target_shape.join(" × ")}`,
+        ));
+      }
+      root.append(textRow(
+        "Migration",
+        "Preview only. Use graphimo_pytorch.load_checkpoint(..., strict=False) explicitly to create the migrated model. Optimizer state is not migrated.",
+      ));
+    }
+  }
 }
 
 async function subscribeRuntime(element, runtime, binding, signal, detail) {

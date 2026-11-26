@@ -34,6 +34,8 @@ bind addresses.
 - Request the generated marimo materialization source.
 - Inspect process-local PyTorch runtime instances, subscribe to bounded
   activation/gradient telemetry, and view recent scalar metrics.
+- Inspect a Graphimo checkpoint artifact, view its provenance, and preview
+  exact-name/exact-shape migration when the graph revision differs.
 
 The standalone surface does not attach to a running marimo session, so its
 materialization action presents source for review and explicitly marks that it

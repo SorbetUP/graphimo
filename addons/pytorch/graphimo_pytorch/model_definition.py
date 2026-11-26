@@ -38,6 +38,8 @@ class RuntimeModelInfo:
     graph_revision: str
     materialization_key: str
     bindings: RuntimeBindingMap
+    external_parameters: Mapping[str, Any] = field(default_factory=dict)
+    model_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,8 @@ class PyTorchModelDefinition:
             graph_revision=self.graph_revision,
             materialization_key=self.materialization_key,
             bindings=self.bindings,
+            external_parameters=self.external_parameters,
+            model_name=self.model_name,
         )
         from .runtime import RUNTIME_REGISTRY
 
@@ -104,6 +108,15 @@ def materialize_definition(
     actual_revision = graph_revision(state)
     if revision is not None and revision != actual_revision:
         raise ValueError("PyTorch MetaBlock revision does not match the materialization cell")
+    return definition_from_state(state, external_values=external_values)
+
+
+def definition_from_state(
+    state: PyTorchMetaBlockState,
+    *,
+    external_values: Mapping[str, Any] | None = None,
+) -> PyTorchModelDefinition:
+    """Compile a persisted semantic state into its opaque runtime definition."""
     from .compiler import compile_model
 
     compiled = compile_model(state, external_values)
@@ -112,8 +125,8 @@ def materialize_definition(
     by_id, resolved_by_name = _resolved_values(state, external_values)
     total_parameters = _count_parameters(state, by_id)
     return PyTorchModelDefinition(
-        metablock_id=metablock_id,
-        graph_revision=actual_revision,
+        metablock_id=state.metablock_id,
+        graph_revision=graph_revision(state),
         materialization_key=compiled.materialization_key,
         model_name=state.name,
         generated_source=compiled.generated_source,

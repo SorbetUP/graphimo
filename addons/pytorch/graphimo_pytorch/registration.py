@@ -148,7 +148,9 @@ class PyTorchModelDialect:
         return {"scope": scope, "items": list(ELEMENT_REGISTRY)}
 
     def project(self, state: Any, scope: str, context: GraphimoHostAPI) -> dict[str, Any]:
-        projection = project_model(state_from_dict(state), scope)
+        semantic = state_from_dict(state)
+        projection = project_model(semantic, scope)
+        projection["graph_revision"] = graph_revision(semantic)
         from .runtime import RUNTIME_REGISTRY, _model_device
 
         metablock_id = context.current_metablock_id
@@ -274,6 +276,29 @@ class PyTorchModelDialect:
             if model is None:
                 return {"released": False}
             return {"released": RUNTIME_REGISTRY.release(model)}
+        if action == "checkpoint.inspect":
+            artifact_id = args.get("artifact_id")
+            if not isinstance(artifact_id, str) or not artifact_id:
+                raise ValueError("artifact_id must be non-empty text")
+            from .checkpoint import inspect_checkpoint
+
+            return inspect_checkpoint(artifact_id)
+        if action == "checkpoint.preview_migration":
+            artifact_id = args.get("artifact_id")
+            if not isinstance(artifact_id, str) or not artifact_id:
+                raise ValueError("artifact_id must be non-empty text")
+            from .checkpoint import preview_checkpoint_migration
+            from .model_definition import definition_from_state
+
+            definition = definition_from_state(
+                state_from_dict(state), external_values=args.get("external_values", {})
+            )
+            report = preview_checkpoint_migration(definition, artifact_id)
+            return {
+                "graph_revision": definition.graph_revision,
+                "materialization_key": definition.materialization_key,
+                "report": _migration_report_json(report),
+            }
         raise ValueError(f"unsupported PyTorch MetaBlock action: {action}")
 
     def drain_events(
@@ -504,3 +529,19 @@ def _module_parameter_count(model: Any, module_path: str) -> int:
         return sum(parameter.numel() for parameter in module.parameters())
     except (AttributeError, KeyError):
         return 0
+
+
+def _migration_report_json(report: Any) -> dict[str, Any]:
+    return {
+        "copied": list(report.copied),
+        "missing_in_source": list(report.missing_in_source),
+        "missing_in_target": list(report.missing_in_target),
+        "shape_mismatch": [
+            {
+                "name": item.name,
+                "source_shape": list(item.source_shape),
+                "target_shape": list(item.target_shape),
+            }
+            for item in report.shape_mismatch
+        ],
+    }
