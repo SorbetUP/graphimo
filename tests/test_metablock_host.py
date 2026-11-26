@@ -10,6 +10,7 @@ import pytest
 
 from graphimo.application import GraphimoApplication
 from graphimo.metablocks import (
+    AddonManifest,
     AddonUnavailableError,
     GraphimoHostAPI,
     MetaBlockAddonManager,
@@ -64,7 +65,10 @@ class FakeDialect:
         self, cursor: str | None, limit: int, context: GraphimoHostAPI
     ) -> dict[str, Any]:
         assert context.current_metablock_id == "block"
-        return {"cursor": "next", "events": [{"sequence": 1}][:limit]}
+        return {
+            "cursor": "next",
+            "events": [{"kind": "counter.tick", "sequence": 1, "payload": {"value": 1}}][:limit],
+        }
 
 
 class FakeEntryPoint:
@@ -82,6 +86,12 @@ class FakeEntryPoint:
             addon_version="1.0.0",
             api_version=1,
             factory=FakeDialect,
+            manifest=AddonManifest(
+                id="graphimo.test",
+                version="1.0.0",
+                capabilities=("metablock", "events"),
+                dialects=(self.name,),
+            ),
         )
 
 
@@ -329,7 +339,18 @@ def test_application_routes_all_addon_lifecycle_actions_through_one_manager(
     assert materialization_updates[0]["metablock_id"] == "block"
     assert materialization_updates[0]["revision"] == redone["revision"]
     assert invoked == {"action": "probe", "args": {"depth": 2}}
-    assert events == {"cursor": "next", "events": [{"sequence": 1}]}
+    assert events == {
+        "cursor": "next",
+        "events": [
+            {
+                "kind": "counter.tick",
+                "sequence": 1,
+                "payload": {"value": 1},
+                "addon_id": "test.counter",
+                "metablock_id": "block",
+            }
+        ],
+    }
 
 
 def test_application_rejects_unknown_actions_and_oversized_arguments(tmp_path: Path) -> None:
@@ -470,3 +491,143 @@ def test_apply_accepts_explicit_scope_and_rejects_stale_expected_revision(tmp_pa
     # Matching expected_revision applies normally.
     again = manager.apply("block", {"type": "increment"}, expected_revision=updated["revision"])
     assert again["projection"]["value"] == 2
+
+
+def test_addon_catalog_lists_manifests_and_survives_broken_addons(tmp_path: Path) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+
+    class BrokenEntryPoint:
+        name = "test.broken"
+        value = "broken:registration"
+        dist = SimpleNamespace(name="graphimo-broken", version="0.0.1")
+
+        def load(self):
+            raise RuntimeError("boom")
+
+    manager._entry_points = lambda: [
+        FakeEntryPoint(),
+        BrokenEntryPoint(),
+    ]
+    catalog = manager.addon_catalog()
+    by_id = {item["id"]: item for item in catalog["addons"]}
+    assert by_id["graphimo.test"]["capabilities"] == ["metablock", "events"]
+    assert by_id["graphimo.test"]["dialects"] == ["test.counter"]
+    assert by_id["graphimo.test"]["available"] is True
+    assert by_id["test.broken"]["available"] is False
+    assert "error" in by_id["test.broken"]
+
+    described = manager.addon_describe("graphimo.test")
+    assert described["manifest"]["id"] == "graphimo.test"
+    assert described["dialect_id"] == "test.counter"
+    with pytest.raises(AddonUnavailableError):
+        manager.addon_describe("graphimo.missing")
+
+
+def test_drain_events_wraps_generic_envelope(tmp_path: Path) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+    manager.create("test.counter", "block", {"name": "Counter"})
+    page = manager.drain_events("block", limit=4)
+    event = page["events"][0]
+    assert event["addon_id"] == "test.counter"
+    assert event["metablock_id"] == "block"
+    assert event["kind"] == "counter.tick"
+    assert event["payload"] == {"value": 1}
+
+    class KindlessDialect(FakeDialect):
+        dialect_id = "test.kindless"
+
+        def drain_events(self, cursor, limit, context):
+            return {"cursor": None, "events": [{"sequence": 1}]}
+
+    host2 = GraphimoHostAPI(project_id="p2", project_path=tmp_path / "nb2.py")
+    manager2 = MetaBlockAddonManager(
+        host2,
+        entry_points=lambda: [
+            SimpleNamespace(
+                name="test.kindless",
+                value="fake:kindless",
+                dist=SimpleNamespace(name="graphimo-test", version="1.0.0"),
+                load=lambda: MetaDialectRegistration(
+                    dialect_id="test.kindless",
+                    addon_version="1.0.0",
+                    api_version=1,
+                    factory=KindlessDialect,
+                ),
+            )
+        ],
+    )
+    manager2.create("test.kindless", "block2", {})
+    with pytest.raises(MetaBlockError, match="kind"):
+        manager2.drain_events("block2", limit=4)
+
+
+def test_projection_validates_declarative_ui_contributions(tmp_path: Path) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+
+    class UiDialect(FakeDialect):
+        dialect_id = "test.ui"
+
+        def __init__(self, host, ui):
+            super().__init__(host)
+            self._ui = ui
+
+        def project(self, state, scope, context):
+            base = super().project(state, scope, context)
+            base["ui"] = self._ui
+            return base
+
+    def make_manager(ui):
+        host = GraphimoHostAPI(project_id="p3", project_path=tmp_path / "nb3.py")
+        ep = SimpleNamespace(
+            name="test.ui",
+            value="fake:ui",
+            dist=SimpleNamespace(name="graphimo-test", version="1.0.0"),
+            load=lambda: MetaDialectRegistration(
+                dialect_id="test.ui",
+                addon_version="1.0.0",
+                api_version=1,
+                factory=lambda h: UiDialect(h, ui),
+            ),
+        )
+        return MetaBlockAddonManager(host, entry_points=lambda: [ep])
+
+    good_ui = {
+        "panels": [
+            {
+                "id": "connection",
+                "title": "Connection",
+                "fields": [
+                    {"id": "host", "type": "string", "label": "Host"},
+                    {"id": "port", "type": "integer", "label": "Port", "default": 22},
+                    {"id": "auth", "type": "enum", "label": "Auth", "options": ["agent", "key"]},
+                ],
+                "actions": [{"id": "connect", "label": "Connect", "invoke": "connection.connect"}],
+            }
+        ]
+    }
+    manager = make_manager(good_ui)
+    manager.create("test.ui", "block3", {})
+    projection = manager.project("block3")
+    assert projection["projection"]["ui"]["panels"][0]["fields"][1]["default"] == 22
+
+    bad_manager = make_manager(
+        {
+            "panels": [
+                {"id": "x", "title": "X", "fields": [{"id": "f", "type": "color", "label": "F"}]}
+            ]
+        }
+    )
+    with pytest.raises(MetaBlockError, match="unknown type"):
+        bad_manager.create("test.ui", "block4", {})
+        bad_manager.project("block4")
+
+
+def test_application_exposes_addon_catalog_actions(tmp_path: Path) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+    host.entry_points = None  # application builds its own manager from entry points
+    application = GraphimoApplication(host)
+    application.metablocks = manager
+    catalog = application.execute("addon.list", {})
+    assert catalog["addons"][0]["id"] == "graphimo.test"
+    described = application.execute("addon.describe", {"addon_id": "graphimo.test"})
+    assert described["manifest"]["capabilities"] == ["metablock", "events"]

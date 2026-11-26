@@ -7,7 +7,12 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from graphimo.metablocks import GraphimoHostAPI, MetaDialectRegistration, state_revision
+from graphimo.metablocks import (
+    AddonManifest,
+    GraphimoHostAPI,
+    MetaDialectRegistration,
+    state_revision,
+)
 
 from .model_definition import _count_parameters
 from .prototype import ModelSpec
@@ -672,6 +677,14 @@ registration = MetaDialectRegistration(
     addon_version="0.1.0",
     api_version=1,
     factory=PyTorchModelDialect,
+    manifest=AddonManifest(
+        id="graphimo.pytorch",
+        version="0.1.0",
+        api_version=1,
+        capabilities=("metablock", "events", "custom_inspector", "actions", "persistence"),
+        dialects=("pytorch.model",),
+        description="PyTorch model MetaBlock: semantic graph editing, live runtimes, checkpoints, TorchLens.",
+    ),
 )
 
 

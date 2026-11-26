@@ -58,6 +58,8 @@ _READ_ONLY_ACTIONS = {
     "artifact.inspect",
     "artifact.stats",
     "artifact.list",
+    "addon.list",
+    "addon.describe",
     "run.list",
     "scope.current",
     "layout.get",

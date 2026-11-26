@@ -53,12 +53,62 @@ class MetaBlockRevisionConflict(MetaBlockError):
         super().__init__(message)
 
 
+KNOWN_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "metablock",
+        "resource_management",
+        "background_operations",
+        "custom_inspector",
+        "events",
+        "widgets",
+        "actions",
+        "persistence",
+        "history",
+        "components",
+        "diagnostics",
+    }
+)
+
+
+@dataclass(frozen=True)
+class AddonManifest:
+    """What an installed addon declares it can do, independent of any dialect.
+
+    The renderer discovers addons through this manifest instead of hardcoding
+    per-addon behavior: capabilities say which contribution kinds the addon
+    provides, ``dialects`` lists its MetaBlock dialect ids.
+    """
+
+    id: str
+    version: str
+    api_version: int = 1
+    capabilities: tuple[str, ...] = ()
+    dialects: tuple[str, ...] = ()
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", self.id):
+            raise ValueError("addon manifest id must be 1-64 lowercase letters/digits/_/./-")
+        if not isinstance(self.version, str) or not self.version or len(self.version) > 64:
+            raise ValueError("addon manifest version must be a non-empty string")
+        if type(self.api_version) is not int or self.api_version < 1:
+            raise ValueError("addon manifest api_version must be a positive integer")
+        unknown = set(self.capabilities) - KNOWN_CAPABILITIES
+        if unknown:
+            raise ValueError(f"unknown addon capabilities: {sorted(unknown)!r}")
+        if not all(isinstance(item, str) and item for item in self.dialects):
+            raise ValueError("addon manifest dialects must be non-empty strings")
+        if not isinstance(self.description, str) or len(self.description) > 512:
+            raise ValueError("addon manifest description must be at most 512 characters")
+
+
 @dataclass(frozen=True)
 class MetaDialectRegistration:
     dialect_id: str
     addon_version: str
     api_version: int
     factory: Callable[[GraphimoHostAPI], object]
+    manifest: AddonManifest | None = None
 
 
 @dataclass(frozen=True)
@@ -341,6 +391,109 @@ def state_revision(state: Any) -> str:
     return hashlib.sha256(_encode_json(state)).hexdigest()
 
 
+def _normalize_addon_event(
+    event: Any, addon_id: str, metablock_id: str, sequence: int | None
+) -> dict[str, Any]:
+    """Wrap one addon event in the generic envelope.
+
+    Every event carries ``addon_id``, ``metablock_id`` and ``kind`` regardless
+    of the addon; addon-specific fields (``graph_revision``, ``payload``, ...)
+    stay untouched so existing consumers keep working while new addons can rely
+    on the generic envelope instead of PyTorch's runtime model.
+    """
+    if not isinstance(event, dict):
+        raise MetaBlockError("addon events must be objects")
+    kind = event.get("kind")
+    if not isinstance(kind, str) or not kind or len(kind) > 128:
+        raise MetaBlockError(
+            "addon event kind must be a non-empty string of at most 128 characters"
+        )
+    envelope = dict(event)
+    envelope["addon_id"] = addon_id
+    envelope["metablock_id"] = metablock_id
+    envelope["kind"] = kind
+    if sequence is not None:
+        envelope["sequence"] = sequence
+    if len(_encode_json(envelope)) > 64 * 1024:
+        raise MetaBlockError("addon event exceeds the 64 KiB envelope limit")
+    return envelope
+
+
+def _normalize_event_page(
+    response: dict[str, Any], addon_id: str, metablock_id: str, limit: int
+) -> dict[str, Any]:
+    events = response.get("events")
+    normalized = [_normalize_addon_event(event, addon_id, metablock_id, None) for event in events]
+    if len(normalized) > limit:
+        raise MetaBlockError("addon returned more events than the requested limit")
+    result = dict(response)
+    result["events"] = normalized
+    return result
+
+
+_UI_FIELD_TYPES = {"string", "integer", "number", "boolean", "enum", "artifact", "runtime"}
+
+
+def _validate_ui_contribution(ui: Any) -> dict[str, Any]:
+    """Validate a declarative UI contribution returned by a dialect projection.
+
+    Addons describe panels/fields/actions as bounded JSON; the renderer turns
+    them into native widgets without any addon-specific code. Anything
+    malformed is rejected here, at the Core boundary, not in the renderer.
+    """
+    if not isinstance(ui, dict) or not isinstance(ui.get("panels"), list):
+        raise MetaBlockError("ui contribution must be an object with a panels array")
+    if len(ui["panels"]) > 32:
+        raise MetaBlockError("ui contribution exceeds 32 panels")
+    encoded = _encode_json(ui)
+    if len(encoded) > 64 * 1024:
+        raise MetaBlockError("ui contribution exceeds the 64 KiB limit")
+    for panel in ui["panels"]:
+        if not isinstance(panel, dict) or not isinstance(panel.get("id"), str) or not panel["id"]:
+            raise MetaBlockError("each ui panel must have a non-empty string id")
+        if len(panel["id"]) > 128:
+            raise MetaBlockError("ui panel id exceeds 128 characters")
+        if not isinstance(panel.get("title"), str) or len(panel["title"]) > 200:
+            raise MetaBlockError("ui panel title must be a string of at most 200 characters")
+        fields = panel.get("fields", [])
+        actions = panel.get("actions", [])
+        if not isinstance(fields, list) or len(fields) > 64:
+            raise MetaBlockError("ui panel fields must be an array of at most 64 items")
+        if not isinstance(actions, list) or len(actions) > 32:
+            raise MetaBlockError("ui panel actions must be an array of at most 32 items")
+        for field in fields:
+            if (
+                not isinstance(field, dict)
+                or not isinstance(field.get("id"), str)
+                or not field["id"]
+            ):
+                raise MetaBlockError("each ui field must have a non-empty string id")
+            if field.get("type") not in _UI_FIELD_TYPES:
+                raise MetaBlockError(f"ui field {field['id']!r} has an unknown type")
+            if not isinstance(field.get("label"), str) or len(field["label"]) > 200:
+                raise MetaBlockError("ui field label must be a string of at most 200 characters")
+            if "options" in field and (
+                not isinstance(field["options"], list)
+                or len(field["options"]) > 256
+                or not all(isinstance(option, str) for option in field["options"])
+            ):
+                raise MetaBlockError(
+                    "ui enum field options must be an array of at most 256 strings"
+                )
+        for action in actions:
+            if (
+                not isinstance(action, dict)
+                or not isinstance(action.get("id"), str)
+                or not action["id"]
+            ):
+                raise MetaBlockError("each ui action must have a non-empty string id")
+            if not isinstance(action.get("label"), str) or len(action["label"]) > 200:
+                raise MetaBlockError("ui action label must be a string of at most 200 characters")
+            if not isinstance(action.get("invoke"), str) or not action["invoke"]:
+                raise MetaBlockError("ui action must name the metablock.invoke action to run")
+    return ui
+
+
 def _record_from_sidecar(value: dict[str, Any]) -> MetaBlockRecord:
     required = {"format", "metablock_id", "dialect_id", "addon_version", "api_version", "state"}
     if not required.issubset(value) or value.get("format") != 1:
@@ -424,6 +577,74 @@ class MetaBlockAddonManager:
                 )
             )
         return sorted(result, key=lambda item: item.name)
+
+    def _registration_for(self, entry_point: Any) -> MetaDialectRegistration | None:
+        try:
+            loaded = entry_point.load()
+        except Exception:
+            return None
+        return loaded if isinstance(loaded, MetaDialectRegistration) else None
+
+    def addon_catalog(self) -> dict[str, Any]:
+        """Discover installed addons and their manifests without hardcoding.
+
+        Loading failures are reported per addon (``available: false``) instead
+        of failing the whole catalogue, so one broken addon never hides the
+        others from the renderer.
+        """
+        addons: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry_point in self._entry_points():
+            registration = self._registration_for(entry_point)
+            dist = getattr(entry_point, "dist", None)
+            manifest = getattr(registration, "manifest", None) if registration else None
+            addon_id = manifest.id if isinstance(manifest, AddonManifest) else entry_point.name
+            if addon_id in seen:
+                continue
+            seen.add(addon_id)
+            entry: dict[str, Any] = {
+                "id": addon_id,
+                "distribution": getattr(dist, "name", None),
+                "version": (manifest.version if manifest else getattr(dist, "version", None)),
+                "api_version": registration.api_version if registration else None,
+                "capabilities": list(manifest.capabilities) if manifest else [],
+                "dialects": list(manifest.dialects) if manifest else [entry_point.name],
+                "available": registration is not None,
+            }
+            if registration is None:
+                entry["error"] = "entry point could not be loaded as a MetaDialectRegistration"
+            addons.append(entry)
+        return {"addons": sorted(addons, key=lambda item: item["id"])}
+
+    def addon_describe(self, addon_id: str) -> dict[str, Any]:
+        """Full manifest for one addon, including its dialect capabilities."""
+        if not isinstance(addon_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", addon_id):
+            raise ValueError("addon_id must be 1-64 lowercase letters/digits/_/./-")
+        for entry_point in self._entry_points():
+            registration = self._registration_for(entry_point)
+            manifest = getattr(registration, "manifest", None) if registration else None
+            if (manifest is not None and manifest.id == addon_id) or (
+                manifest is None and entry_point.name == addon_id
+            ):
+                if registration is None:
+                    raise AddonUnavailableError(f"addon '{addon_id}' is not installed")
+                return {
+                    "id": addon_id,
+                    "version": registration.addon_version,
+                    "api_version": registration.api_version,
+                    "manifest": {
+                        "id": manifest.id if manifest else addon_id,
+                        "version": manifest.version if manifest else registration.addon_version,
+                        "api_version": manifest.api_version if manifest else 1,
+                        "capabilities": list(manifest.capabilities) if manifest else ["metablock"],
+                        "dialects": list(manifest.dialects)
+                        if manifest
+                        else [registration.dialect_id],
+                        "description": manifest.description if manifest else "",
+                    },
+                    "dialect_id": registration.dialect_id,
+                }
+        raise AddonUnavailableError(f"addon '{addon_id}' is not installed")
 
     def list(self) -> dict[str, Any]:
         """List persisted MetaBlocks without requiring their addons to load."""
@@ -549,6 +770,9 @@ class MetaBlockAddonManager:
         projection = handler.project(
             record.state, scope, self.host.for_metablock(record.metablock_id)
         )
+        if isinstance(projection, dict) and "ui" in projection:
+            projection = dict(projection)
+            projection["ui"] = _validate_ui_contribution(projection["ui"])
         history = self._history_state(record.metablock_id, record.revision)
         result = {
             "available": True,
@@ -766,7 +990,7 @@ class MetaBlockAddonManager:
             ):
                 raise MetaBlockError("kernel event spool must return a bounded event list")
             if response is not None:
-                return response
+                return _normalize_event_page(response, record.dialect_id, metablock_id, limit)
         response = self._load(record.dialect_id).drain_events(
             cursor, limit, self.host.for_metablock(metablock_id)
         )
@@ -774,4 +998,4 @@ class MetaBlockAddonManager:
             raise MetaBlockError("addon drain_events must return a bounded event list")
         if len(response["events"]) > limit:
             raise MetaBlockError("addon returned more events than the requested limit")
-        return response
+        return _normalize_event_page(response, record.dialect_id, metablock_id, limit)

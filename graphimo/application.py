@@ -50,6 +50,8 @@ class GraphimoApplication:
             raise ValueError("action args exceed the 4 MiB limit")
 
         operations = {
+            "addon.list": lambda _args: self.metablocks.addon_catalog(),
+            "addon.describe": self._describe_addon,
             "metablock.list": self._list_metablocks,
             "metablock.create": self._create_metablock,
             "metablock.catalog": self._catalog,
@@ -134,6 +136,9 @@ class GraphimoApplication:
 
     def _list_metablocks(self, _args: dict[str, Any]) -> Any:
         return self.metablocks.list()
+
+    def _describe_addon(self, args: dict[str, Any]) -> Any:
+        return self.metablocks.addon_describe(self._required(args, "addon_id"))
 
     def _catalog(self, args: dict[str, Any]) -> Any:
         return self.metablocks.catalog(
