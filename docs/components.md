@@ -24,24 +24,24 @@ component.delete  {path}
 ```
 
 `component.write` accepts a relative `.py` path and bounded UTF-8 source. It
-rejects path traversal, hidden/cache paths and symlinks. Before any import, an
-AST policy rejects executable module-level statements. A component module may
+rejects path traversal, hidden/cache paths and symlinks. Validation is fully
+static: it parses the candidate AST and never imports the component or any of
+its dependencies. The AST policy rejects executable module-level statements. A component module may
 contain imports, literal constants, helper/function definitions and public
 `@node` functions; top-level calls, loops, context managers, exception blocks,
 classes, executable defaults/annotations/decorators and variadic parameters are
-rejected. This prevents common accidental side effects such as deleting files
-during validation. The candidate is then written to a sibling temporary file,
-syntax checked, formatted and linted with `ruff` when available, and imported
-in a bounded child process to inspect public `@node` contracts. Only a fully
-valid candidate replaces the target. Validation errors return structured
-diagnostics and leave an existing valid file untouched. When `ruff` is
-unavailable, the result includes a warning and still performs the Python and
-Graphimo contract checks.
+rejected. Public `@node` signatures, safe literal defaults, return shapes and
+output expressions are inferred from syntax. The candidate is written to a
+sibling temporary file, syntax checked, formatted and linted with `ruff` when
+available, then atomically replaces the target only if its static Graphimo
+contract is valid. Validation errors return structured diagnostics and leave
+an existing valid file untouched. When `ruff` is unavailable, the result
+includes a warning and still performs Python and Graphimo AST checks.
 
-This validation policy is not a Python sandbox: allowed imports execute their
-imported modules, and function bodies run when the node is later executed.
-Components should therefore come from trusted project sources. The static
-catalog itself does not import component files.
+This protects validation from import-time side effects; it is not a sandbox for
+component execution. Imports and function bodies run naturally when marimo
+executes the inserted component library cell. Components should therefore
+still come from trusted project sources.
 
 `component.validate` runs the same checks on an existing file without
 rewriting it. `component.list` uses static syntax inspection and does not

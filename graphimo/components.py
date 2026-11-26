@@ -22,49 +22,6 @@ from .instance import build_instance_source
 MAX_COMPONENT_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_VALIDATION_OUTPUT_BYTES = 64 * 1024
 _COMPONENT_ID = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py$")
-_NODE_VALIDATION = r"""
-import importlib.util, inspect, json, pathlib, sys, traceback
-from graphimo import inspect_node, is_node
-path = pathlib.Path(sys.argv[1])
-module_name = sys.argv[2]
-project_root = sys.argv[3]
-sys.path.insert(0, project_root)
-try:
-    package_path = [str(path.parent)] if path.name == "__init__.py" else None
-    spec = importlib.util.spec_from_file_location(
-        module_name, path, submodule_search_locations=package_path
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not create a module loader")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    nodes = []
-    for name, value in vars(module).items():
-        if name.startswith("_") or not is_node(value):
-            continue
-        contract = inspect_node(value)
-        signature = inspect.signature(value)
-        nodes.append({
-            "name": name,
-            "inputs": [
-                {"name": item.name, "required": item.required,
-                 "annotation": item.annotation, "has_default": item.has_default,
-                 "positional_only": signature.parameters[item.name].kind == inspect.Parameter.POSITIONAL_ONLY}
-                for item in contract.inputs
-            ],
-            "outputs": [
-                {"index": item.index, "declared_type": item.declared_type,
-                 "expressions": list(item.expressions)}
-                for item in contract.outputs
-            ],
-            "diagnostic": contract.diagnostic,
-        })
-    print(json.dumps({"nodes": nodes}, ensure_ascii=False, allow_nan=False))
-except BaseException as exc:
-    print(json.dumps({"error": type(exc).__name__ + ": " + str(exc)}, ensure_ascii=False))
-    sys.exit(1)
-"""
 
 
 class ComponentError(ValueError):
@@ -420,35 +377,17 @@ class ComponentLibrary:
                 }
             )
 
-        relative = Path(relative_path)
-        package_parts = ["components", *relative.with_suffix("").parts]
-        if package_parts[-1] == "__init__":
-            package_parts.pop()
-        module_name = ".".join(package_parts)
-        result = _run_bounded(
-            [
-                sys.executable,
-                "-c",
-                _NODE_VALIDATION,
-                str(candidate),
-                module_name,
-                str(self.project_path.parent),
-            ],
-            cwd=self.project_path.parent,
-            timeout=8,
-        )
-        if result["returncode"] != 0:
-            detail = _json_error(result["output"])
-            return _invalid(
-                detail or "component import or @node contract inspection failed",
-                code="component_import_failed",
+        aliases, modules = _node_import_aliases(tree)
+        nodes = [
+            _static_node_contract(source, item)
+            for item in tree.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not item.name.startswith("_")
+            and any(
+                _is_node_decorator(decorator, aliases, modules) for decorator in item.decorator_list
             )
-        try:
-            payload = json.loads(result["output"])
-        except json.JSONDecodeError:
-            return _invalid("component validation subprocess returned invalid JSON")
-        nodes = payload.get("nodes")
-        if not isinstance(nodes, list) or not nodes:
+        ]
+        if not nodes:
             return _invalid(
                 "component must export at least one public function decorated with @graphimo.node",
                 code="component_node_missing",
@@ -488,17 +427,6 @@ def _run_bounded(command: list[str], *, cwd: Path, timeout: float) -> dict[str, 
         return {"returncode": result.returncode, "output": text}
 
 
-def _json_error(output: str) -> str | None:
-    for line in reversed(output.splitlines()):
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and isinstance(payload.get("error"), str):
-            return payload["error"][:2000]
-    return output.strip()[:2000] or None
-
-
 def _invalid(
     message: str,
     *,
@@ -513,8 +441,8 @@ def _invalid(
 
 
 def _node_import_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
-    names = {"node"}
-    modules = {"graphimo"}
+    names: set[str] = set()
+    modules: set[str] = set()
     for item in tree.body:
         if isinstance(item, ast.ImportFrom) and item.module == "graphimo":
             for alias in item.names:
@@ -527,11 +455,41 @@ def _node_import_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
     return names, modules
 
 
+def _static_node_contract(
+    source: str, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> dict[str, Any]:
+    static = _static_callable(source, function)
+    inputs = [
+        {
+            "name": item["name"],
+            "required": item["required"],
+            "annotation": item.get("annotation"),
+            "has_default": item["has_default"],
+            "positional_only": item["positional_only"],
+        }
+        for item in static["parameters"]
+    ]
+    outputs = [
+        {
+            "index": item["index"] - 1,
+            "declared_type": item["declared_type"],
+            "expressions": item["expressions"],
+        }
+        for item in static["outputs"]
+    ]
+    return {
+        "name": static["name"],
+        "inputs": inputs,
+        "outputs": outputs,
+        "diagnostic": static["diagnostic"],
+    }
+
+
 def _is_node_decorator(
     value: ast.expr, aliases: set[str] | None = None, module_aliases: set[str] | None = None
 ) -> bool:
-    aliases = aliases or {"node"}
-    module_aliases = module_aliases or {"graphimo"}
+    aliases = {"node"} if aliases is None else aliases
+    module_aliases = {"graphimo"} if module_aliases is None else module_aliases
     if isinstance(value, ast.Name):
         return value.id in aliases
     return (
@@ -642,6 +600,7 @@ def _static_callable(
             "name": arg.arg,
             "required": not has_default,
             "positional": arg not in function.args.posonlyargs,
+            "positional_only": arg in function.args.posonlyargs,
             "has_default": has_default,
         }
         if arg.annotation is not None:
@@ -657,6 +616,7 @@ def _static_callable(
             "name": arg.arg,
             "required": not has_default,
             "positional": False,
+            "positional_only": False,
             "has_default": has_default,
         }
         if arg.annotation is not None:

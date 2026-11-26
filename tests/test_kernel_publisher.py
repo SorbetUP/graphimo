@@ -17,6 +17,7 @@ from addons.pytorch.graphimo_pytorch.publisher import KernelEventPublisher
 from addons.pytorch.graphimo_pytorch.runtime import PyTorchEventBus
 from graphimo.client import GraphimoClient, GraphimoServiceError
 from graphimo.service.server import GraphimoService
+from graphimo.verifier import VerifiedProject, VerifierScenario
 
 
 def _event_bus(max_events: int = 32) -> PyTorchEventBus:
@@ -227,11 +228,12 @@ def test_publisher_queue_saturation_counts_drops_without_blocking_event_producer
 
 @pytest.mark.skipif(importlib.util.find_spec("marimo") is None, reason="marimo is not installed")
 def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_training(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from websockets.sync.client import connect
 
     root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(tmp_path / "artifact-store"))
     notebook = tmp_path / "kernel-live.py"
     notebook.write_text(
         "import marimo\n__generated_with = '0.25.2'\napp = marimo.App()\n"
@@ -316,6 +318,7 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 {"dialect_id": "pytorch.model", "metablock_id": "kernel-model"},
             )
             first_client.attach_kernel(project, url=base, token="", session_id=session)
+            live_verifier = VerifiedProject(project)
 
             data_cell = project.execute("notebook.add_cell", {"source": "data = 3"})
             component_source = (
@@ -347,12 +350,22 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             literal_update = project.set_literal(target_cell["instance_id"], "value", 2)
             assert "__import__('json').loads('2')" in literal_update["source"]
             assert "scale=__import__('json').loads('4')," in literal_update["source"]
-            gain = project.add_control(
-                "slider",
-                "gain",
-                parameters={"start": 0.0, "stop": 4.0, "step": 0.5, "value": 1.0},
-                policy="live",
+            control_scenario = VerifierScenario("control_add", 2301)
+            control_scenario.add(
+                "control.add",
+                {
+                    "kind": "slider",
+                    "identity": "gain",
+                    "parameters": {"start": 0.0, "stop": 4.0, "step": 0.5, "value": 1.0},
+                    "policy": "live",
+                },
+                step_id="add_gain",
             )
+            control_journal = live_verifier.run_scenario(
+                control_scenario,
+                journal_path=tmp_path / "scenario-run-control.json",
+            )
+            gain = control_journal["operations"][0]["result"]
             assert "debounce=False" in gain["control_source"]
             snapshot = project.inspect_notebook()
             library_projection = next(
@@ -463,6 +476,47 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             assert result_preview["runtime_type"] == "float"
             assert result_preview["preview"] == "3.0"
             assert target_projection["graphimo_instance"]["outputs"][0]["declared_type"] == "int"
+            assert live_verifier.assert_graph_consistent()["consistent"] is True
+            assert (
+                live_verifier.assert_output(
+                    target_cell["cell_id"], target_cell["result_var"], "3.0"
+                )["preview"]
+                == "3.0"
+            )
+            assert live_verifier.assert_no_errors()["errors"] == 0
+
+            scenario = VerifierScenario(
+                "live_marimo_scalar", 48192, invariants=("graph_consistent", "no_errors")
+            )
+            scenario.add(
+                "notebook.add_cell",
+                {"source": "verifier_answer = 6 * 7"},
+                step_id="add_answer",
+            ).add(
+                "notebook.run",
+                {"cell_id": {"$ref": "add_answer.result.cell_id"}},
+                step_id="run_answer",
+                assertions=[
+                    {
+                        "kind": "output_preview",
+                        "cell_id": {"$ref": "add_answer.result.cell_id"},
+                        "output_name": "verifier_answer",
+                        "equals": "42",
+                        "wait_seconds": 4,
+                    }
+                ],
+            )
+            scenario_file = tmp_path / "scenarios" / "live-marimo.json"
+            scenario.save(scenario_file)
+            loaded_scenario = VerifierScenario.load(scenario_file)
+            scenario_journal_path = tmp_path / "scenario-run.json"
+            scenario_journal = loaded_scenario.replay(
+                live_verifier, journal_path=scenario_journal_path
+            )
+            assert scenario_journal["completed"] is True
+            assert [step["status"] for step in scenario_journal["operations"]] == ["ok", "ok"]
+            assert scenario_journal["operations"][1]["assertions"][0]["result"]["preview"] == "42"
+            assert json.loads(scenario_journal_path.read_text(encoding="utf-8"))["seed"] == 48192
             chained_projection = next(
                 cell for cell in after_run["cells"] if cell["id"] == chained_cell["cell_id"]
             )
@@ -508,39 +562,93 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 "notebook.add_cell",
                 {"source": f"blocked_value = {disabled_spec.result_var}"},
             )
-            disabled = project.disable_instance(disabled_cell["cell_id"])
-            assert disabled["changed"] is True
-            blocked_snapshot = project.inspect_notebook()
-            assert blocked_cell["cell_id"] in blocked_snapshot["blocked_by"]
+            dependency_scenario = VerifierScenario(
+                "disable_blocked_reenable", 73021, invariants=("graph_consistent",)
+            )
+            dependency_scenario.add(
+                "notebook.disable_instance",
+                {"cell_id": disabled_cell["cell_id"]},
+                step_id="disable_source",
+                assertions=[
+                    {
+                        "kind": "blocked_by",
+                        "cell_id": blocked_cell["cell_id"],
+                        "dependency_id": disabled_cell["cell_id"],
+                    }
+                ],
+            ).add(
+                "notebook.run",
+                {"cell_id": blocked_cell["cell_id"]},
+                step_id="run_blocked",
+                expect_error="blocked_by_disabled_dependency",
+            ).add(
+                "notebook.enable_instance",
+                {"cell_id": disabled_cell["cell_id"]},
+                step_id="enable_source",
+                assertions=[
+                    {
+                        "kind": "source_equals",
+                        "cell_id": disabled_cell["cell_id"],
+                        "equals": disabled_source,
+                    }
+                ],
+            ).add(
+                "notebook.run",
+                {"cell_id": blocked_cell["cell_id"]},
+                step_id="run_unblocked",
+            )
+            dependency_journal = dependency_scenario.replay(
+                live_verifier,
+                journal_path=tmp_path / "scenario-run-disabled.json",
+            )
+            assert [item["status"] for item in dependency_journal["operations"]] == [
+                "ok",
+                "expected_error",
+                "ok",
+                "ok",
+            ]
+            assert dependency_journal["operations"][0]["assertions"][0]["result"]["blocked_by"] == [
+                disabled_cell["cell_id"]
+            ]
+            unblocked_snapshot = project.inspect_notebook()
+            assert not unblocked_snapshot["blocked_by"].get(blocked_cell["cell_id"])
             assert any(
                 edge["source_cell_id"] == disabled_cell["cell_id"]
                 and edge["target_cell_id"] == blocked_cell["cell_id"]
-                for edge in blocked_snapshot["edges"]
+                for edge in unblocked_snapshot["edges"]
             )
-            with pytest.raises(
-                GraphimoServiceError, match="Cell is blocked by disabled upstream"
-            ) as blocked:
-                project.run(blocked_cell["cell_id"])
-            assert getattr(blocked.value, "code", None) == "blocked_by_disabled_dependency"
-            assert disabled_cell["cell_id"] in str(blocked.value)
-            enabled = project.enable_instance(disabled_cell["cell_id"])
-            assert enabled["changed"] is True
-            assert project.run(blocked_cell["cell_id"])["status"] == "queued"
 
-            restored_cells = project.execute(
+            history_scenario = VerifierScenario(
+                "guarded_history_edit", 919, invariants=("graph_consistent",)
+            )
+            history_scenario.add(
                 "notebook.restore_cells",
                 {"records": [{"source": "history_value = 10"}]},
-            )
-            restored_id = restored_cells["cell_ids"][0]
-            edited_cell = project.execute(
+                step_id="restore_history",
+            ).add(
                 "notebook.edit_guarded",
                 {
-                    "cell_id": restored_id,
+                    "cell_id": {"$ref": "restore_history.result.cell_ids.0"},
                     "expected_source": "history_value = 10",
                     "source": "history_value = 11",
                 },
+                step_id="edit_history",
+                assertions=[
+                    {
+                        "kind": "source_equals",
+                        "cell_id": {"$ref": "restore_history.result.cell_ids.0"},
+                        "equals": "history_value = 11",
+                    }
+                ],
             )
-            assert edited_cell["changed"] is True
+            history_journal = live_verifier.run_scenario(
+                history_scenario, journal_path=tmp_path / "scenario-run-history.json"
+            )
+            restored_id = history_journal["operations"][0]["result"]["cell_ids"][0]
+            assert (
+                history_journal["operations"][1]["assertions"][0]["result"]["cell_id"]
+                == restored_id
+            )
             with pytest.raises(GraphimoServiceError, match="source changed since"):
                 project.execute(
                     "notebook.edit_guarded",
@@ -556,7 +664,8 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 "notebook.add_cell", {"source": "group_output_value = group_input_value * 2"}
             )
             group_snapshot = project.inspect_notebook()
-            group = project.execute(
+            group_scenario = VerifierScenario("create_and_replace_group", 1947)
+            group_scenario.add(
                 "group.create_from_selection",
                 {
                     "name": "Service Group",
@@ -564,15 +673,21 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                     "cells": group_snapshot["cells"],
                     "selected_ids": [group_input["cell_id"], group_output["cell_id"]],
                 },
-            )
-            replacement = project.execute(
+                step_id="create_group",
+            ).add(
                 "notebook.replace_group_selection",
                 {
-                    "selected_ids": group["selected_ids"],
-                    "source_hashes": group["source_hashes"],
-                    "parent_source": group["parent_source"],
+                    "selected_ids": {"$ref": "create_group.result.selected_ids"},
+                    "source_hashes": {"$ref": "create_group.result.source_hashes"},
+                    "parent_source": {"$ref": "create_group.result.parent_source"},
                 },
+                step_id="replace_selection",
             )
+            group_journal = live_verifier.run_scenario(
+                group_scenario, journal_path=tmp_path / "scenario-run-group.json"
+            )
+            group = group_journal["operations"][0]["result"]
+            replacement = group_journal["operations"][1]["result"]
             assert replacement["deleted_cell_ids"] == group["selected_ids"]
             assert replacement["cell_id"] not in {
                 group_input["cell_id"],
@@ -592,6 +707,7 @@ from graphimo_pytorch.runtime import RUNTIME_REGISTRY
 from graphimo_pytorch.publisher import configure_kernel_publisher
 config = CONFIG
 configure_kernel_publisher(service_url=config['service_url'], token=config['service_token'], project_id=config['project_id'], session_id=config['session_id'])
+torch.manual_seed(12007)
 model = torch.nn.Sequential(torch.nn.Linear(1, 1))
 info = RuntimeModelInfo('kernel-runtime', 'kernel-model', 'revision-kernel', 'materialization-kernel', RuntimeBindingMap((RuntimeSite('linear', '0'),)))
 RUNTIME_REGISTRY.register(model, info)
@@ -600,14 +716,12 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
 """.replace("CONFIG", repr(config))
             first_result = json.loads(_kernel_execute(base, session, code))
             assert first_result["ok"] is True
-            listed = first_client.execute(
-                project,
+            probe_scenario = VerifierScenario("pytorch_runtime_probe", 12007)
+            probe_scenario.add(
                 "metablock.invoke",
                 {"metablock_id": "kernel-model", "action": "runtime.list", "args": {}},
-            )
-            assert listed["items"][0]["runtime_instance_id"] == "kernel-runtime"
-            subscription = first_client.execute(
-                project,
+                step_id="list_runtime",
+            ).add(
                 "metablock.invoke",
                 {
                     "metablock_id": "kernel-model",
@@ -619,9 +733,8 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
                         "rate_hz": 1000,
                     },
                 },
-            )
-            gradient = first_client.execute(
-                project,
+                step_id="subscribe_activation",
+            ).add(
                 "metablock.invoke",
                 {
                     "metablock_id": "kernel-model",
@@ -633,28 +746,80 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
                         "rate_hz": 1000,
                     },
                 },
+                step_id="subscribe_gradient",
             )
+            probe_journal = live_verifier.run_scenario(
+                probe_scenario, journal_path=tmp_path / "scenario-run-pytorch-probe.json"
+            )
+            listed = probe_journal["operations"][0]["result"]
+            assert listed["items"][0]["runtime_instance_id"] == "kernel-runtime"
+            subscription = probe_journal["operations"][1]["result"]
+            gradient = probe_journal["operations"][2]["result"]
             assert subscription["subscription_id"] and gradient["subscription_id"]
+            telemetry_cursor = project.events(cursor="0", wait_ms=0)["cursor"]
             run_code = "import builtins, json, torch\nvalue = builtins._graphimo_test_model(torch.ones(2, 1, requires_grad=True)); value.sum().backward()\nprint('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))"
             assert json.loads(_kernel_execute(base, session, run_code))["ok"] is True
-            first_events = _wait_for_events(
-                first_client,
-                project.project_id,
-                lambda values: {
-                    item.get("addon_event", {}).get("kind")
-                    for item in values
-                    if item.get("kind") == "addon.event"
-                }.issuperset({"activation.summary", "gradient.summary"}),
+            telemetry_scenario = VerifierScenario("pytorch_telemetry", 12007, invariants=())
+            telemetry_scenario.add(
+                "metablock.invoke",
+                {"metablock_id": "kernel-model", "action": "runtime.list", "args": {}},
+                step_id="verify_telemetry",
+                assertions=[
+                    {
+                        "kind": "event_received",
+                        "event_kind": "activation.summary",
+                        "metablock_id": "kernel-model",
+                        "cursor": telemetry_cursor,
+                        "wait_seconds": 5,
+                    },
+                    {
+                        "kind": "event_received",
+                        "event_kind": "gradient.summary",
+                        "metablock_id": "kernel-model",
+                        "cursor": telemetry_cursor,
+                        "wait_seconds": 5,
+                    },
+                ],
             )
-            kernel_events = [
-                item["addon_event"] for item in first_events if item.get("kind") == "addon.event"
+            telemetry_journal = live_verifier.run_scenario(
+                telemetry_scenario, journal_path=tmp_path / "scenario-run-pytorch-telemetry.json"
+            )
+            assert [
+                item["result"]["event_kind"]
+                for item in telemetry_journal["operations"][0]["assertions"]
+            ] == ["activation.summary", "gradient.summary"]
+
+            checkpoint_code = """
+import builtins, json
+from graphimo_pytorch.checkpoint import save_checkpoint
+reference = save_checkpoint(builtins._graphimo_test_model, metadata={"seed": 12007})
+print('GRAPHIMO_RESULT:' + json.dumps({"artifact_id": reference.id}))
+"""
+            checkpoint_id = json.loads(_kernel_execute(base, session, checkpoint_code))[
+                "artifact_id"
             ]
-            assert {item["kind"] for item in kernel_events} >= {
-                "activation.summary",
-                "gradient.summary",
-            }
-            assert all(item["session_id"] == session for item in kernel_events)
-            assert all("model" not in item and "module" not in item for item in kernel_events)
+            checkpoint_scenario = VerifierScenario("pytorch_checkpoint", 12007, invariants=())
+            checkpoint_scenario.add(
+                "metablock.invoke",
+                {
+                    "metablock_id": "kernel-model",
+                    "action": "checkpoint.inspect",
+                    "args": {"artifact_id": checkpoint_id},
+                },
+                step_id="inspect_checkpoint",
+            ).add(
+                "artifact.inspect",
+                {"artifact_id": {"$ref": "inspect_checkpoint.result.artifact_id"}},
+                step_id="inspect_checkpoint_artifact",
+            )
+            checkpoint_journal = live_verifier.run_scenario(
+                checkpoint_scenario, journal_path=tmp_path / "scenario-run-pytorch-checkpoint.json"
+            )
+            checkpoint_info = checkpoint_journal["operations"][0]["result"]
+            assert checkpoint_info["metadata"] == {"seed": 12007}
+            assert checkpoint_info["artifact_id"] == checkpoint_id
+            assert checkpoint_journal["operations"][1]["result"]["kind"] == "pytorch-checkpoint"
+
             per_metablock = first_client.execute(
                 project,
                 "metablock.events",
@@ -665,6 +830,7 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
                 "gradient.summary",
             }
 
+            before_service_restart = project.inspect_notebook()
             first.close()
             stopped = _kernel_execute(
                 base,
@@ -684,6 +850,22 @@ print('GRAPHIMO_RESULT:' + json.dumps({'ok': True}))
             second_client = GraphimoClient(second.url, second.token)
             reopened = second_client.open_project(notebook)
             assert reopened.project_id == project.project_id
+            second_client.attach_kernel(reopened, url=base, token="", session_id=session)
+            reopened_verifier = VerifiedProject(reopened)
+            after_service_restart = reopened_verifier.inspect_notebook()
+            assert reopened_verifier.assert_graph_consistent()["consistent"] is True
+            before_cells = {cell["id"]: cell["source"] for cell in before_service_restart["cells"]}
+            after_cells = {cell["id"]: cell["source"] for cell in after_service_restart["cells"]}
+            assert after_cells == before_cells
+            before_edges = {
+                (edge["source_cell_id"], edge["target_cell_id"], edge["variable"])
+                for edge in before_service_restart["edges"]
+            }
+            after_edges = {
+                (edge["source_cell_id"], edge["target_cell_id"], edge["variable"])
+                for edge in after_service_restart["edges"]
+            }
+            assert after_edges == before_edges
             reconf = {
                 "service_url": second.url,
                 "service_token": second.token,

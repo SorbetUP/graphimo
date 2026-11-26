@@ -131,7 +131,9 @@ It does not add a graph scheduler or replace marimo execution.
 The current Zeron adapter migration is documented in
 [the Zeron service adapter guide](docs/zeron-service-adapter.md).
 The API-level [Graphimo Verifier](docs/verifier.md) adds graph and output
-assertions without creating a second execution path.
+assertions plus deterministic scenario replay without creating a second
+execution path. Its live marimo tests use the existing service/kernel boundary;
+the existing Workbench remains the Graphimo UI.
 
 ## Development
 

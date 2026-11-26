@@ -322,6 +322,52 @@ def harmless(value):
     assert not (tmp_path / "components/unsafe.py").exists()
 
 
+def test_component_write_never_imports_component_or_its_dependencies(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    sentinel = tmp_path / "import-was-executed.txt"
+    (tmp_path / "tripwire.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('executed', encoding='utf-8')\n"
+        "def identity(value):\n    return value\n",
+        encoding="utf-8",
+    )
+    source = """import tripwire
+from graphimo import node
+
+@node
+def identity(value: int) -> int:
+    return tripwire.identity(value)
+"""
+
+    result = ComponentLibrary(project).write("safe.py", source)
+
+    assert result["valid"] is True
+    assert result["nodes"] == [
+        {
+            "name": "identity",
+            "inputs": [
+                {
+                    "name": "value",
+                    "required": True,
+                    "annotation": "int",
+                    "has_default": False,
+                    "positional_only": False,
+                }
+            ],
+            "outputs": [
+                {
+                    "index": 0,
+                    "declared_type": "int",
+                    "expressions": ["tripwire.identity(value)"],
+                }
+            ],
+            "diagnostic": None,
+        }
+    ]
+    assert not sentinel.exists()
+
+
 def test_component_list_discovers_aliased_node_without_importing_module(tmp_path: Path) -> None:
     project = tmp_path / "notebook.py"
     project.write_text("# marimo project\n", encoding="utf-8")
