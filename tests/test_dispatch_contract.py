@@ -393,6 +393,8 @@ def test_connect_uses_declared_multi_output_expression(project, host):
 def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
     from graphimo import build_instance_source
 
+    arbitrary_source = host.marimo.snapshot["cells"][2]["source"]
+    downstream_source = "report = summarize(x)"
     active, instance = build_instance_source(
         "normalize",
         {"image": "data", "mean": "0.0", "std": "1.0"},
@@ -412,7 +414,7 @@ def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
         {
             "id": "downstream",
             "name": None,
-            "source": "report = summarize(x)",
+            "source": downstream_source,
             "defs": ["report"],
             "refs": ["x", "summarize"],
             "parents": [{"cell_id": "arbitrary", "variables": ["x"]}],
@@ -458,7 +460,16 @@ def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
     assert snapshot["edges"] == host.marimo.snapshot["edges"] or all(
         edge["status"] == "stale" for edge in snapshot["edges"]
     )
-    assert host.marimo.snapshot["cells"][-1]["source"] == "report = summarize(x)"
+    assert host.marimo.snapshot["cells"][-1]["source"] == downstream_source
+    assert host.marimo.snapshot["cells"][2]["source"] == arbitrary_source
+    assert all(
+        "graphimo_disabled_instance" not in cell
+        for cell in snapshot["cells"]
+        if cell["id"] in {"arbitrary", "downstream"}
+    )
+    assert next(cell for cell in snapshot["cells"] if cell["id"] == "downstream")["output"] == {
+        "value": "previous result"
+    }
 
     host.marimo.runs.clear()
     blocked_run = dispatch(

@@ -42,3 +42,14 @@ The Python adapter's `inspect_node_instance` operation reads the result global t
 ## Disable and restore an instance
 
 `disable_instance_source` accepts only canonical Graphimo instance bodies and comments every executable line between `# graphimo:disabled-begin` and `# graphimo:disabled-end`. `enable_instance_source` validates those markers and restores the exact canonical active body. The adapter's `set_instance_enabled` operation replaces the source of the existing marimo cell. Inspection keeps disabled output ports visible with `available: false` and `stale: true`; references from downstream cells remain in place and are projected as stale edges instead of being silently removed.
+
+Disabling an upstream instance does not cascade `disabled` to its descendants,
+change their Python source, or remove their connections. Its outputs become
+unavailable, so dependent cells are projected as `blocked` and `stale`,
+transitively. A previously computed value may remain visible as stale output;
+Graphimo must not represent it as current. An explicit run of a blocked cell is
+rejected before marimo execution with
+`blocked_by_disabled_dependency` and the responsible upstream cell IDs. After
+the instance is re-enabled, its edges remain intact and the dependencies can be
+run again through marimo. `disabled` is the user's choice for one cell;
+`blocked/stale` is a temporary consequence for dependent cells.
