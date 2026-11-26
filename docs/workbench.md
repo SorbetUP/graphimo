@@ -36,6 +36,9 @@ bind addresses.
   activation/gradient telemetry, and view recent scalar metrics.
 - Inspect a Graphimo checkpoint artifact, view its provenance, and preview
   exact-name/exact-shape migration when the graph revision differs.
+- Run a selected-site TorchLens deep inspection using explicit JSON sample
+  inputs, optional scalar-output gradients, zero-ablation/scale experiments,
+  and an explicit full-trace ArtifactStore save action.
 
 The standalone surface does not attach to a running marimo session, so its
 materialization action presents source for review and explicitly marks that it
@@ -48,6 +51,11 @@ separate marimo process is not visible to this standalone Workbench; the Core
 specification does not yet define that cross-process transport. The UI reports
 when no runtime is registered in the Workbench process instead of presenting
 stale or inferred runtime data.
+
+TorchLens inspection is also process-local and uses an explicit input fixture;
+it does not claim to inspect the current or next training batch. Saving an
+inspection runs a fresh pass, and intervention results are labeled as
+experimental copies of the selected runtime.
 
 ## HTTP/action boundary
 

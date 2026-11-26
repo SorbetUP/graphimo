@@ -299,6 +299,49 @@ class PyTorchModelDialect:
                 "materialization_key": definition.materialization_key,
                 "report": _migration_report_json(report),
             }
+        if action in {"torchlens.inspect", "torchlens.save_inspection"}:
+            from .torchlens_adapter import (
+                TorchLensIntervention,
+                TorchLensRequest,
+                inspect_with_torchlens,
+                save_inspection_artifact,
+            )
+
+            runtime_id = args.get("runtime_instance_id")
+            _require_scoped_runtime(RUNTIME_REGISTRY, runtime_id, context)
+            raw_intervention = args.get("intervention")
+            intervention = None
+            if raw_intervention is not None:
+                if not isinstance(raw_intervention, dict):
+                    raise ValueError("intervention must be an object")
+                intervention = TorchLensIntervention(
+                    kind=raw_intervention.get("kind"),
+                    factor=raw_intervention.get("factor", 1.0),
+                )
+            request = TorchLensRequest(
+                runtime_instance_id=runtime_id,
+                logical_element_id=args.get("logical_element_id"),
+                repetition_index=args.get("repetition_index"),
+                capture_gradients=args.get("capture_gradients", False),
+                intervention=intervention,
+            )
+            if "inputs" not in args:
+                raise ValueError("TorchLens requires explicit inputs for this inspection")
+            runner = (
+                save_inspection_artifact
+                if action == "torchlens.save_inspection"
+                else inspect_with_torchlens
+            )
+            result = (
+                runner(
+                    request,
+                    args["inputs"],
+                    artifact_store=context.artifact_store,
+                )
+                if action == "torchlens.save_inspection"
+                else runner(request, args["inputs"])
+            )
+            return result.to_json()
         raise ValueError(f"unsupported PyTorch MetaBlock action: {action}")
 
     def drain_events(

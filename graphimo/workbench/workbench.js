@@ -23,6 +23,12 @@ let runtimeEvents = [];
 let activeSubscriptions = new Map();
 let runtimeRepetitionIndex = 0;
 let checkpointDetails = null;
+let torchLensInputs = "[[0.0, 0.0, 0.0, 0.0]]";
+let torchLensInputDtype = "float32";
+let torchLensCaptureGradients = false;
+let torchLensIntervention = "none";
+let torchLensScaleFactor = "0.5";
+let torchLensResult = null;
 
 async function api(action, args = {}) {
   const response = await fetch("/api/action", {
@@ -80,6 +86,7 @@ async function openMetaBlock(id, initialProjection = null) {
     runtimeEventCursor = "0";
     runtimeEvents = [];
     checkpointDetails = null;
+    torchLensResult = null;
   }
   metablockId = id;
   scope = "root";
@@ -437,6 +444,122 @@ function renderRuntimeInspector(root, element) {
   stop.addEventListener("click", () => stopRuntimeSubscriptions(element, runtime).catch(showError));
   root.append(stop);
   renderCheckpointInspector(root);
+  const selectedRepetition = binding.group_instance_path?.at(-1)?.repetition_index;
+  renderTorchLensInspector(
+    root,
+    element,
+    runtime,
+    binding,
+    Number.isInteger(selectedRepetition) ? selectedRepetition : null,
+  );
+}
+
+function renderTorchLensInspector(root, element, runtime, binding, repetitionIndex) {
+  root.append(section("Deep inspect with TorchLens"));
+  const resultRoot = document.createElement("div");
+  resultRoot.className = "torchlens-result";
+  root.append(resultRoot);
+  const clearResult = () => {
+    torchLensResult = null;
+    resultRoot.replaceChildren();
+  };
+  root.append(textRow("Target", `${element.name} · ${binding.module_path}`));
+  root.append(textRow(
+    "Input format",
+    'Enter explicit model inputs as JSON: one tensor array or keyword object. For multiple positional inputs use {"$args": [...], "$kwargs": {}}. Select the tensor dtype below.',
+  ));
+  const inputs = document.createElement("textarea");
+  inputs.rows = 4;
+  inputs.value = torchLensInputs;
+  inputs.setAttribute("aria-label", "Explicit TorchLens sample inputs as JSON");
+  inputs.addEventListener("input", () => { torchLensInputs = inputs.value; clearResult(); });
+  root.append(inputs);
+  const dtype = document.createElement("select");
+  for (const value of ["float32", "float16", "float64", "int64", "int32", "bool"]) {
+    const option = document.createElement("option");
+    option.value = value; option.textContent = value; option.selected = value === torchLensInputDtype;
+    dtype.append(option);
+  }
+  dtype.addEventListener("change", () => { torchLensInputDtype = dtype.value; clearResult(); });
+  const dtypeRow = document.createElement("div"); dtypeRow.className = "field";
+  const dtypeLabel = document.createElement("label"); dtypeLabel.textContent = "Input tensor dtype";
+  dtypeRow.append(dtypeLabel, dtype); root.append(dtypeRow);
+
+  const gradients = document.createElement("input");
+  gradients.type = "checkbox";
+  gradients.checked = torchLensCaptureGradients;
+  gradients.addEventListener("change", () => { torchLensCaptureGradients = gradients.checked; clearResult(); });
+  const gradientRow = document.createElement("label");
+  gradientRow.className = "field";
+  gradientRow.append(gradients, document.createTextNode(" Capture gradients (requires scalar output)"));
+  root.append(gradientRow);
+
+  const intervention = document.createElement("select");
+  for (const [value, label] of [["none", "No intervention"], ["zero_ablation", "Zero ablate"], ["scale", "Scale activation"]]) {
+    const option = document.createElement("option");
+    option.value = value; option.textContent = label; option.selected = value === torchLensIntervention;
+    intervention.append(option);
+  }
+  intervention.addEventListener("change", () => { torchLensIntervention = intervention.value; clearResult(); renderInspector(); });
+  const interventionRow = document.createElement("div"); interventionRow.className = "field";
+  const interventionLabel = document.createElement("label"); interventionLabel.textContent = "Experimental intervention";
+  interventionRow.append(interventionLabel, intervention); root.append(interventionRow);
+  let factor = null;
+  if (torchLensIntervention === "scale") {
+    factor = document.createElement("input"); factor.type = "number"; factor.step = "any"; factor.value = torchLensScaleFactor;
+    factor.addEventListener("input", () => { torchLensScaleFactor = factor.value; clearResult(); });
+    const factorRow = document.createElement("div"); factorRow.className = "field";
+    const factorLabel = document.createElement("label"); factorLabel.textContent = "Scale factor";
+    factorRow.append(factorLabel, factor); root.append(factorRow);
+  }
+
+  const request = () => {
+    let parsedInputs;
+    try { parsedInputs = JSON.parse(torchLensInputs); }
+    catch { throw new Error("Explicit inputs must be valid JSON."); }
+    const rawIntervention = torchLensIntervention === "none" ? null : {
+      kind: torchLensIntervention,
+      ...(torchLensIntervention === "scale" ? { factor: Number(torchLensScaleFactor) } : {}),
+    };
+    return {
+      runtime_instance_id: runtime.runtime_instance_id,
+      logical_element_id: element.id,
+      ...(Number.isInteger(repetitionIndex) ? { repetition_index: repetitionIndex } : {}),
+      capture_gradients: torchLensCaptureGradients,
+      intervention: rawIntervention,
+      inputs: { $inputs: parsedInputs, $dtype: torchLensInputDtype },
+    };
+  };
+  const inspect = document.createElement("button"); inspect.textContent = "Deep inspect";
+  inspect.addEventListener("click", async () => {
+    try {
+      torchLensResult = await api("metablock.invoke", {
+        metablock_id: metablockId, action: "torchlens.inspect", args: request(),
+      });
+      renderInspector();
+    } catch (error) { showError(error); }
+  });
+  root.append(inspect);
+  const save = document.createElement("button"); save.textContent = "Save full trace artifact";
+  save.title = "Runs a fresh explicit pass, captures all activations, and saves a potentially large TorchLens trace to ArtifactStore.";
+  save.addEventListener("click", async () => {
+    try {
+      torchLensResult = await api("metablock.invoke", {
+        metablock_id: metablockId, action: "torchlens.save_inspection", args: request(),
+      });
+      renderInspector();
+    } catch (error) { showError(error); }
+  });
+  root.append(save);
+  const result = torchLensResult;
+  if (!result || result.runtime_instance_id !== runtime.runtime_instance_id || result.logical_element_id !== element.id || result.repetition_index !== (Number.isInteger(repetitionIndex) ? repetitionIndex : null)) return;
+  resultRoot.append(textRow("Run type", result.experimental ? "Experimental intervention run" : "Explicit sample inspection"));
+  resultRoot.append(textRow("Selected activation", JSON.stringify(result.selected_activation)));
+  if (result.gradients) resultRoot.append(textRow("Gradient", JSON.stringify(result.gradients)));
+  resultRoot.append(textRow("Relevant operations", (result.operations || []).map((item) => `${item.label} · ${item.operation}`).join(", ") || "none recorded"));
+  resultRoot.append(textRow("Trace", JSON.stringify(result.trace)));
+  resultRoot.append(textRow("Non-finite values", JSON.stringify(result.non_finite)));
+  if (result.artifact_ref) resultRoot.append(textRow("Saved Artifact", `${result.artifact_ref.kind} · ${result.artifact_ref.id}`));
 }
 
 function renderCheckpointInspector(root) {

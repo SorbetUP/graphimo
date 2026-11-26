@@ -189,5 +189,53 @@ included. After reviewing a migration report, call
 `load_checkpoint(..., strict=False)` explicitly to create the migrated model.
 The Workbench never treats a preview as an applied migration.
 
-P7 TorchLens workflows, P8 Llama templates and P9 integration hardening remain
-later milestones.
+## P7 explicit TorchLens inspection
+
+TorchLens is a selective deep-inspection path, separate from per-batch live
+telemetry. The public API follows the addon contract:
+
+```python
+from graphimo_pytorch import TorchLensRequest, inspect_with_torchlens
+
+request = TorchLensRequest(
+    runtime_instance_id="...",
+    logical_element_id="...",
+    repetition_index=0,  # only needed when the binding is repeated
+    capture_gradients=False,
+)
+result = inspect_with_torchlens(request, input_tensor)
+```
+
+Inputs are explicit. The authoritative binding map resolves a logical element
+and repetition to its generated module path. Inspection runs on a copy of the
+eager model so it does not change the live training instance. The result
+contains bounded activation/gradient statistics, up to 32 relevant operation
+summaries, non-finite diagnostics and trace metadata; the full TorchLens Trace
+is transient and never added to project JSON. Gradient capture uses
+`loss_fn(output)` when supplied through the Python API, or a scalar tensor
+model output.
+
+`TorchLensIntervention("zero_ablation")` and
+`TorchLensIntervention("scale", factor=0.5)` run an explicit experimental
+capture. The result is labeled `experimental` and identifies the intervention.
+TorchLens edits activations during the copied-model pass; Graphimo graph
+semantics and model weights are unchanged.
+
+The Workbench offers a JSON fixture editor on selected inspectable runtime
+elements. A nested numeric array is one tensor, an object is passed as keyword
+arguments, and `{"$args": [...], "$kwargs": {}}` represents multiple
+positional/keyword inputs. The fixture includes a tensor dtype selector so
+integer JSON values can be used as floating point inputs or as token IDs.
+Workbench gradient capture requires a scalar output. The explicit **Save full
+trace artifact** action performs a fresh inspection, captures all activations,
+and stores an export bundle in ArtifactStore: complete TorchLens operation
+metadata as JSON and activation/gradient tensors in a tensor-only PyTorch file,
+along with the bounded inspector report and provenance manifest. The manifest records MetaBlock ID, graph revision,
+materialization key, runtime ID, selected element/module, and TorchLens/PyTorch
+versions. Inspection is never silently equated with a current or next training
+batch.
+
+If TorchLens is missing or broken, the action returns a clear diagnostic.
+Compiled or wrapped models are not silently substituted; V1 deep inspection
+requires an eager, copyable model. P8 Llama templates and P9 integration
+hardening remain later milestones.

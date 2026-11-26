@@ -295,6 +295,8 @@ class RuntimeRegistry:
                     self._observe_forward(runtime_id, module_path, weak_model, output)
                     return None
 
+                observe.__graphimo_live_telemetry__ = True
+
                 hook = _Hook(module.register_forward_hook(observe))
                 self._hooks[key] = hook
             hook.subscriptions.add(spec.subscription_id)

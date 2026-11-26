@@ -40,6 +40,13 @@ from .checkpoint import (
     save_checkpoint,
 )
 from .migration import ShapeMismatch, WeightMigrationReport, migrate_state_dict
+from .torchlens_adapter import (
+    TorchLensIntervention,
+    TorchLensRequest,
+    TorchLensResult,
+    inspect_with_torchlens,
+    save_inspection_artifact,
+)
 
 __all__ = [
     "ELEMENT_REGISTRY",
@@ -61,6 +68,9 @@ __all__ = [
     "WeightMigrationReport",
     "RuntimeRegistry",
     "SubscriptionSpec",
+    "TorchLensIntervention",
+    "TorchLensRequest",
+    "TorchLensResult",
     "PyTorchCompilationError",
     "ShapeInferenceResult",
     "TensorSpec",
@@ -76,6 +86,8 @@ __all__ = [
     "inspect_checkpoint",
     "get_migration_report",
     "migrate_state_dict",
+    "inspect_with_torchlens",
+    "save_inspection_artifact",
     "release_runtime_model",
     "summarize_tensor",
     "summarize_tree",
