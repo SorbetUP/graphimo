@@ -31,6 +31,13 @@ symbolic string. This is a schema representation choice, not a product decision;
 shape inference and compatibility validation belong to the later registry
 milestone.
 
+The P2 port convention is: ordinary unary elements use `input` and `output`;
+`add`, `multiply` and `matmul` use `left` and `right`; `cross_entropy` uses
+`logits` and `target`; `concatenate` uses variadic `input`; a Group instance
+uses the named ports declared by its referenced Group. A visual `input` element
+matches its `name` parameter to a `MethodInput` of the same name. These names
+fill in the port identity that the schema's conceptual definitions leave open.
+
 Use `load_state(path)` and `save_state(path, state)` for project sidecars.
 Writes are UTF-8, indented, flushed, fsynced where supported, and atomically
 replaced. A schema version other than `1` raises
@@ -46,9 +53,21 @@ changes affect the revision.
 
 ## Current milestone boundary
 
-The schema is the P1 foundation. The current legacy MLP dialect registration
-and prototype are still present; P1 does not claim that they compile arbitrary
-schema graphs. Element registry/validation and shape inference are P2, and
-readable PyTorch source compilation is P3. Do not treat a state containing an
-unknown element kind as materializable until the registry supports every kind
-in that state.
+P1 supplies the semantic schema. P2 adds the exact V1 element catalog,
+structured validation, symbolic tensor shapes and shape propagation without
+creating a model. `validate_model_graph(state, external_values)` reports
+structural, port, cycle, parameter and binding diagnostics. The normative error
+codes include `pytorch_unknown_element_kind`, `pytorch_unknown_port`,
+`pytorch_edge_invalid`, `pytorch_cycle_invalid`,
+`pytorch_group_cycle_invalid`, `pytorch_param_invalid`,
+`pytorch_external_param_missing`, `pytorch_shape_incompatible` and
+`pytorch_shape_divisibility_error`. Each diagnostic carries the MetaBlock ID;
+method, element, Group and edge identities are attached when known.
+
+`infer_model_shapes(state, external_values)` returns `ShapeInferenceResult`:
+`port_shapes` and `edge_shapes` map scoped IDs to `TensorSpec`, with validation
+and shape diagnostics included. It uses bounded exact symbolic matching,
+simple products/quotients, broadcast rules and concrete shape constraints. It
+does not construct a PyTorch model or execute user code. P3 is the compiler and
+readable generated source milestone. Until that compiler supports every kind
+in a state, unknown kinds must remain non-materializable.
