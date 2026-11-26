@@ -63,6 +63,13 @@ def live_kernel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(tmp_path / "artifact-store"))
     notebook = tmp_path / "pipeline.py"
     notebook.write_text(NOTEBOOK, encoding="utf-8")
+    components = tmp_path / "components"
+    components.mkdir()
+    (components / "prepare.py").write_text(
+        "from graphimo import node\n\n\n@node\ndef normalize(values):\n"
+        "    mean = sum(values) / len(values)\n    return [v - mean for v in values]\n",
+        encoding="utf-8",
+    )
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
     env = os.environ.copy()
@@ -167,3 +174,46 @@ def test_live_run_existing_file_cell(live_kernel) -> None:
     with pytest.raises(GraphimoServiceError) as exc_info:
         project.execute("notebook.run", {"cell_id": "no-such-cell"})
     assert exc_info.value.code == "cell_not_found"
+
+
+def test_live_connect_rejects_cycle_and_preserves_state(live_kernel) -> None:
+    from graphimo.client import GraphimoServiceError
+
+    project, _, _ = live_kernel
+    project.execute(
+        "component.add",
+        {
+            "path": "prepare.py",
+            "callable": "normalize",
+            "output_name": "norm",
+            "bindings": {},
+        },
+    )
+    snapshot = project.execute("notebook.inspect", {})
+    instance = next(
+        (
+            c
+            for c in snapshot["cells"]
+            if (c.get("graphimo_instance") or {}).get("result_var", "").startswith("g_normalize_")
+        ),
+        None,
+    )
+    assert instance is not None, "component.add should insert a node instance cell"
+    cell_id = instance["id"]
+    result_var = instance["graphimo_instance"]["result_var"]
+
+    with pytest.raises(GraphimoServiceError) as exc_info:
+        project.execute(
+            "notebook.connect",
+            {
+                "from_cell_id": cell_id,
+                "variable": result_var,
+                "to_cell_id": cell_id,
+                "input_ref": "values",
+            },
+        )
+    assert exc_info.value.code == "cycle_detected"
+
+    after = project.execute("notebook.inspect", {})
+    cell = next(c for c in after["cells"] if c["id"] == cell_id)
+    assert result_var in (cell.get("source") or ""), "failed mutation must leave the cell unchanged"
