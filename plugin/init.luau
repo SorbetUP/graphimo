@@ -761,6 +761,8 @@ local Page = ui.component(function()
 			intent = { type = "set_model_parameter", name = target.id, value = value }
 		elseif target.group_repeat then
 			intent = { type = "set_group_repeat", scope = active_metablock_scope:peek(), instance_id = target.element_id, ["repeat"] = value }
+		elseif target.rename_element then
+			intent = { type = "rename_element", scope = active_metablock_scope:peek(), element_id = target.element_id, name = value }
 		else
 			intent = {
 				type = "set_element_parameter",
@@ -1913,6 +1915,14 @@ local Page = ui.component(function()
 					return view ~= nil and active_metablock_scope:get() == "root" and selected:get() == ""
 				end, ui.column { w_full = true, gap = "$space.1",
 					Text { "Model parameters", style = "heading" },
+					Button {
+						function() local view = metablock_projection:get(); return "Rename model · " .. tostring(view and view.name or "PyTorch Model") end,
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function()
+							local view = metablock_projection:peek()
+						open_metablock_parameter_editor({ external = true, id = "name", name = "Model name", type = "str", value = view and view.name or "PyTorch Model" })
+						end,
+					},
 					ui.each(model_parameters, function(parameter)
 						return Button {
 							"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.default),
@@ -1935,6 +1945,14 @@ local Page = ui.component(function()
 						local element = selected_metablock_element()
 						return element and tostring(element.kind or "component") or ""
 					end, style = "caption", tone = "secondary" },
+					Button {
+						function() local element = selected_metablock_element(); return "Rename · " .. tostring(element and (element.name or element.id) or "element") end,
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function()
+							local element = selected_metablock_element()
+						open_metablock_parameter_editor({ rename_element = true, element_id = element.id, name = "Element name", type = "str", value = element.name })
+						end,
+					},
 					Text { function()
 						local element = selected_metablock_element()
 						local shape = element and element.output_shape

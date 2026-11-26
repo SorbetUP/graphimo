@@ -88,7 +88,10 @@ created = application.execute("metablock.create", {
 edited = application.execute("metablock.apply", {
     "metablock_id": "tiny", "intent": {"type": "set_model_parameter", "name": "hidden_size", "value": 12}
 })
-revision = edited["revision"]
+renamed = application.execute("metablock.apply", {
+    "metablock_id": "tiny", "intent": {"type": "set_model_parameter", "name": "name", "value": "Renamed Tiny"}
+})
+revision = renamed["revision"]
 application.execute("layout.set", {
     "scope_id": "tiny_root",
     "layout": {"input": {"x": 15, "y": 25, "width": 210, "height": 120}}
@@ -102,7 +105,7 @@ assert sidecar.read_bytes() == sidecar_before
 assert host.read_layout("tiny_root")["input"]["x"] == 15
 restored = GraphimoApplication(host).execute("metablock.project", {"metablock_id": "tiny"})
 assert restored["available"] is True and restored["revision"] == revision
-assert restored["projection"]["name"] == "Tiny"
+assert restored["projection"]["name"] == "Renamed Tiny"
 assert host.read_layout("tiny_root")["input"]["x"] == 15
 materialized = GraphimoApplication(host).execute("metablock.materialize", {
     "metablock_id": "tiny", "bindings": {}

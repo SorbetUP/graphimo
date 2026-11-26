@@ -153,6 +153,28 @@ def test_dialect_apply_supports_element_parameter_edge_and_delete_intents():
     assert all(item["id"] != "e3" for item in state["entrypoints"][0]["edges"])
 
 
+def test_dialect_apply_renames_elements_without_changing_identity():
+    dialect = registration.PyTorchModelDialect(None)
+    state = schema.state_to_dict(mlp_state())
+
+    updated = dialect.apply(
+        state,
+        {"type": "rename_element", "element_id": "dense", "name": "Projection"},
+        None,
+    )
+
+    element = next(item for item in updated["entrypoints"][0]["elements"] if item["id"] == "dense")
+    assert element["name"] == "Projection"
+    assert element["id"] == "dense"
+
+    with pytest.raises(ValueError, match="unique"):
+        dialect.apply(
+            updated,
+            {"type": "rename_element", "element_id": "dense", "name": "tokens"},
+            None,
+        )
+
+
 def test_invalid_element_parameter_is_rejected_without_state_change():
     dialect = registration.PyTorchModelDialect(None)
     state = schema.state_to_dict(mlp_state())
