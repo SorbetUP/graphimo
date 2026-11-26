@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from .model_definition import RuntimeBindingMap, RuntimeSite
+from .model_definition import GroupRuntimeIndex, RuntimeBindingMap, RuntimeSite
 from .registry import get_element_kind
 from .schema import (
     Diagnostic,
@@ -284,7 +284,7 @@ def _emit_graph(
     by_id: Mapping[str, JsonScalar],
     groups: Mapping[str, GroupDefinition],
     bindings: list[RuntimeSite],
-    group_path: tuple[tuple[str, int], ...] = (),
+    group_path: tuple[GroupRuntimeIndex, ...] = (),
     base_indent: int = 8,
     register_sites: bool = True,
 ) -> list[str]:
@@ -414,7 +414,7 @@ def _emit_graph(
                     _add_runtime_sites(
                         definition,
                         root_path,
-                        group_path + ((instance.id, index),),
+                        group_path + (GroupRuntimeIndex(instance.id, index),),
                         groups,
                         bindings,
                     )
@@ -442,7 +442,7 @@ def _emit_graph(
 def _add_runtime_sites(
     definition: GroupDefinition,
     root_path: str,
-    group_path: tuple[tuple[str, int], ...],
+    group_path: tuple[GroupRuntimeIndex, ...],
     groups: Mapping[str, GroupDefinition],
     bindings: list[RuntimeSite],
 ) -> None:
@@ -464,7 +464,7 @@ def _add_runtime_sites(
             _add_runtime_sites(
                 nested,
                 nested_path,
-                group_path + ((instance.id, index),),
+                group_path + (GroupRuntimeIndex(instance.id, index),),
                 groups,
                 bindings,
             )

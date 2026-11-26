@@ -148,7 +148,26 @@ class PyTorchModelDialect:
         return {"scope": scope, "items": list(ELEMENT_REGISTRY)}
 
     def project(self, state: Any, scope: str, context: GraphimoHostAPI) -> dict[str, Any]:
-        return project_model(state_from_dict(state), scope)
+        projection = project_model(state_from_dict(state), scope)
+        from .runtime import RUNTIME_REGISTRY, _model_device
+
+        metablock_id = context.current_metablock_id
+        runtimes = RUNTIME_REGISTRY.list_for_metablock(metablock_id) if metablock_id else []
+        projection["runtime_selector"] = {
+            "available": bool(runtimes),
+            "items": [
+                {
+                    "runtime_instance_id": item.runtime_instance_id,
+                    "graph_revision": item.graph_revision,
+                    "materialization_key": item.materialization_key,
+                    "device": _model_device(model),
+                }
+                for item in runtimes
+                if (model := RUNTIME_REGISTRY.resolve(item.runtime_instance_id)) is not None
+            ],
+            "reason": None if runtimes else "No active runtime is registered in this process.",
+        }
+        return projection
 
     def apply(self, state: Any, intent: dict[str, Any], context: GraphimoHostAPI) -> dict[str, Any]:
         semantic = state_from_dict(state)
@@ -190,6 +209,8 @@ class PyTorchModelDialect:
     def invoke(
         self, state: Any, action: str, args: dict[str, Any], context: GraphimoHostAPI
     ) -> Any:
+        from .runtime import RUNTIME_REGISTRY, SubscriptionSpec, _model_device
+
         if action == "parameter_summary":
             semantic = state_from_dict(state)
             values = {
@@ -197,12 +218,73 @@ class PyTorchModelDialect:
             }
             parameters = _count_parameters(semantic, values)
             return {"total_parameters": parameters, "trainable_parameters": parameters}
+        if action == "runtime.list":
+            metablock_id = context.current_metablock_id
+            if not metablock_id:
+                raise ValueError("runtime listing requires a scoped MetaBlock")
+            return {
+                "items": [
+                    {
+                        "runtime_instance_id": info.runtime_instance_id,
+                        "metablock_id": info.metablock_id,
+                        "graph_revision": info.graph_revision,
+                        "materialization_key": info.materialization_key,
+                        "device": _model_device(model),
+                        "bindings": [
+                            {
+                                "logical_element_id": site.logical_element_id,
+                                "module_path": site.module_path,
+                                "parameter_count": _module_parameter_count(model, site.module_path),
+                                "group_instance_path": [
+                                    {
+                                        "group_instance_id": item.group_instance_id,
+                                        "repetition_index": item.repetition_index,
+                                    }
+                                    for item in site.group_instance_path
+                                ],
+                                "inspectable": site.inspectable,
+                            }
+                            for site in info.bindings.sites
+                        ],
+                    }
+                    for info in RUNTIME_REGISTRY.list_for_metablock(metablock_id)
+                    if (model := RUNTIME_REGISTRY.resolve(info.runtime_instance_id)) is not None
+                ]
+            }
+        if action == "runtime.subscribe":
+            _require_scoped_runtime(RUNTIME_REGISTRY, args.get("runtime_instance_id"), context)
+            subscription = SubscriptionSpec(
+                subscription_id=args.get("subscription_id") or uuid.uuid4().hex,
+                runtime_instance_id=args.get("runtime_instance_id"),
+                logical_element_id=args.get("logical_element_id"),
+                repetition_index=args.get("repetition_index"),
+                signal=args.get("signal", "activation"),
+                rate_hz=args.get("rate_hz", 1.0),
+                detail=args.get("detail", "summary"),
+            )
+            return RUNTIME_REGISTRY.subscribe(subscription)
+        if action == "runtime.unsubscribe":
+            _require_scoped_runtime(RUNTIME_REGISTRY, args.get("runtime_instance_id"), context)
+            return RUNTIME_REGISTRY.unsubscribe(
+                args.get("runtime_instance_id"), args.get("subscription_id")
+            )
+        if action == "runtime.release":
+            _require_scoped_runtime(RUNTIME_REGISTRY, args.get("runtime_instance_id"), context)
+            model = RUNTIME_REGISTRY.resolve(args.get("runtime_instance_id"))
+            if model is None:
+                return {"released": False}
+            return {"released": RUNTIME_REGISTRY.release(model)}
         raise ValueError(f"unsupported PyTorch MetaBlock action: {action}")
 
     def drain_events(
         self, cursor: str | None, limit: int, context: GraphimoHostAPI
     ) -> dict[str, Any]:
-        return {"cursor": cursor or "0", "events": [], "dropped": 0}
+        from .runtime import RUNTIME_REGISTRY
+
+        metablock_id = context.current_metablock_id
+        if not metablock_id:
+            return {"cursor": cursor or "0", "events": [], "dropped": 0}
+        return RUNTIME_REGISTRY.event_bus.drain(metablock_id, cursor, limit)
 
 
 def _set_model_parameter(semantic: PyTorchMetaBlockState, intent: dict[str, Any]) -> dict[str, Any]:
@@ -403,3 +485,22 @@ registration = MetaDialectRegistration(
     api_version=1,
     factory=PyTorchModelDialect,
 )
+
+
+def _require_scoped_runtime(registry: Any, runtime_id: Any, context: GraphimoHostAPI) -> Any:
+    if not isinstance(runtime_id, str) or not runtime_id:
+        raise ValueError("runtime_instance_id must be non-empty text")
+    info = registry.info(runtime_id)
+    if info is None:
+        raise ValueError("runtime model is no longer available")
+    if info.metablock_id != context.current_metablock_id:
+        raise ValueError("runtime instance belongs to another MetaBlock")
+    return info
+
+
+def _module_parameter_count(model: Any, module_path: str) -> int:
+    try:
+        module = model.get_submodule(module_path)
+        return sum(parameter.numel() for parameter in module.parameters())
+    except (AttributeError, KeyError):
+        return 0

@@ -13,10 +13,16 @@ from .schema import PyTorchMetaBlockState, state_from_dict, graph_revision
 
 
 @dataclass(frozen=True)
+class GroupRuntimeIndex:
+    group_instance_id: str
+    repetition_index: int
+
+
+@dataclass(frozen=True)
 class RuntimeSite:
     logical_element_id: str
     module_path: str
-    group_instance_path: tuple[tuple[str, int], ...] = ()
+    group_instance_path: tuple[GroupRuntimeIndex, ...] = ()
     inspectable: bool = True
 
 
@@ -69,6 +75,9 @@ class PyTorchModelDefinition:
             materialization_key=self.materialization_key,
             bindings=self.bindings,
         )
+        from .runtime import RUNTIME_REGISTRY
+
+        RUNTIME_REGISTRY.register(model, model.__graphimo_pytorch_runtime__)
         return model
 
     def __call__(self, *, device: Any = None, dtype: Any = None) -> Any:

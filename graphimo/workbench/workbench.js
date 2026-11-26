@@ -17,6 +17,11 @@ let cameraTouched = false;
 let pointer = null;
 let drag = null;
 let currentMetaBlocks = [];
+let activeRuntimeId = null;
+let runtimeEventCursor = "0";
+let runtimeEvents = [];
+let activeSubscriptions = new Map();
+let runtimeRepetitionIndex = 0;
 
 async function api(action, args = {}) {
   const response = await fetch("/api/action", {
@@ -68,6 +73,12 @@ async function createModel() {
 }
 
 async function openMetaBlock(id, initialProjection = null) {
+  if (metablockId && metablockId !== id) await stopAllRuntimeSubscriptions();
+  if (metablockId !== id) {
+    activeRuntimeId = null;
+    runtimeEventCursor = "0";
+    runtimeEvents = [];
+  }
   metablockId = id;
   scope = "root";
   selected.clear();
@@ -81,6 +92,8 @@ async function openMetaBlock(id, initialProjection = null) {
     return;
   }
   await showProjection(result.projection);
+  await refreshRuntimeSelector();
+  renderInspector();
   renderMetaBlocks();
 }
 
@@ -281,6 +294,7 @@ function renderInspector() {
     }
     root.append(textRow("Ports", `${view.outer.inputs.length} inputs · ${view.outer.outputs.length} outputs`));
     root.append(textRow("Scope", scope));
+    renderRuntimeOverview(root);
     if (connectSource) root.append(connectionHint());
     return;
   }
@@ -311,6 +325,173 @@ function renderInspector() {
   for (const name of Object.keys(element.params || {})) {
     if (element.parameters?.some((item) => item.name === name)) continue;
     root.append(textRow(name, JSON.stringify(element.params[name])));
+  }
+  renderRuntimeInspector(root, element);
+}
+
+function runtimeItems() {
+  return view?.runtime_selector?.items || [];
+}
+
+function selectedRuntime() {
+  return runtimeItems().find((item) => item.runtime_instance_id === activeRuntimeId) || null;
+}
+
+function renderRuntimeOverview(root) {
+  root.append(section("Live runtime"));
+  const items = runtimeItems();
+  if (!items.length) {
+    root.append(textRow("Status", view?.runtime_selector?.reason || "No active runtime."));
+    return;
+  }
+  if (items.length > 1) root.append(runtimeSelector(items));
+  const runtime = selectedRuntime() || items[0];
+  root.append(textRow("Runtime", runtime.runtime_instance_id));
+  root.append(textRow("Device", runtime.device || "unknown"));
+  root.append(textRow("Revision", runtime.graph_revision));
+  const metrics = runtimeEvents.filter((item) => item.runtime_instance_id === runtime.runtime_instance_id && item.kind === "metric.scalar");
+  const latestMetric = metrics.at(-1);
+  if (latestMetric) root.append(textRow(`Metric ${latestMetric.payload.name}`, latestMetric.payload.value));
+}
+
+function runtimeSelector(items) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "field";
+  const label = document.createElement("label");
+  label.textContent = "Runtime instance";
+  const select = document.createElement("select");
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.runtime_instance_id;
+    option.textContent = `${item.runtime_instance_id.slice(0, 12)} · ${item.device || "unknown"}`;
+    option.selected = item.runtime_instance_id === activeRuntimeId;
+    select.append(option);
+  }
+  select.addEventListener("change", () => {
+    activeRuntimeId = select.value;
+    runtimeRepetitionIndex = 0;
+    renderInspector();
+  });
+  wrapper.append(label, select);
+  return wrapper;
+}
+
+function renderRuntimeInspector(root, element) {
+  root.append(section("Live runtime"));
+  const items = runtimeItems();
+  if (!items.length) {
+    root.append(textRow("Status", view?.runtime_selector?.reason || "No active runtime."));
+    return;
+  }
+  if (items.length > 1) root.append(runtimeSelector(items));
+  const runtime = selectedRuntime() || items[0];
+  const bindings = (runtime.bindings || []).filter((item) => item.logical_element_id === element.id && item.inspectable !== false);
+  if (!bindings.length) {
+    root.append(textRow("Status", "This visual element has no inspectable runtime module."));
+    return;
+  }
+  const repetitionValues = [...new Set(bindings.map((item) => item.group_instance_path?.at(-1)?.repetition_index).filter((item) => Number.isInteger(item)))].sort((a, b) => a - b);
+  if (repetitionValues.length > 1) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "field";
+    const label = document.createElement("label"); label.textContent = "Repetition";
+    const select = document.createElement("select");
+    for (const value of repetitionValues) {
+      const option = document.createElement("option"); option.value = String(value); option.textContent = String(value); option.selected = value === runtimeRepetitionIndex; select.append(option);
+    }
+    select.addEventListener("change", () => { runtimeRepetitionIndex = Number(select.value); renderInspector(); });
+    wrapper.append(label, select); root.append(wrapper);
+  }
+  const binding = repetitionValues.length > 1
+    ? bindings.find((item) => item.group_instance_path?.at(-1)?.repetition_index === runtimeRepetitionIndex) || bindings[0]
+    : bindings[0];
+  root.append(textRow("Runtime", runtime.runtime_instance_id));
+  root.append(textRow("Module path", binding.module_path));
+  root.append(textRow("Parameters", binding.parameter_count ?? 0));
+  const matchingEvents = runtimeEvents.filter((item) => item.runtime_instance_id === runtime.runtime_instance_id && item.logical_element_id === element.id);
+  const activation = [...matchingEvents].reverse().find((item) => item.kind === "activation.summary");
+  const gradient = [...matchingEvents].reverse().find((item) => item.kind === "gradient.summary");
+  if (activation?.payload?.value?.shape) root.append(textRow("Actual output", formatShape(activation.payload.value)));
+  if (activation) root.append(textRow("Activation", JSON.stringify(activation.payload.value)));
+  if (gradient) root.append(textRow("Gradient", JSON.stringify(gradient.payload.value)));
+  for (const [signal, detail, label] of [
+    ["activation", "summary", "Subscribe activation summary"],
+    ["gradient", "summary", "Subscribe gradient summary"],
+    ["activation", "histogram", "Show activation histogram"],
+    ["activation", "sample", "Show bounded activation sample"],
+  ]) {
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.addEventListener("click", () => subscribeRuntime(element, runtime, binding, signal, detail).catch(showError));
+    root.append(button);
+  }
+  const stop = document.createElement("button");
+  stop.className = "quiet";
+  stop.textContent = "Stop live inspection";
+  stop.addEventListener("click", () => stopRuntimeSubscriptions(element, runtime).catch(showError));
+  root.append(stop);
+}
+
+async function subscribeRuntime(element, runtime, binding, signal, detail) {
+  const key = `${runtime.runtime_instance_id}:${element.id}:${signal}:${detail}`;
+  if (activeSubscriptions.has(key)) return;
+  const subscriptionId = crypto.randomUUID();
+  const repetitionIndex = binding.group_instance_path?.at(-1)?.repetition_index;
+  const result = await api("metablock.invoke", {
+    metablock_id: metablockId,
+    action: "runtime.subscribe",
+    args: {
+      subscription_id: subscriptionId,
+      runtime_instance_id: runtime.runtime_instance_id,
+      logical_element_id: element.id,
+      ...(Number.isInteger(repetitionIndex) ? { repetition_index: repetitionIndex } : {}),
+      signal,
+      detail,
+      rate_hz: 1,
+    },
+  });
+  activeSubscriptions.set(key, { runtime_instance_id: runtime.runtime_instance_id, subscription_id: result.subscription_id });
+  renderInspector();
+}
+
+async function stopRuntimeSubscriptions(element, runtime) {
+  for (const [key, item] of [...activeSubscriptions]) {
+    if (item.runtime_instance_id !== runtime.runtime_instance_id || !key.startsWith(`${runtime.runtime_instance_id}:${element.id}:`)) continue;
+    await api("metablock.invoke", { metablock_id: metablockId, action: "runtime.unsubscribe", args: item });
+    activeSubscriptions.delete(key);
+  }
+}
+
+async function stopAllRuntimeSubscriptions() {
+  for (const [key, item] of [...activeSubscriptions]) {
+    await api("metablock.invoke", { metablock_id: metablockId, action: "runtime.unsubscribe", args: item });
+    activeSubscriptions.delete(key);
+  }
+}
+
+async function refreshRuntimeSelector() {
+  if (!metablockId || !view) return;
+  const result = await api("metablock.invoke", { metablock_id: metablockId, action: "runtime.list", args: {} });
+  const items = result.items || [];
+  view.runtime_selector = {
+    available: items.length > 0,
+    items,
+    reason: items.length ? null : "No active runtime is registered in this process.",
+  };
+  if (!items.some((item) => item.runtime_instance_id === activeRuntimeId)) activeRuntimeId = items[0]?.runtime_instance_id || null;
+}
+
+async function pollRuntimeEvents() {
+  if (!metablockId || !view) return;
+  try {
+    await refreshRuntimeSelector();
+    const response = await api("metablock.events", { metablock_id: metablockId, cursor: runtimeEventCursor, limit: 128 });
+    runtimeEventCursor = response.cursor || runtimeEventCursor;
+    runtimeEvents.push(...(response.events || []));
+    runtimeEvents = runtimeEvents.slice(-256);
+    renderInspector();
+  } catch (error) {
+    showError(error);
   }
 }
 
@@ -619,3 +800,4 @@ function showError(error) {
 }
 
 refreshProject().then(resizeCanvas).catch(showError);
+window.setInterval(() => { void pollRuntimeEvents(); }, 1000);

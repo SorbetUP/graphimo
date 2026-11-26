@@ -213,7 +213,7 @@ def project_model(
         "runtime_selector": {
             "available": False,
             "items": [],
-            "reason": "runtime inspection is a later addon milestone",
+            "reason": "No active runtime is registered in this process.",
         },
         "live_summaries": {"activations": [], "gradients": [], "metrics": []},
         "torchlens": {"available": False, "inspections": []},

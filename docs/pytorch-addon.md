@@ -108,5 +108,50 @@ cell source and says explicitly that it was not inserted. The exact marimo
 cell update mechanism is still blocked by the Core specification's
 `HUMAN DECISION REQUIRED` marker.
 
-P5 runtime subscriptions, P6 checkpoint migration, P7 TorchLens workflows,
-P8 Llama templates and P9 integration hardening remain later milestones.
+## P5 process-local runtime and live telemetry
+
+Every `PyTorchModelDefinition.instantiate()` creates fresh private runtime
+metadata and registers its model in the addon's weak `RuntimeRegistry`. The
+registry does not keep models alive; garbage collection removes entries and
+emits `runtime.released`. `release_runtime_model(model)` removes active hooks,
+subscriptions and registry metadata explicitly. Multiple instances from one
+MetaBlock coexist and have different `runtime_instance_id` values.
+
+`RuntimeSite` bindings include a concrete `module_path` and a typed
+`group_instance_path` of `GroupRuntimeIndex(group_instance_id,
+repetition_index)` values. The binding map produced during compilation remains
+the authority for mapping a visual element to the live module.
+
+`graphimo_pytorch.runtime` exposes `SubscriptionSpec`, `summarize_tensor`,
+`summarize_tree`, `emit_metric`, `emit_cuda_resources` and the event/registry
+types. Activation and output-gradient hooks are installed only for subscribed
+modules. They are shared by subscriptions on the same module and removed when
+the last subscription ends. Gradient observation uses output tensor hooks and
+returns each gradient unchanged. Inspection failures produce bounded warning
+events and do not fail the model forward/backward pass.
+
+Tensor summaries do not retain tensor objects. They report metadata and safe
+scalar statistics; histogram bins are capped at 128 (default 64), and samples
+at 4096 values. CUDA summaries remain on-device until bounded scalar values
+are read. CPU-only models make no CUDA calls. The event bus is process-local,
+JSON-safe and bounded to 10,000 events. Its cursor is scoped per MetaBlock and
+reports dropped records after eviction.
+
+Addon actions `runtime.list`, `runtime.subscribe`, `runtime.unsubscribe` and
+`runtime.release` run through `metablock.invoke`; `metablock.events` drains the
+per-MetaBlock event stream. The standalone Workbench shows active runtimes
+registered in its own Python process and can subscribe to activation summary,
+activation histogram/sample and output-gradient summary events. It shows the
+actual output shape and module parameter count when a matching event/runtime
+binding exists.
+
+The registry and event bus are process-local. The standalone Workbench does
+not attach to the marimo execution process, so it cannot show or subscribe to
+runtimes instantiated only in a separate marimo process. The Core spec leaves
+the cross-process telemetry transport unspecified; this implementation does
+not invent one. A host adapter that shares the Python process can use the same
+application actions today; marimo-to-Workbench live routing remains pending
+that product/architecture decision.
+
+P6 checkpoint migration, P7 TorchLens workflows, P8 Llama templates and P9
+integration hardening remain later milestones.

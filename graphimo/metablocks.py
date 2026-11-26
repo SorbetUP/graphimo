@@ -491,7 +491,7 @@ class MetaBlockAddonManager:
                     }
                 ],
             }
-        projection = handler.project(record.state, scope, self.host)
+        projection = handler.project(record.state, scope, self.host.for_metablock(metablock_id))
         return {
             "available": True,
             "metablock_id": record.metablock_id,
@@ -503,12 +503,15 @@ class MetaBlockAddonManager:
 
     def catalog(self, metablock_id: str, scope: str) -> Any:
         record = self.load(metablock_id)
-        return self._load(record.dialect_id).catalog(record.state, scope, self.host)
+        return self._load(record.dialect_id).catalog(
+            record.state, scope, self.host.for_metablock(metablock_id)
+        )
 
     def apply(self, metablock_id: str, intent: dict[str, Any]) -> dict[str, Any]:
         record = self.load(metablock_id)
         handler = self._load(record.dialect_id)
-        updated = handler.apply(record.state, intent, self.host)
+        scoped_host = self.host.for_metablock(metablock_id)
+        updated = handler.apply(record.state, intent, scoped_host)
         registration = self._registrations[record.dialect_id]
         next_record = _record_from_sidecar(
             {
@@ -520,7 +523,7 @@ class MetaBlockAddonManager:
                 "state": updated,
             }
         )
-        projection = handler.project(next_record.state, self.host.current_scope(), self.host)
+        projection = handler.project(next_record.state, self.host.current_scope(), scoped_host)
         self._write_record(next_record)
         return {
             "available": True,
@@ -550,7 +553,9 @@ class MetaBlockAddonManager:
 
     def invoke(self, metablock_id: str, action: str, args: dict[str, Any]) -> Any:
         record = self.load(metablock_id)
-        return self._load(record.dialect_id).invoke(record.state, action, args, self.host)
+        return self._load(record.dialect_id).invoke(
+            record.state, action, args, self.host.for_metablock(metablock_id)
+        )
 
     def drain_events(
         self, metablock_id: str, cursor: str | None = None, limit: int = 128
@@ -558,7 +563,9 @@ class MetaBlockAddonManager:
         if type(limit) is not int or not 1 <= limit <= 512:
             raise ValueError("event limit must be between 1 and 512")
         record = self.load(metablock_id)
-        response = self._load(record.dialect_id).drain_events(cursor, limit, self.host)
+        response = self._load(record.dialect_id).drain_events(
+            cursor, limit, self.host.for_metablock(metablock_id)
+        )
         if not isinstance(response, dict) or not isinstance(response.get("events"), list):
             raise MetaBlockError("addon drain_events must return a bounded event list")
         if len(response["events"]) > limit:

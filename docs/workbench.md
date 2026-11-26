@@ -32,12 +32,20 @@ bind addresses.
 - Inspect ports and inferred shapes, validation diagnostics, and readable
   generated Python.
 - Request the generated marimo materialization source.
+- Inspect process-local PyTorch runtime instances, subscribe to bounded
+  activation/gradient telemetry, and view recent scalar metrics.
 
 The standalone surface does not attach to a running marimo session, so its
 materialization action presents source for review and explicitly marks that it
 was not inserted into a live notebook cell. The exact supported marimo cell
 update mechanism remains subject to the `HUMAN DECISION REQUIRED` contract in
 the Core implementation specification.
+
+Runtime discovery and telemetry are process-local. A model instantiated in a
+separate marimo process is not visible to this standalone Workbench; the Core
+specification does not yet define that cross-process transport. The UI reports
+when no runtime is registered in the Workbench process instead of presenting
+stale or inferred runtime data.
 
 ## HTTP/action boundary
 

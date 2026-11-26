@@ -56,11 +56,13 @@ class FakeDialect:
     def invoke(
         self, state: Any, action: str, args: dict[str, Any], context: GraphimoHostAPI
     ) -> dict[str, Any]:
+        assert context.current_metablock_id == "block"
         return {"action": action, "args": args}
 
     def drain_events(
         self, cursor: str | None, limit: int, context: GraphimoHostAPI
     ) -> dict[str, Any]:
+        assert context.current_metablock_id == "block"
         return {"cursor": "next", "events": [{"sequence": 1}][:limit]}
 
 
@@ -192,6 +194,7 @@ def test_event_drain_is_bounded(tmp_path: Path) -> None:
     manager.create("test.counter", "block", {})
 
     assert len(manager.drain_events("block", limit=1)["events"]) == 1
+    assert manager.invoke("block", "test", {}) == {"action": "test", "args": {}}
     with pytest.raises(ValueError, match="between 1 and 512"):
         manager.drain_events("block", limit=513)
 
