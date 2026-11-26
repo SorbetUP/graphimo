@@ -1608,7 +1608,9 @@ local Page = ui.component(function()
 		style.bg = "$zeron.secondary.bg"
 		table.insert(style, ui.row { w_full = true, h_full = true, gap = 0,
 			-- Role stripe on the card's left edge.
-			ui.div { w = 3, h_full = true, shrink = 0, bg = function() return role_color(cell_role(cell())) end },
+			ui.presence(function() return cell_role(cell()) end, function(role)
+				return ui.div { w = 3, h_full = true, shrink = 0, bg = role_color(role) }
+			end),
 			ui.column { grow = 1, min_w = 0, h_full = true, gap = 0, overflow = "hidden",
 				-- Fixed-height header: port rows below start exactly at
 				-- Canvas.header_height, matching Canvas.port's geometry.
@@ -2899,11 +2901,11 @@ local Page = ui.component(function()
 			ui.div { grow = 1 },
 			Button { icon = true, size = "sm", on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
 			Button { icon = true, tone = "secondary", size = "sm", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
-			IconButton { icon = "refresh", label = "Refresh", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
-			IconButton { icon = "expand-arrows", label = "Fit to view", tone = "secondary", size = "sm", on_click = fit },
-			IconButton { icon = "minus", label = "Zoom out", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			IconButton { icon = "plus", label = "Zoom in", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			IconButton { icon = if grid:get() then "grip-horizontal" else "close-thin", label = if grid:get() then "Hide grid" else "Show grid", tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
+			IconButton { icon = "refresh", label = "Refresh", tone = "quiet", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
+			IconButton { icon = "expand-arrows", label = "Fit to view", tone = "quiet", size = "sm", on_click = fit },
+			IconButton { icon = "minus", label = "Zoom out", tone = "quiet", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+			IconButton { icon = "plus", label = "Zoom in", tone = "quiet", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+			IconButton { icon = if grid:get() then "grip-horizontal" else "close-thin", label = if grid:get() then "Hide grid" else "Show grid", tone = "quiet", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 			ui.div { w = 1, h = 18, bg = "$border", shrink = 0 },
 			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
 			Button { function() return if inspector_open:get() then "Inspector −" else "Inspector +" end, tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function() inspector_open:set(not inspector_open:peek()) end },
