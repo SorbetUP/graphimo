@@ -43,9 +43,11 @@ renderer layout out of PyTorch graph revisions and addon sidecars.
 The tests use a fake entry-point addon to verify lazy discovery,
 state creation/editing, atomic failure behavior, project serialization,
 missing-addon preservation, materialization revision checks, bounded events,
-scoped layout persistence and the application action seam. The separate PyTorch wheel now registers
-through this API and returns a `PyTorchModelDefinition` from an ordinary
-marimo materialization cell. Its current semantic state is a small MLP
-specification; the complete visual element graph/compiler, reusable groups,
-runtime subscriptions, TorchLens actions and checkpoint lifecycle remain
-unfinished addon work.
+scoped layout persistence and every addon action through the shared application
+seam. The separately installable PyTorch wheel registers through this API and
+implements the semantic graph/compiler, `PyTorchModelDefinition` materialization,
+runtime subscriptions, TorchLens actions and checkpoint lifecycle. Its runtime
+registry and telemetry are process-local; routing live marimo events through a
+persistent service and migrating the existing Zeron UI remain later integration
+milestones. See [`pytorch-addon.md`](pytorch-addon.md) for the addon contract and
+current process-boundary limitations.

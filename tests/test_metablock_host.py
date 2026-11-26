@@ -237,6 +237,48 @@ def test_application_routes_meta_actions_through_the_shared_manager(tmp_path: Pa
     assert updated["projection"]["value"] == 1
 
 
+def test_application_routes_all_addon_lifecycle_actions_through_one_manager(
+    tmp_path: Path,
+) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+    application = GraphimoApplication(host, manager)
+    materialization_updates: list[dict[str, Any]] = []
+    host.update_materialization_cell = materialization_updates.append
+
+    created = application.execute(
+        "metablock.create",
+        {"dialect_id": "test.counter", "metablock_id": "block", "request": {}},
+    )
+    catalog = application.execute(
+        "metablock.catalog", {"metablock_id": "block", "scope": "root/model"}
+    )
+    projected = application.execute("metablock.project", {"metablock_id": "block"})
+    edited = application.execute(
+        "metablock.apply", {"metablock_id": "block", "intent": {"type": "increment"}}
+    )
+    materialized = application.execute(
+        "metablock.materialize",
+        {"metablock_id": "block", "bindings": {"seed": 9}},
+    )
+    invoked = application.execute(
+        "metablock.invoke",
+        {"metablock_id": "block", "action": "probe", "args": {"depth": 2}},
+    )
+    events = application.execute(
+        "metablock.events", {"metablock_id": "block", "cursor": "0", "limit": 8}
+    )
+
+    assert created["available"] is True
+    assert catalog == {"scope": "root/model", "items": ["increment"]}
+    assert projected["projection"]["value"] == 0
+    assert edited["projection"]["value"] == 1
+    assert materialized["bindings"] == {"seed": 9}
+    assert materialization_updates[0]["metablock_id"] == "block"
+    assert materialization_updates[0]["revision"] == edited["revision"]
+    assert invoked == {"action": "probe", "args": {"depth": 2}}
+    assert events == {"cursor": "next", "events": [{"sequence": 1}]}
+
+
 def test_application_rejects_unknown_actions_and_oversized_arguments(tmp_path: Path) -> None:
     host, _manager, _entry = setup_manager(tmp_path)
     application = GraphimoApplication(host)
