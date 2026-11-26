@@ -35,6 +35,12 @@ The generated body has a random eight-character lowercase hexadecimal instance I
 
 Use `output_expression(spec, output_index, output_count)` to create a downstream reference: a single output uses the result global; multiple outputs use a zero-based tuple index. Port labels remain the `OutputPort` metadata from `inspect_node`.
 
+## Component-owned instances
+
+When `build_instance_source` is called with `component_path`, the instance also carries a `# Graphimo component: <path>` marker and calls the namespaced runtime symbol `__graphimo_c_<sha256(path)[:8]>_<node>` instead of the bare function name. The symbol is derived from the stable component path, so two components exporting the same function name never collide in marimo's globals. The matching library cell (`# Graphimo node library: <path>:<callable>`) binds that symbol through `importlib.reload`, which is also what `component.refresh_instances` rewrites when the component file changes. `load_node_function` resolves the live callable for an instance inside the marimo kernel; runtime objects never cross into the service process.
+
+The service's `notebook.inspect` projects each instance as `graphimo_instance` (instance ID, node, component path, result variable, runtime symbol, per-input binding kind `variable`/`literal`/`default`/`unbound`, per-output index, declared type and bounded runtime preview) plus `graphimo_component` (component ID, callable, library source hash). Edges between instances annotate `output_index` and `input_ref`. Renderers use these formal ports for Graphimo instances; ordinary marimo cells keep their lexical refs/defs as ports.
+
 These APIs generate source and describe contracts. Marimo remains responsible for dependency analysis and reactive execution.
 
 The service's `notebook.run` action submits the selected cell and its stale
