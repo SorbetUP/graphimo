@@ -112,7 +112,7 @@ zeron.tool({ name = "connect", run = function(args)
 	local path = project_path_for(args or {})
 	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
 	return start_tool(function() return Service.execute(zeron, path, "notebook.connect", {
-		from_cell_id = args.from_cell_id, variable = args.variable, to_cell_id = args.to_cell_id, input_ref = args.input_ref,
+		from_cell_id = args.from_cell_id, variable = args.variable, output_index = args.output_index, to_cell_id = args.to_cell_id, input_ref = args.input_ref,
 	}) end)
 end })
 
@@ -1285,6 +1285,20 @@ local Page = ui.component(function()
 			for _, name in names or {} do table.insert(labels, prefix .. name .. suffix) end
 			return table.concat(labels, "\n")
 		end
+		local function input_labels(value)
+			local labels = {}
+			if type(value) == "table" then
+				for _, name in Canvas.input_ports(value) do table.insert(labels, Canvas.input_label(value, name)) end
+			end
+			return labels
+		end
+		local function output_labels(value)
+			local labels = {}
+			if type(value) == "table" then
+				for _, key in Canvas.output_ports(value) do table.insert(labels, Canvas.output_label(value, key)) end
+			end
+			return labels
+		end
 		local style = Glass.style({
 			absolute = true,
 			left = function() local p = positions:get()[id] or {}; return pan_x:get() + (p.x or 0) * zoom:get() end,
@@ -1338,11 +1352,11 @@ local Page = ui.component(function()
 			end, style = "caption", tone = "secondary", wrap = true },
 			ui.row { w_full = true, grow = 1, items = "stretch", gap = "$space.2",
 				ui.column { w = 82, gap = "$space.1", justify = "start",
-					Text { function() local value = cell(); return ports(value and value.refs, "● ", "") end, style = "caption", tone = "secondary", wrap = true },
+					Text { function() local value = cell(); return ports(input_labels(value), "● ", "") end, style = "caption", tone = "secondary", wrap = true },
 				},
 				ui.div { grow = 1 },
 				ui.column { w = 82, gap = "$space.1", items = "end",
-					Text { function() local value = cell(); return ports(value and value.defs, "", " ●") end, style = "caption", tone = "primary", wrap = true },
+					Text { function() local value = cell(); return ports(output_labels(value), "", " ●") end, style = "caption", tone = "primary", wrap = true },
 				},
 			},
 			ui.show(function()
@@ -1659,13 +1673,22 @@ local Page = ui.component(function()
 		for index = #current_cells, 1, -1 do
 			local cell = current_cells[index]
 			local pos = ps[cell.id] or { x = 0, y = 0 }
-			for _, variable in cell.defs or {} do
-				if Canvas.near(x, y, pos.x + Canvas.width, pos.y + Canvas.port(cell, variable, true), 12 / zoom:peek()) then
-					select_cell(cell.id, e.shift == true); drag = { kind = "wire", cell_id = cell.id, variable = variable }; return
+			for _, key in Canvas.output_ports(cell) do
+				if Canvas.near(x, y, pos.x + Canvas.width, pos.y + Canvas.port(cell, key, true), 12 / zoom:peek()) then
+					select_cell(cell.id, e.shift == true)
+					local instance = if type(cell.graphimo_instance) == "table" then cell.graphimo_instance else nil
+					drag = {
+						kind = "wire",
+						cell_id = cell.id,
+						port = key,
+						variable = if instance then instance.result_var else key,
+						output_index = if instance then tonumber(key) else nil,
+					}
+					return
 				end
 			end
-			for _, variable in cell.refs or {} do
-				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, variable, false), 12 / zoom:peek()) then select_cell(cell.id, e.shift == true); return end
+			for _, name in Canvas.input_ports(cell) do
+				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, name, false), 12 / zoom:peek()) then select_cell(cell.id, e.shift == true); return end
 			end
 			local height = Canvas.height(cell, base_summaries:peek()[cell.id])
 			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
@@ -1720,20 +1743,20 @@ local Page = ui.component(function()
 			local connected = false
 			for _, cell in snapshot:peek().cells or {} do
 				local pos = positions:peek()[cell.id] or { x = 0, y = 0 }
-				for _, ref in cell.refs or {} do
-					if cell.id ~= drag.cell_id and Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, ref, false), 14 / zoom:peek()) then
+				for _, name in Canvas.input_ports(cell) do
+					if cell.id ~= drag.cell_id and Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, name, false), 14 / zoom:peek()) then
 						connected = true
 						if active_metablock:peek() ~= "" then
 							apply_metablock_intent({
 								type = "connect",
-								source = { element_id = drag.cell_id, port = drag.variable },
-								target = { element_id = cell.id, port = ref },
+								source = { element_id = drag.cell_id, port = drag.port },
+								target = { element_id = cell.id, port = name },
 							})
 						else
-							observe("Connect " .. drag.variable .. " to " .. ref, function()
+							observe("Connect " .. tostring(drag.variable) .. " to " .. name, function()
 								local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
 								return Service.execute(zeron, project_path, "notebook.connect", {
-									from_cell_id = drag.cell_id, variable = drag.variable, to_cell_id = cell.id, input_ref = ref,
+									from_cell_id = drag.cell_id, variable = drag.variable, output_index = drag.output_index, to_cell_id = cell.id, input_ref = name,
 								})
 							end, function(value)
 								if type(cell.source) == "string" and type(value.source) == "string" and cell.source ~= value.source then
@@ -1972,10 +1995,9 @@ local Page = ui.component(function()
 			end
 		end
 		if not item or not callable then notice:set("Choose a component and callable"); return end
+		-- Never invent implicit variable bindings: unbound inputs stay formal
+		-- ports and are connected explicitly from the canvas or by an agent.
 		local bindings = {}
-		for _, parameter in callable.parameters or {} do
-			if parameter.required then bindings[parameter.name] = { variable = parameter.name } end
-		end
 		local defined = {}
 		for _, cell in cells_now() do for _, name in cell.defs or {} do defined[name] = true end end
 		local next_number = output_counter:peek()

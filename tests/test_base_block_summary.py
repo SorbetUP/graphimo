@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LUAU = shutil.which("luau")
 DRIVER = ROOT / "tests" / "luau_base_block_summary_driver.luau"
 HEIGHT_DRIVER = ROOT / "tests" / "luau_base_block_height_driver.luau"
+PORTS_DRIVER = ROOT / "tests" / "luau_canvas_ports_driver.luau"
 
 
 @pytest.mark.skipif(not LUAU, reason="install the Luau CLI to exercise BaseBlock.summary")
@@ -39,3 +40,17 @@ def test_base_block_summary_height_wraps_without_moving_ports():
     )
     assert result.returncode == 0, f"Base Block card height contract failed:\n{result.stdout}\n{result.stderr}"
     assert "BASE_BLOCK_HEIGHT_OK" in result.stdout
+
+
+@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to exercise Canvas formal ports")
+def test_canvas_uses_formal_node_ports_for_graphimo_instances():
+    result = subprocess.run(
+        [LUAU, str(PORTS_DRIVER)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, f"Canvas port contract failed:\n{result.stdout}\n{result.stderr}"
+    assert "CANVAS_PORTS_OK" in result.stdout

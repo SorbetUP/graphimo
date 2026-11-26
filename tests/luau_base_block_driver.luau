@@ -41,12 +41,23 @@ local cells = {
 }
 
 local projected = BaseBlock.project(components, cells)
-assert(#projected == 3, "only exact current component references should project")
+-- A stale source hash still projects through the current file contract; only
+-- unknown components or wrong callables are dropped.
+assert(#projected == 4, "current component references (including stale hashes) should project")
 assert(projected[1].cell_id == "instance-a" and projected[2].cell_id == "instance-b", "projection must preserve cell order and duplicate instances")
 assert(projected[1].component_id == "calculs/infos.py" and projected[1].callable == "obtenir_infos", "component/callable identity mismatch")
 assert(projected[1].output_mode == "tuple" and #projected[1].inputs == 3 and #projected[1].outputs == 3, "Base Block descriptors were not preserved")
 assert(projected[1].inputs[1].name == "prix" and projected[1].inputs[3].name == "stock", "input signature order changed")
 assert(projected[1].outputs[1].name == "output_1" and projected[1].outputs[3].name == "flower", "return order changed")
-assert(projected[3].cell_id == "single" and projected[3].output_mode == "single", "later matching cell missing")
+assert(projected[3].cell_id == "stale", "stale-hash instance should still project via the component id")
+assert(projected[4].cell_id == "single" and projected[4].output_mode == "single", "later matching cell missing")
+
+-- The service also projects instances that only carry graphimo_instance.
+local instance_only = {
+	{ id = "svc", graphimo_instance = { component_id = "math.py", node = "scale", result_var = "g_scale_1" } },
+}
+local from_instance = BaseBlock.project(components, instance_only)
+assert(#from_instance == 1 and from_instance[1].cell_id == "svc" and from_instance[1].callable == "scale", "graphimo_instance fallback must project the component contract")
+
 assert(#components == 2 and #cells == 7 and cells[3].graphimo_component.source_sha256 == "oldhash", "projection mutated input")
 print("BASE_BLOCK_PROJECTION_OK")

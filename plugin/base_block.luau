@@ -13,24 +13,31 @@ local function callable_for(component, name)
 end
 
 local function component_for(components, reference)
-	local found = nil
+	local by_id = nil
 	for _, component in components or {} do
-		if component.id == reference.component_id and component.source_sha256 == reference.source_sha256 then
-			if found then return nil end
-			found = component
+		if component.id == reference.component_id then
+			-- Prefer the exact source revision; a stale hash still projects the
+			-- current file contract so the block keeps its identity after edits.
+			if component.source_sha256 == reference.source_sha256 then return component end
+			if not by_id then by_id = component end
 		end
 	end
-	return found
+	return by_id
 end
 
 function BaseBlock.project(components, cells)
 	local projected = {}
 	for _, cell in cells or {} do
 		local reference = cell.graphimo_component
+		if not (type(reference) == "table" and type(reference.component_id) == "string") then
+			local instance = cell.graphimo_instance
+			if type(instance) == "table" and type(instance.component_id) == "string" and type(instance.node) == "string" then
+				reference = { component_id = instance.component_id, callable = instance.node, source_sha256 = "" }
+			end
+		end
 		if type(reference) == "table"
 			and type(reference.component_id) == "string"
 			and type(reference.callable) == "string"
-			and type(reference.source_sha256) == "string"
 		then
 			local component = component_for(components, reference)
 			local callable = if component then callable_for(component, reference.callable) else nil
