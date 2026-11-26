@@ -64,6 +64,7 @@ class GraphimoApplication:
             "group.set_contract": self._set_group_contract,
             "control.catalog": self._control_catalog,
             "control.create": self._create_control,
+            "control.add": self._add_control,
             "component.list": self._list_components,
             "component.write": self._write_component,
             "component.validate": self._validate_component,
@@ -190,6 +191,28 @@ class GraphimoApplication:
     @staticmethod
     def _create_control(args: dict[str, Any]) -> Any:
         return create_control_source(args)
+
+    def _add_control(self, args: dict[str, Any]) -> Any:
+        built = create_control_source(args)
+        snapshot = self._invoke_notebook("inspect", {})
+        cells = snapshot.get("cells", []) if isinstance(snapshot, dict) else []
+        instance_marker = f"# Graphimo instance: {built['identity']}"
+        if any(
+            isinstance(cell, dict)
+            and "# Graphimo control:" in cell.get("source", "")
+            and instance_marker in cell.get("source", "")
+            for cell in cells
+        ):
+            raise FileExistsError(f"Graphimo control '{built['identity']}' already exists")
+        control_cell = self._invoke_notebook("add_cell", {"source": built["control_source"]})
+        value_cell = self._invoke_notebook("add_cell", {"source": built["value_source"]})
+        self._invoke_notebook("run", {"cell_id": control_cell["cell_id"]})
+        self._invoke_notebook("run", {"cell_id": value_cell["cell_id"]})
+        return {
+            **built,
+            "control_cell_id": control_cell["cell_id"],
+            "value_cell_id": value_cell["cell_id"],
+        }
 
     def _list_components(self, _args: dict[str, Any]) -> Any:
         return self.components.list()

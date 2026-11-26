@@ -287,6 +287,24 @@ class GraphimoProject:
             },
         )
 
+    def add_control(
+        self,
+        kind: str,
+        identity: str,
+        *,
+        parameters: dict[str, Any] | None = None,
+        policy: str | None = None,
+    ) -> dict[str, Any]:
+        """Create and insert a marimo-native Graphimo control."""
+        args: dict[str, Any] = {
+            "kind": kind,
+            "identity": identity,
+            "parameters": parameters or {},
+        }
+        if policy is not None:
+            args["policy"] = policy
+        return self.execute("control.add", args)
+
     def connect(
         self,
         source_cell_id: str,

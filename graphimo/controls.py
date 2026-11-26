@@ -60,6 +60,12 @@ def create_control_source(request: Mapping[str, Any]) -> dict[str, Any]:
     kind = request.get("kind")
     if not isinstance(kind, str) or kind not in _DEFAULTS:
         raise ValueError(f"unsupported Graphimo control kind: {kind!r}")
+    rapid_control = kind in {"slider", "range_slider", "number"}
+    policy = request.get("policy", "on_release" if rapid_control else "live")
+    if policy not in {"live", "on_release"}:
+        raise ValueError("control policy must be 'live' or 'on_release'")
+    if not rapid_control and policy != "live":
+        raise ValueError(f"{kind} controls support only the live policy")
     identity = request.get("identity")
     if (
         not isinstance(identity, str)
@@ -78,6 +84,8 @@ def create_control_source(request: Mapping[str, Any]) -> dict[str, Any]:
     if unexpected:
         raise ValueError(f"unsupported {kind} parameters: {', '.join(sorted(unexpected))}")
     values.update(parameters)
+    if rapid_control:
+        values["debounce"] = policy == "on_release"
     if kind in {"slider", "range_slider"} and type(values.get("show_value")) is not bool:
         raise ValueError("show_value must be boolean")
     label = values.get("label")
@@ -179,6 +187,7 @@ def create_control_source(request: Mapping[str, Any]) -> dict[str, Any]:
         "control_source": widget_source,
         "value_source": value_source,
         "dialect_id": "python",
+        "policy": policy,
     }
 
 
@@ -192,6 +201,8 @@ def _source_arguments(kind: str, values: Mapping[str, Any]) -> str:
         "text": ("value", "label"),
         "run_button": ("label",),
     }[kind]
+    if kind in {"slider", "range_slider", "number"}:
+        ordered = (*ordered[:4], "debounce", *ordered[4:])
     if kind in {"slider", "range_slider"} and "show_value" not in values:
         values = {**values, "show_value": True}
     return ", ".join(f"{name}={values[name]!r}" for name in ordered if name in values)

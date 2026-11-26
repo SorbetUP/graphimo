@@ -48,6 +48,21 @@ def test_control_catalog_lists_only_python_controls() -> None:
     assert all(item["dialect_id"] == "python" for item in catalog["items"])
 
 
+def test_rapid_controls_expose_live_and_on_release_policies() -> None:
+    live = create_control_source({"kind": "slider", "identity": "live_slider", "policy": "live"})
+    committed = create_control_source(
+        {"kind": "slider", "identity": "commit_slider", "policy": "on_release"}
+    )
+
+    assert live["policy"] == "live"
+    assert "debounce=False" in live["control_source"]
+    assert committed["policy"] == "on_release"
+    assert "debounce=True" in committed["control_source"]
+
+    with pytest.raises(ValueError, match="control policy"):
+        create_control_source({"kind": "slider", "identity": "bad_policy", "policy": "timer"})
+
+
 @pytest.mark.parametrize(
     ("kind", "expected"),
     [
@@ -137,3 +152,34 @@ def test_graphimo_application_compiles_control_source(tmp_path) -> None:
     assert created["label"] == "cutoff"
     assert created["value_name"] == "g_threshold_value"
     assert "label='cutoff'" in created["control_source"]
+    assert created["policy"] == "on_release"
+    assert "debounce=True" in created["control_source"]
+
+
+def test_graphimo_application_adds_control_and_value_cells(tmp_path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def invoke(action: str, args: dict[str, object]) -> dict[str, object]:
+        calls.append((action, args))
+        if action == "inspect":
+            return {"cells": []}
+        if action == "add_cell":
+            return {"cell_id": f"cell-{len(calls)}"}
+        return {"status": "queued"}
+
+    host = GraphimoHostAPI("controls", tmp_path / "notebook.py", invoke_notebook=invoke)
+    application = GraphimoApplication(host)
+
+    added = application.execute("control.add", {"kind": "slider", "identity": "threshold"})
+
+    assert added["control_cell_id"] == "cell-2"
+    assert added["value_cell_id"] == "cell-3"
+    assert [action for action, _args in calls] == [
+        "inspect",
+        "add_cell",
+        "add_cell",
+        "run",
+        "run",
+    ]
+    assert calls[-2][1] == {"cell_id": "cell-2"}
+    assert calls[-1][1] == {"cell_id": "cell-3"}

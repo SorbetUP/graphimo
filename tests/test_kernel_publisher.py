@@ -347,6 +347,13 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             literal_update = project.set_literal(target_cell["instance_id"], "value", 2)
             assert "__import__('json').loads('2')" in literal_update["source"]
             assert "scale=__import__('json').loads('4')," in literal_update["source"]
+            gain = project.add_control(
+                "slider",
+                "gain",
+                parameters={"start": 0.0, "stop": 4.0, "step": 0.5, "value": 1.0},
+                policy="live",
+            )
+            assert "debounce=False" in gain["control_source"]
             snapshot = project.inspect_notebook()
             library_projection = next(
                 cell
@@ -378,6 +385,13 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             assert connected["changed"] is True
             assert "normalize(" in connected["source"]
             assert "value=data," in connected["source"]
+            connected_control = project.connect(
+                gain["value_cell_id"],
+                gain["value_name"],
+                target_cell["cell_id"],
+                "scale",
+            )
+            assert f"scale={gain['value_name']}," in connected_control["source"]
             disconnected = project.disconnect_instance(target_cell["cell_id"], "value")
             assert disconnected["changed"] is True
             with pytest.raises(
@@ -434,9 +448,22 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 )
                 if result_preview is None:
                     time.sleep(0.1)
-            assert result_preview is not None, target_projection["output"]
-            assert result_preview["runtime_type"] == "int"
-            assert result_preview["preview"] == "12"
+            assert result_preview is not None, json.dumps(
+                [
+                    {
+                        "id": cell.get("id"),
+                        "source": cell.get("source", "")[:300],
+                        "errors": cell.get("errors"),
+                        "status": cell.get("status"),
+                        "output": cell.get("output"),
+                    }
+                    for cell in after_run["cells"]
+                ],
+                ensure_ascii=False,
+            )
+            assert result_preview["runtime_type"] == "float"
+            assert result_preview["preview"] == "3.0"
+            assert target_projection["graphimo_instance"]["outputs"][0]["declared_type"] == "int"
             chained_projection = next(
                 cell for cell in after_run["cells"] if cell["id"] == chained_cell["cell_id"]
             )
@@ -445,7 +472,7 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 for item in chained_projection["outputs"]
                 if item["name"] == chained_cell["result_var"]
             )
-            assert chained_preview["preview"] == "24"
+            assert chained_preview["preview"] == "6.0"
             updated_component_source = component_source.replace(
                 "value * scale", "value * (scale + 1)"
             )
