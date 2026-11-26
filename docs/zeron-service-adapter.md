@@ -157,3 +157,12 @@ source, while the service request limit is 5 MiB to allow JSON encoding
 overhead. See [Agent-authored components](components.md) for file validation,
 atomic replacement and recoverable delete semantics. The old marimo tools
 remain available for existing notebook workflows during the service migration.
+
+The full service test exercises an agent-style PyTorch workflow through the
+same client boundary: a batch creates and edits a connected MetaBlock, the
+service materializes its definition, the ordinary addon training helper runs
+one external training step, activation events and a TorchLens inspection are
+read through service actions, and a saved checkpoint is inspected and given a
+shape-migration preview after the graph revision changes. This validates the
+service/application/addon path in one process; it does not claim to validate
+the unresolved telemetry bridge from an independent live marimo kernel.

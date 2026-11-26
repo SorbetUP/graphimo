@@ -275,33 +275,84 @@ def test_service_batch_writes_then_validates_a_reusable_component(tmp_path: Path
 @pytest.mark.full
 def test_service_pytorch_metablock_project_apply_materialize_and_events(tmp_path: Path) -> None:
     pytest.importorskip("graphimo_pytorch")
+    import torch
+
+    from graphimo_pytorch import train_pytorch_model
+
     project_path = tmp_path / "research.py"
     project_path.write_text("# service PyTorch integration fixture\n", encoding="utf-8")
     service = GraphimoService(manifest_path=tmp_path / "service.json").start()
     client = GraphimoClient(service.url, service.token)
     project = client.open_project(project_path)
     try:
-        created = project.execute(
-            "metablock.create",
-            {
-                "dialect_id": "pytorch.model",
-                "metablock_id": "model_service",
-                "request": {"name": "Service Model"},
-            },
-        )
-        assert created["projection"]["dialect_id"] == "pytorch.model"
-        applied = project.execute(
-            "metablock.apply",
-            {
-                "metablock_id": "model_service",
-                "intent": {
-                    "type": "add_element",
-                    "scope": "forward",
-                    "kind": "relu",
-                    "id": "relu_service",
+        batch = project.batch(
+            [
+                {
+                    "id": "create",
+                    "action": "metablock.create",
+                    "args": {
+                        "dialect_id": "pytorch.model",
+                        "metablock_id": "model_service",
+                        "request": {"name": "Service Model"},
+                    },
                 },
-            },
+                {
+                    "id": "add_relu",
+                    "action": "metablock.apply",
+                    "args": {
+                        "metablock_id": {"$ref": "create.result.metablock_id"},
+                        "intent": {
+                            "type": "add_element",
+                            "scope": "forward",
+                            "kind": "relu",
+                            "id": "relu_service",
+                        },
+                    },
+                },
+                {
+                    "id": "disconnect_old_head",
+                    "action": "metablock.apply",
+                    "args": {
+                        "metablock_id": {"$ref": "create.result.metablock_id"},
+                        "intent": {
+                            "type": "disconnect",
+                            "scope": "forward",
+                            "edge_id": "activation_to_head_output",
+                        },
+                    },
+                },
+                {
+                    "id": "connect_activation_relu",
+                    "action": "metablock.apply",
+                    "args": {
+                        "metablock_id": {"$ref": "create.result.metablock_id"},
+                        "intent": {
+                            "type": "connect",
+                            "scope": "forward",
+                            "source": {"element_id": "activation", "port": "output"},
+                            "target": {"element_id": "relu_service", "port": "input"},
+                        },
+                    },
+                },
+                {
+                    "id": "connect_relu_head",
+                    "action": "metablock.apply",
+                    "args": {
+                        "metablock_id": {"$ref": "create.result.metablock_id"},
+                        "intent": {
+                            "type": "connect",
+                            "scope": "forward",
+                            "source": {"element_id": "relu_service", "port": "output"},
+                            "target": {"element_id": "head_output", "port": "input"},
+                        },
+                    },
+                },
+            ]
         )
+        assert batch["completed"] is True
+        assert all(item["status"] == "ok" for item in batch["operations"])
+        assert batch["operations"][0]["result"]["projection"]["dialect_id"] == "pytorch.model"
+        applied = batch["operations"][-1]["result"]
         assert any(item["id"] == "relu_service" for item in applied["projection"]["elements"])
         materialized = project.execute(
             "metablock.materialize",
@@ -309,6 +360,92 @@ def test_service_pytorch_metablock_project_apply_materialize_and_events(tmp_path
         )
         assert "materialize_definition" in materialized["source"]
         assert materialized["result_name"] == "g_pytorch_model_service"
+        namespace: dict[str, object] = {}
+        exec(materialized["source"], namespace, namespace)
+        definition = namespace[materialized["result_name"]]
+        trained, summary, checkpoint = train_pytorch_model(
+            definition,
+            [(torch.ones(2, 4), torch.zeros(2, 1))],
+            loss_fn=lambda output, target: torch.nn.functional.mse_loss(output["output"], target),
+            persist_checkpoint=True,
+        )
+        assert summary["steps"] == 1
+        assert checkpoint is not None
+        runtime_id = trained.__graphimo_pytorch_runtime__.runtime_instance_id
+        subscription = project.execute(
+            "metablock.invoke",
+            {
+                "metablock_id": "model_service",
+                "action": "runtime.subscribe",
+                "args": {
+                    "runtime_instance_id": runtime_id,
+                    "logical_element_id": "backbone",
+                    "signal": "activation",
+                    "rate_hz": 10,
+                },
+            },
+        )
+        trained(torch.ones(2, 4))
+        events = project.execute(
+            "metablock.events",
+            {"metablock_id": "model_service", "cursor": "0", "limit": 128},
+        )
+        assert isinstance(subscription["module_path"], str) and subscription["module_path"]
+        assert any(event["kind"] == "activation.summary" for event in events["events"])
+        assert any(
+            event["kind"] == "metric.scalar" and event["payload"]["name"] == "train/loss"
+            for event in events["events"]
+        )
+        inspection = project.execute(
+            "metablock.invoke",
+            {
+                "metablock_id": "model_service",
+                "action": "torchlens.inspect",
+                "args": {
+                    "runtime_instance_id": runtime_id,
+                    "logical_element_id": "backbone",
+                    "inputs": [[1.0, 2.0, 3.0, 4.0]],
+                },
+            },
+        )
+        assert inspection["logical_element_id"] == "backbone"
+        assert inspection["selected_activation"]["available"] is True
+        inspected = project.execute(
+            "metablock.invoke",
+            {
+                "metablock_id": "model_service",
+                "action": "checkpoint.inspect",
+                "args": {"artifact_id": checkpoint.id},
+            },
+        )
+        assert inspected["artifact_id"] == checkpoint.id
+        assert inspected["metadata"]["training_steps"] == 1
+        project.execute(
+            "metablock.apply",
+            {
+                "metablock_id": "model_service",
+                "intent": {
+                    "type": "set_model_parameter",
+                    "name": "hidden_size",
+                    "value": 9,
+                },
+            },
+        )
+        migration = project.execute(
+            "metablock.invoke",
+            {
+                "metablock_id": "model_service",
+                "action": "checkpoint.preview_migration",
+                "args": {"artifact_id": checkpoint.id, "external_values": {}},
+            },
+        )
+        assert migration["graph_revision"] != inspected["graph_revision"]
+        assert set(migration["report"]) == {
+            "copied",
+            "missing_in_source",
+            "missing_in_target",
+            "shape_mismatch",
+        }
         events = project.events(cursor="0", limit=128, wait_ms=0)
         assert any(
             event["kind"] == "metablock.materialization.requested" for event in events["events"]
