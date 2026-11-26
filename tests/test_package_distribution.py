@@ -74,6 +74,7 @@ def test_python_wheel_contains_product_packages_but_not_core_prototype(tmp_path:
     assert "graphimo/artifacts/__init__.py" in names
     assert "graphimo/artifacts/local.py" in names
     assert "graphimo/client.py" in names
+    assert "graphimo/verifier.py" in names
     assert "graphimo/service/__init__.py" in names
     assert "graphimo/service/server.py" in names
     assert "graphimo/service/invoke.py" in names
