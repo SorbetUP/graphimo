@@ -163,7 +163,8 @@ port. It does not replace an end-to-end run inside Zeron with a live marimo
 server. Example notebooks are ordinary marimo `.py` files and use marimo's
 `cache_cells = true` setting.
 
-An isolated architecture spike now lives in `core/graphimo_core/`. Its first
+An isolated, source-only architecture spike lives in `core/graphimo_core/` and
+is intentionally excluded from the product wheel. Its first
 slice validates the artifact store, workspace ledger, persistent Python worker,
 PyTorch model, and checkpoint artifacts. A second slice sends dataset branches
 through ordinary Python nodes, supports cooperative live model probes during a

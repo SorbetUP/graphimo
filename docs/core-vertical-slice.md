@@ -126,8 +126,9 @@ both files in each derived dataset branch.
   predictions, kept the same worker alive after rejecting an invalid request,
   materialized both branches with reflinks, and preserved the graph after
   close/reopen.
-- Wheel build, install into a temporary target, and import of the installed
-  `graphimo_core` package: **PASS** as part of the distribution test.
+- At the time of this historical report, the prototype wheel packaging check
+  passed. The current product wheel intentionally excludes `graphimo_core`;
+  the spike remains source-only under `core/graphimo_core/`.
 
 The demo prints the actual materialization strategy and process IDs so
 environment-specific behavior remains visible.

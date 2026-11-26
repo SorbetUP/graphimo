@@ -77,14 +77,18 @@ class MarimoKernelPort:
         if action not in {
             "inspect",
             "add_cell",
+            "restore_cells",
             "connect",
             "run",
             "delete",
+            "edit_guarded",
+            "replace_group_selection",
             "disable_instance",
             "enable_instance",
             "replace_library",
             "set_literal",
             "disconnect",
+            "refresh_component_hashes",
         }:
             raise MarimoKernelError(
                 "notebook_action_unsupported", "notebook action is not supported"
@@ -184,6 +188,30 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "    result = {'ok': True, 'cell_id': str(cell_id), 'source': source}",
             ]
         )
+    elif action == "restore_cells":
+        common.extend(
+            [
+                "    records = payload.get('records')",
+                "    if not isinstance(records, list) or len(records) > 128: raise ValueError('invalid_records: expected at most 128 cell records')",
+                "    sources = []",
+                "    total_size = 0",
+                "    for record in records:",
+                "        if not isinstance(record, dict) or not isinstance(record.get('source'), str): raise ValueError('invalid_records: each cell record must have source text')",
+                "        source = record['source']; size = len(source.encode('utf-8')); total_size += size",
+                "        if size > 1048576 or total_size > 4194304: raise ValueError('invalid_records: restored cell sources exceed the size limit')",
+                "        compile(source, '<graphimo-history-restore>', 'exec'); sources.append(source)",
+                "    created = []",
+                "    try:",
+                "        for source in sources: created.append(ctx.create_cell(source, hide_code=False))",
+                "        result = {'ok': True, 'cell_ids': [str(cell_id) for cell_id in created]}",
+                "    except Exception as exc:",
+                "        rollback_errors = []",
+                "        for cell_id in reversed(created):",
+                "            try: ctx.delete_cell(cell_id)",
+                "            except Exception as rollback_exc: rollback_errors.append(str(rollback_exc))",
+                "        result = {'ok': False, 'error': {'code': 'restore_failed', 'message': str(exc), 'rollback_errors': rollback_errors}}",
+            ]
+        )
     elif action == "delete":
         common.extend(
             [
@@ -191,6 +219,74 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "    if not isinstance(cell_id, str) or not cell_id or len(cell_id) > 256: raise ValueError('cell_id must be 1-256 characters')",
                 "    ctx.delete_cell(cell_id)",
                 "    result = {'ok': True, 'cell_id': cell_id, 'deleted': True}",
+            ]
+        )
+    elif action == "edit_guarded":
+        common.extend(
+            [
+                "    cell_id = payload.get('cell_id'); expected_source = payload.get('expected_source'); replacement_source = payload.get('source')",
+                "    try: cell = ctx.cells[cell_id]",
+                "    except (KeyError, IndexError, TypeError): cell = None",
+                "    if cell is None: result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': 'history target cell no longer exists'}}",
+                "    elif cell.code != expected_source: result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': 'source changed since this history entry was recorded'}}",
+                "    elif not isinstance(replacement_source, str) or len(replacement_source.encode('utf-8')) > 1048576: result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': 'replacement source is invalid or exceeds 1 MiB'}}",
+                "    else:",
+                "        try:",
+                "            compile(replacement_source, '<graphimo-history>', 'exec')",
+                "            ctx.edit_cell(cell.id, code=replacement_source)",
+                "            result = {'ok': True, 'changed': True, 'cell_id': str(cell.id), 'source': replacement_source}",
+                "        except Exception as exc: result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': str(exc)}}",
+            ]
+        )
+    elif action == "replace_group_selection":
+        common.extend(
+            [
+                "    import ast, hashlib",
+                "    selected_ids = payload.get('selected_ids'); source_hashes = payload.get('source_hashes'); replacement_source = payload.get('parent_source')",
+                "    cells = {str(cell.id): cell for cell in ctx.cells}",
+                "    if not isinstance(selected_ids, list) or not 2 <= len(selected_ids) <= 128 or any(not isinstance(cell_id, str) or not cell_id for cell_id in selected_ids) or len(set(selected_ids)) != len(selected_ids): result = {'ok': False, 'error': {'code': 'invalid_selection', 'message': 'choose 2-128 unique cells'}}",
+                "    elif not isinstance(source_hashes, dict) or any(cell_id not in cells or not isinstance(source_hashes.get(cell_id), str) or hashlib.sha256(cells[cell_id].code.encode('utf-8')).hexdigest() != source_hashes[cell_id] for cell_id in selected_ids): result = {'ok': False, 'error': {'code': 'unsafe_edit', 'message': 'selected cell source changed; inspect the graph and retry'}}",
+                "    elif not isinstance(replacement_source, str) or not replacement_source.strip() or len(replacement_source.encode('utf-8')) > 1048576: result = {'ok': False, 'error': {'code': 'invalid_replacement', 'message': 'generated Group call source is empty or exceeds 1 MiB'}}",
+                "    else:",
+                "        originals = {cell_id: cells[cell_id].code for cell_id in selected_ids}; removed = []",
+                "        try:",
+                "            compile(replacement_source, '<graphimo-group-call>', 'exec')",
+                "            if not replacement_source.startswith('# Graphimo group: '): raise ValueError('missing Graphimo Group marker')",
+                "            statements = ast.parse(replacement_source).body",
+                "            if len(statements) < 2 or not isinstance(statements[0], ast.ImportFrom) or not isinstance(statements[0].module, str) or not statements[0].module.startswith('groups.') or len(statements[0].names) != 1: raise ValueError('replacement must import exactly one project Group')",
+                "            imported = statements[0].names[0]",
+                "            if imported.asname is not None or not imported.name.isidentifier() or imported.name.startswith('__'): raise ValueError('invalid project Group callable')",
+                "            invocation = statements[1].value if isinstance(statements[1], (ast.Expr, ast.Assign)) else None",
+                "            if isinstance(statements[1], ast.Assign) and (len(statements[1].targets) != 1 or not isinstance(statements[1].targets[0], ast.Name) or not statements[1].targets[0].id.startswith('__graphimo_group_result_')): raise ValueError('replacement must capture the imported Group result')",
+                "            if not isinstance(invocation, ast.Call) or not isinstance(invocation.func, ast.Name) or invocation.func.id != imported.name or invocation.args: raise ValueError('replacement must call the imported Group with named inputs')",
+                "            if any(keyword.arg is None or not keyword.arg.isidentifier() or not isinstance(keyword.value, ast.Name) for keyword in invocation.keywords): raise ValueError('Group inputs must be simple named Python variables')",
+                "            for statement in statements[2:] if isinstance(statements[1], ast.Assign) else []:",
+                "                if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name) or not isinstance(statement.value, ast.Attribute) or not isinstance(statement.value.value, ast.Name) or statement.value.value.id != statements[1].targets[0].id: raise ValueError('replacement contains an invalid Group output binding')",
+                "            for cell_id in selected_ids: ctx.delete_cell(cells[cell_id].id); removed.append(cell_id)",
+                "            replacement_id = ctx.create_cell(replacement_source, hide_code=False)",
+                "            result = {'ok': True, 'cell_id': str(replacement_id), 'deleted_cell_ids': selected_ids, 'source': replacement_source}",
+                "        except Exception as exc:",
+                "            restored = []; rollback_errors = []",
+                "            for cell_id in removed:",
+                "                try: restored.append(str(ctx.create_cell(originals[cell_id], hide_code=False)))",
+                "                except Exception as rollback_exc: rollback_errors.append(str(rollback_exc))",
+                "            result = {'ok': False, 'error': {'code': 'replacement_failed', 'message': str(exc), 'restored_cell_ids': restored, 'rollback_errors': rollback_errors}}",
+            ]
+        )
+    elif action == "refresh_component_hashes":
+        common.extend(
+            [
+                "    import re",
+                "    hashes = payload.get('hashes')",
+                "    if not isinstance(hashes, dict) or len(hashes) > 4096 or any(not isinstance(path, str) or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest) for path, digest in hashes.items()): raise ValueError('invalid component source hashes')",
+                "    changed = []",
+                "    for cell in ctx.cells:",
+                "        component = re.search(r'(?m)^# Graphimo component: (.+)$', cell.code)",
+                "        old = re.search(r'(?m)^# Graphimo source sha256: ([0-9a-f]+)$', cell.code)",
+                "        if component and old and hashes.get(component.group(1)) and hashes[component.group(1)] != old.group(1):",
+                "            updated = re.sub(r'(?m)^# Graphimo source sha256: [0-9a-f]+$', '# Graphimo source sha256: ' + hashes[component.group(1)], cell.code, count=1)",
+                "            ctx.edit_cell(cell.id, code=updated); changed.append(str(cell.id))",
+                "    result = {'ok': True, 'changed_cells': changed}",
             ]
         )
     elif action == "run":
@@ -435,6 +531,14 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "        for name in refs:",
                 "            for owner in owners.get(name, []):",
                 "                if owner != str(cell.id): edges.append({'source_cell_id': owner, 'target_cell_id': str(cell.id), 'variable': name})",
+                "    cells_by_id = {item['id']: item for item in cells}",
+                "    for item in cells: item['parents'] = []",
+                "    for edge in edges:",
+                "        target = cells_by_id.get(edge['target_cell_id']); source_id = edge['source_cell_id']",
+                "        if target is None: continue",
+                "        parent = next((item for item in target['parents'] if item['cell_id'] == source_id), None)",
+                "        if parent is None: parent = {'cell_id': source_id, 'variables': []}; target['parents'].append(parent)",
+                "        if edge['variable'] not in parent['variables']: parent['variables'].append(edge['variable'])",
                 "    from graphimo import inspect_node",
                 "    from graphimo.instance import parse_disabled_instance_source, parse_instance_source",
                 "    for item in cells:",

@@ -89,13 +89,15 @@ local function is_group_selection_rejection(value)
 end
 
 zeron.tool({ name = "inspect", run = function(args)
-	local url, token, session = config_for(args or {})
-	return start_tool(function() return Bridge.inspect(zeron, url, token, session) end)
+	local path = project_path_for(args or {})
+	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
+	return start_tool(function() return Service.execute(zeron, path, "notebook.inspect", {}) end)
 end })
 
 zeron.tool({ name = "list_components", run = function(args)
-	local url, token, session = config_for(args or {})
-	return start_tool(function() return Bridge.list_components_for_active(zeron, url, token, session) end)
+	local path = project_path_for(args or {})
+	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
+	return start_tool(function() return Service.execute(zeron, path, "component.list", {}) end)
 end })
 
 zeron.tool({ name = "add_component", run = function(args)
@@ -156,7 +158,7 @@ zeron.tool({ name = "graphimo_inspect", run = function(args)
 	return request:after(function(batch)
 		local result = { project_path = path, graphimo = batch }
 		if url == "" or session == "" then return result end
-		return Bridge.inspect(zeron, url, "", session):after(function(notebook)
+		return Service.execute(zeron, path, "notebook.inspect", {}):after(function(notebook)
 			if type(notebook) == "table" and notebook.ok == false then return notebook end
 			result.notebook = notebook
 			if not is_local_url(url) then return result end
@@ -190,7 +192,7 @@ zeron.tool({ name = "graphimo_group_from_selection", run = function(args)
 	if type(args.selected_ids) ~= "table" or #args.selected_ids < 2 or #args.selected_ids > 128 then
 		return { ok = false, error = { code = "invalid_selection", message = "Provide between 2 and 128 selected marimo cell IDs" } }
 	end
-	return Bridge.inspect(zeron, url, "", session):after(function(graph)
+	return Service.execute(zeron, path, "notebook.inspect", {}):after(function(graph)
 		if type(graph) ~= "table" or graph.ok == false then return graph end
 		return Service.execute(zeron, path, "group.create_from_selection", {
 			name = args.name,
@@ -199,7 +201,11 @@ zeron.tool({ name = "graphimo_group_from_selection", run = function(args)
 			selected_ids = args.selected_ids,
 		}):after(function(compiled)
 			if type(compiled) ~= "table" or compiled.ok == false then return compiled end
-			return Bridge.replace_group_selection(zeron, url, "", session, compiled):after(function(replaced)
+			return Service.execute(zeron, path, "notebook.replace_group_selection", {
+				selected_ids = compiled.selected_ids,
+				source_hashes = compiled.source_hashes,
+				parent_source = compiled.parent_source,
+			}):after(function(replaced)
 				if type(replaced) ~= "table" or replaced.ok == false then
 					if not is_group_selection_rejection(replaced) then return replaced end
 					local ok, cleanup = pcall(function()
@@ -437,7 +443,8 @@ local Page = ui.component(function()
 			return
 		end
 		observe("Inspect marimo graph", function()
-			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
+			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (active_notebook:peek().root_path or active_notebook:peek().path or "")
+			return Service.execute(zeron, project_path, "notebook.inspect", {})
 		end, function(value)
 			value.cells = MetaBlockProjection.annotate_parent_cells(value.cells)
 			notebook_snapshot:set(value)
@@ -484,12 +491,12 @@ local Page = ui.component(function()
 				if not active[selected:peek()] then selected:set(first_selected) end
 				notice:set("Showing " .. tostring(#value.cells) .. " marimo cells")
 				observe("Discover components", function()
-					return Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, project_path)
+					return Service.execute(zeron, project_path, "component.list", {})
 				end, function(component_result)
-					local available = component_result.components or {}
+					local available = component_result.components or component_result.items or {}
 					components:set(available)
 					observe("Check component sources", function()
-						return Bridge.refresh_component_hashes(zeron, url:peek(), token:peek(), value.notebook.session_id, available)
+						return Service.execute(zeron, project_path, "component.refresh_instances", {})
 					end, function(hash_result)
 						if #(hash_result.changed_cells or {}) > 0 then
 							notice:set("A component source changed; marimo marked its cell stale")
@@ -1055,7 +1062,7 @@ local Page = ui.component(function()
 				return
 			end
 			observe("Insert PyTorch definition into marimo", function()
-				return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), definition.source)
+				return Service.execute(zeron, path, "notebook.add_cell", { source = definition.source })
 			end, function()
 				log("Inserted generated PyTorch definition for " .. metablock_id)
 				leave_metablock()
@@ -1453,7 +1460,8 @@ local Page = ui.component(function()
 		if index > #ids then callback(deleted); return end
 		local id = ids[index]
 		observe("Remove block for history", function()
-			return Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), id)
+			local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+			return Service.execute(zeron, path, "notebook.delete", { cell_id = id })
 		end, function()
 			table.insert(deleted, id)
 			delete_history_ids(ids, index + 1, deleted, callback)
@@ -1467,7 +1475,8 @@ local Page = ui.component(function()
 		local source_records = {}
 		for _, record in records do table.insert(source_records, { source = record.source }) end
 		observe("Restore blocks for history", function()
-			return Bridge.restore_cells(zeron, url:peek(), token:peek(), session_id:peek(), source_records)
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+		return Service.execute(zeron, path, "notebook.restore_cells", { records = source_records })
 		end, function(value)
 			if type(value) ~= "table" or type(value.cell_ids) ~= "table" or #value.cell_ids ~= #records then
 				callback({}, "marimo returned an incomplete history restore result")
@@ -1509,7 +1518,12 @@ local Page = ui.component(function()
 			local expected_source = if undoing then action.after else action.before
 			local replacement_source = if undoing then action.before else action.after
 			observe(if undoing then "Undo source edit" else "Redo source edit", function()
-				return Bridge.edit(zeron, url:peek(), token:peek(), session_id:peek(), action.cell_id, expected_source, replacement_source)
+				local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+				return Service.execute(zeron, path, "notebook.edit_guarded", {
+					cell_id = action.cell_id,
+					expected_source = expected_source,
+					source = replacement_source,
+				})
 			end, function()
 				history_busy = false
 				table.insert(destination_stack, action)
@@ -1771,7 +1785,7 @@ local Page = ui.component(function()
 			top = math.min(top, point.y or 0)
 		end
 		observe("Inspect selected marimo cells", function()
-			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
+			return Service.execute(zeron, path, "notebook.inspect", {})
 		end, function(graph)
 			observe("Create Group Block definition", function()
 				return Service.execute(zeron, path, "group.create_from_selection", {
@@ -1779,7 +1793,11 @@ local Page = ui.component(function()
 				})
 			end, function(compiled)
 				observe("Replace selected cells with Group Block", function()
-					return Bridge.replace_group_selection(zeron, url:peek(), token:peek(), session_id:peek(), compiled)
+					return Service.execute(zeron, path, "notebook.replace_group_selection", {
+						selected_ids = compiled.selected_ids,
+						source_hashes = compiled.source_hashes,
+						parent_source = compiled.parent_source,
+					})
 				end, function(replaced)
 					group_dialog:set(false)
 					local before_records = records_for_ids(ids, graph.cells or {})
@@ -1923,43 +1941,24 @@ local Page = ui.component(function()
 		output_counter:set(output_counter:peek() + 1)
 		local identity = kind .. "_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
-		observe("Compile " .. kind .. " control", function()
-			return Service.execute(zeron, path, "control.create", { kind = kind, identity = identity })
-		end, function(compiled)
-			observe("Insert " .. kind .. " control", function()
-				return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), compiled.control_source)
-			end, function(control_cell)
-				local control_point = default_cell_position(#cells_now() + 1)
-				observe("Create reactive value for " .. compiled.label, function()
-					return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), compiled.value_source)
-				end, function(value_cell)
-					if type(control_cell) == "table" and type(control_cell.cell_id) == "string" and type(value_cell) == "table" and type(value_cell.cell_id) == "string" then
-						local value_point = default_cell_position(#cells_now() + 2)
-						local next_positions = clone_positions(positions:peek())
-						next_positions[control_cell.cell_id] = control_point
-						next_positions[value_cell.cell_id] = value_point
-						positions:set(next_positions)
-						push_history({ kind = "cells", before_records = {}, after_records = {
-							{ source = compiled.control_source, x = control_point.x, y = control_point.y },
-							{ source = compiled.value_source, x = value_point.x, y = value_point.y },
-						}, current_ids = { control_cell.cell_id, value_cell.cell_id } })
-						save_positions()
-					end
-					notice:set(compiled.label .. " added; connect its value output " .. compiled.value_name)
-					refresh_graph()
-				end, function(value_error)
-					if type(control_cell) == "table" and type(control_cell.cell_id) == "string" then
-						push_history({ kind = "cells", before_records = {}, after_records = {
-							{ source = compiled.control_source, x = control_point.x, y = control_point.y },
-						}, current_ids = { control_cell.cell_id } })
-					end
-					notice:set("Reactive value creation failed: " .. tostring(value_error) .. "; the inserted control can be undone")
-				end)
-			end, function(err)
-				notice:set("Could not insert " .. compiled.label .. ": " .. tostring(err))
-			end)
+		observe("Add " .. kind .. " control", function()
+			return Service.execute(zeron, path, "control.add", { kind = kind, identity = identity })
+		end, function(control)
+			local control_point = default_cell_position(#cells_now() + 1)
+			local value_point = default_cell_position(#cells_now() + 2)
+			local next_positions = clone_positions(positions:peek())
+			next_positions[control.control_cell_id] = control_point
+			next_positions[control.value_cell_id] = value_point
+			positions:set(next_positions)
+			push_history({ kind = "cells", before_records = {}, after_records = {
+				{ source = control.control_source, x = control_point.x, y = control_point.y },
+				{ source = control.value_source, x = value_point.x, y = value_point.y },
+			}, current_ids = { control.control_cell_id, control.value_cell_id } })
+			save_positions()
+			notice:set(control.label .. " added; connect its value output " .. control.value_name)
+			refresh_graph()
 		end, function(err)
-			notice:set("Could not compile " .. kind .. " control: " .. tostring(err))
+			notice:set("Could not add " .. kind .. " control: " .. tostring(err))
 		end)
 	end
 

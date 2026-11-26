@@ -71,13 +71,22 @@ class GraphimoApplication:
             "component.instance_source": self._component_instance_source,
             "component.add": self._add_component,
             "component.delete": self._delete_component,
+            "component.refresh_instances": self._refresh_component_instances,
             "artifact.inspect": self._inspect_artifact,
             "artifact.stats": self._artifact_stats,
             "notebook.inspect": lambda value: self._invoke_notebook("inspect", value),
             "notebook.add_cell": lambda value: self._invoke_notebook("add_cell", value),
+            "notebook.restore_cells": lambda value: self._invoke_notebook("restore_cells", value),
             "notebook.connect": lambda value: self._invoke_notebook("connect", value),
             "notebook.run": lambda value: self._invoke_notebook("run", value),
             "notebook.delete": lambda value: self._invoke_notebook("delete", value),
+            "notebook.edit_guarded": lambda value: self._invoke_notebook("edit_guarded", value),
+            "notebook.replace_group_selection": lambda value: self._invoke_notebook(
+                "replace_group_selection", value
+            ),
+            "notebook.refresh_component_hashes": lambda value: self._invoke_notebook(
+                "refresh_component_hashes", value
+            ),
             "notebook.disable_instance": lambda value: self._invoke_notebook(
                 "disable_instance", value
             ),
@@ -268,6 +277,13 @@ class GraphimoApplication:
 
     def _delete_component(self, args: dict[str, Any]) -> Any:
         return self.components.delete(self._required(args, "path"))
+
+    def _refresh_component_instances(self, _args: dict[str, Any]) -> Any:
+        hashes = {
+            str(item["path"]): str(item["sha256"])
+            for item in self.components.list().get("items", [])
+        }
+        return self._invoke_notebook("refresh_component_hashes", {"hashes": hashes})
 
     def _inspect_artifact(self, args: dict[str, Any]) -> Any:
         artifact_id = self._required(args, "artifact_id")

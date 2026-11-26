@@ -527,6 +527,58 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             assert enabled["changed"] is True
             assert project.run(blocked_cell["cell_id"])["status"] == "queued"
 
+            restored_cells = project.execute(
+                "notebook.restore_cells",
+                {"records": [{"source": "history_value = 10"}]},
+            )
+            restored_id = restored_cells["cell_ids"][0]
+            edited_cell = project.execute(
+                "notebook.edit_guarded",
+                {
+                    "cell_id": restored_id,
+                    "expected_source": "history_value = 10",
+                    "source": "history_value = 11",
+                },
+            )
+            assert edited_cell["changed"] is True
+            with pytest.raises(GraphimoServiceError, match="source changed since"):
+                project.execute(
+                    "notebook.edit_guarded",
+                    {
+                        "cell_id": restored_id,
+                        "expected_source": "history_value = 10",
+                        "source": "history_value = 12",
+                    },
+                )
+
+            group_input = project.execute("notebook.add_cell", {"source": "group_input_value = 4"})
+            group_output = project.execute(
+                "notebook.add_cell", {"source": "group_output_value = group_input_value * 2"}
+            )
+            group_snapshot = project.inspect_notebook()
+            group = project.execute(
+                "group.create_from_selection",
+                {
+                    "name": "Service Group",
+                    "module": "service_group",
+                    "cells": group_snapshot["cells"],
+                    "selected_ids": [group_input["cell_id"], group_output["cell_id"]],
+                },
+            )
+            replacement = project.execute(
+                "notebook.replace_group_selection",
+                {
+                    "selected_ids": group["selected_ids"],
+                    "source_hashes": group["source_hashes"],
+                    "parent_source": group["parent_source"],
+                },
+            )
+            assert replacement["deleted_cell_ids"] == group["selected_ids"]
+            assert replacement["cell_id"] not in {
+                group_input["cell_id"],
+                group_output["cell_id"],
+            }
+
             config = {
                 "service_url": first.url,
                 "service_token": first.token,

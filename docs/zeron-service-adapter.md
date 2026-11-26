@@ -33,8 +33,9 @@ operation.
 - Opening a local project loads its layout, Group catalog, MetaBlock catalog
   and active application scope in one Graphimo service batch.
 - The normal Python palette gets its Control Block entries from
-  `control.catalog`. Selecting a control asks `control.create` for validated
-  widget/value cell source, then inserts both as ordinary marimo cells.
+  `control.catalog`. Selecting a control calls `control.add`, which returns
+  validated widget/value cell source and inserts both as ordinary marimo cells
+  through the attached kernel.
 - **Reusable Groups** are actionable entries. Opening one enters the matching
   Graphimo application scope, then opens its `groups/<module>.py` file as the
   live marimo notebook in the same canvas. Graphimo continues to use the root
@@ -43,11 +44,11 @@ operation.
 - Shift-click selects multiple ordinary marimo cells. Right-clicking the
   selection offers **Create Group Block**; the dialog collects a display name,
   Graphimo Core derives the module and infers boundary ports from the inspected
-  graph, and the marimo bridge replaces the cells only if their source hashes
+  graph, and a service notebook action replaces the cells only if their source hashes
   still match. The replacement remains a normal marimo cell and the downstream
   marimo dependencies reconnect to the Group's inferred output definitions.
 - Canvas undo/redo tracks layout moves and ordinary-cell source/structure
-  changes through the live marimo bridge. In a PyTorch MetaBlock, the same
+  changes through Graphimo service notebook actions. In a PyTorch MetaBlock, the same
   buttons call `metablock.undo` / `metablock.redo` through Graphimo Core, which
   restores opaque addon state and refuses stale sidecar revisions. See
   [Zeron canvas undo and redo](zeron-undo-redo.md) for transaction coverage and
@@ -78,7 +79,7 @@ operation.
   authoritative for semantic validation.
 - **Insert generated definition** calls `metablock.materialize`, then inserts
   the returned ordinary Python into the active marimo notebook through the
-  existing notebook bridge. The inserted Python remains visible and runnable
+  service notebook action. The inserted Python remains visible and runnable
   in marimo.
 - Opening the Terminal panel long-polls bounded Graphimo events and appends
   them to the existing log view. **Read Graphimo events** performs one manual
@@ -104,14 +105,14 @@ operation.
 ## Runtime ownership
 
 Marimo remains the owner of ordinary Python cells, dependency analysis,
-reactive execution and cell output. The canvas and agent operations for
-component insertion, connections and single-cell runs use
-`component.add`, `notebook.connect` and `notebook.run` through the Graphimo
-application/service. The service forwards these bounded named intents to the
-attached marimo kernel; it does not schedule or replace a live marimo session.
-The private bridge remains responsible for session discovery, rich live-cell
-projection, opening the editor, undo/history restoration and other raw
-marimo-specific operations that have no Core semantic intent yet.
+reactive execution and cell output. The canvas and agent use named Graphimo
+application/service actions for live graph inspection, component discovery and
+insertion, controls, edits/restoration, Group replacement, connections and
+runs. The service forwards bounded intents to the attached marimo kernel; it
+does not schedule or replace a live marimo session. The private Zeron bridge
+is retained for host/runtime duties: session discovery, opening the editor,
+reading logs and diagnostics, and configuring the ephemeral telemetry
+publisher. It does not perform functional graph or cell mutations.
 
 The service adapter does not create a second canvas. PyTorch MetaBlocks are
 rendered in the same canvas and use the same pan, zoom, card and edge renderer.

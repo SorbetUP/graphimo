@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -236,6 +237,54 @@ def test_attaching_a_new_marimo_session_cleans_the_previous_kernel(tmp_path: Pat
     assert session._kernel_port.session_id == "new-session"
     session._kernel_port = None
     session.close()
+
+
+def test_kernel_event_publish_does_not_wait_for_long_application_action(tmp_path: Path) -> None:
+    notebook = tmp_path / "concurrent.py"
+    notebook.write_text("# concurrency fixture\n", encoding="utf-8")
+    session, _ = ProjectSessionManager().open_project(notebook)
+    action_started = threading.Event()
+    release_action = threading.Event()
+    action_finished = threading.Event()
+    publish_finished = threading.Event()
+    result: dict[str, object] = {}
+
+    def slow_action(action: str, args: dict[str, object]) -> object:
+        action_started.set()
+        assert release_action.wait(timeout=2)
+        return {"ok": True}
+
+    session.application.execute = slow_action
+    action_thread = threading.Thread(
+        target=lambda: (session.execute("metablock.inspect", {}), action_finished.set())
+    )
+    action_thread.start()
+    assert action_started.wait(timeout=2)
+
+    event = {
+        "kind": "activation.summary",
+        "project_id": session.project_id,
+        "session_id": "marimo-session-a",
+        "metablock_id": "model-a",
+        "graph_revision": "revision-a",
+        "runtime_instance_id": "runtime-a",
+    }
+
+    def publish() -> None:
+        result.update(session.publish_kernel_events([event]))
+        publish_finished.set()
+
+    publisher_thread = threading.Thread(target=publish)
+    publisher_thread.start()
+    try:
+        assert publish_finished.wait(timeout=0.5), "event publish waited behind the app action"
+        assert result == {"accepted": 1}
+        assert not action_finished.is_set()
+    finally:
+        release_action.set()
+        action_thread.join(timeout=2)
+        publisher_thread.join(timeout=2)
+        session.close()
 
 
 def test_service_rejects_unauthorized_requests_and_non_loopback_bind(tmp_path: Path) -> None:

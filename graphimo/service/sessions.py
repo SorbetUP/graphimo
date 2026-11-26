@@ -46,7 +46,12 @@ class ProjectSession:
         self.path = path
         self.project_id = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:24]
         self.events = EventJournal()
-        self._lock = threading.RLock()
+        # State reads (especially the kernel event publisher) must never wait
+        # behind an application action that is blocked on a live kernel call.
+        self._state_lock = threading.RLock()
+        # Application mutations are serialized independently from the short
+        # state lock. This keeps actions coherent without stalling telemetry.
+        self._action_lock = threading.RLock()
         self._addon_cursors: dict[str, str] = {}
         self._subscriptions: set[tuple[str, str, str]] = set()
         self._closed = False
@@ -66,8 +71,9 @@ class ProjectSession:
         self.application = GraphimoApplication(host)
 
     def execute(self, action: str, args: dict[str, Any]) -> Any:
-        with self._lock:
-            self._ensure_open()
+        with self._action_lock:
+            with self._state_lock:
+                self._ensure_open()
             result = self.application.execute(action, args)
             self._track_runtime_action(action, args, result)
             self.events.publish(
@@ -83,14 +89,17 @@ class ProjectSession:
         port = MarimoKernelPort(
             url=url, token=token, session_id=session_id, project_path=str(self.path)
         )
-        with self._lock:
-            self._ensure_open()
-            previous = self._kernel_port
-            if previous is not None and (
-                previous.url != port.url or previous.session_id != port.session_id
-            ):
-                metablock_ids = {item[0] for item in self._subscriptions}
-                self._subscriptions.clear()
+        with self._action_lock:
+            with self._state_lock:
+                self._ensure_open()
+                previous = self._kernel_port
+                switched = previous is not None and (
+                    previous.url != port.url or previous.session_id != port.session_id
+                )
+                metablock_ids = {item[0] for item in self._subscriptions} if switched else set()
+                if switched:
+                    self._subscriptions.clear()
+            if switched:
                 for metablock_id in metablock_ids:
                     try:
                         self.application.execute(
@@ -107,7 +116,9 @@ class ProjectSession:
                     previous.stop_publisher()
                 except Exception:
                     pass
-            self._kernel_port = port
+            with self._state_lock:
+                self._ensure_open()
+                self._kernel_port = port
         return {"attached": True, "session_id": session_id}
 
     def poll_events(
@@ -136,7 +147,7 @@ class ProjectSession:
                 raise ValueError("kernel event is missing runtime identity fields")
             if event.get("project_id") != self.project_id:
                 raise ValueError("kernel event project_id does not match the open project")
-            with self._lock:
+            with self._state_lock:
                 attached_kernel = self._kernel_port
             if (
                 attached_kernel is not None
@@ -166,12 +177,13 @@ class ProjectSession:
         return {"accepted": accepted}
 
     def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            pending = tuple(self._subscriptions)
-            self._subscriptions.clear()
-            port = self._kernel_port
+        with self._action_lock:
+            with self._state_lock:
+                if self._closed:
+                    return
+                pending = tuple(self._subscriptions)
+                self._subscriptions.clear()
+                port = self._kernel_port
             for metablock_id in {item[0] for item in pending}:
                 try:
                     self.application.execute(
@@ -189,8 +201,9 @@ class ProjectSession:
                     port.stop_publisher()
                 except Exception:
                     pass
-            self._kernel_port = None
-            self._closed = True
+            with self._state_lock:
+                self._kernel_port = None
+                self._closed = True
             self.events.close()
 
     def _ensure_open(self) -> None:
@@ -230,7 +243,7 @@ class ProjectSession:
             )
 
     def _invoke_kernel(self, metablock_id: str, action: str, args: dict[str, Any]) -> Any:
-        with self._lock:
+        with self._state_lock:
             self._ensure_open()
             port = self._kernel_port
         if port is None:
@@ -238,7 +251,7 @@ class ProjectSession:
         return port.invoke(metablock_id, action, args)
 
     def _invoke_notebook(self, action: str, args: dict[str, Any]) -> Any:
-        with self._lock:
+        with self._state_lock:
             self._ensure_open()
             port = self._kernel_port
         if port is None:
@@ -248,8 +261,9 @@ class ProjectSession:
     def _read_kernel_events(
         self, metablock_id: str, cursor: str | None, limit: int
     ) -> dict[str, Any]:
-        if self._kernel_port is None:
-            return None
+        with self._state_lock:
+            if self._closed or self._kernel_port is None:
+                return None
         result = self.events.read_matching(
             cursor, limit=limit, metablock_id=metablock_id, source="marimo_kernel"
         )
@@ -270,7 +284,7 @@ class ProjectSession:
             return
         runtime_id = addon_args.get("runtime_instance_id")
         subscription_id = result.get("subscription_id")
-        with self._lock:
+        with self._state_lock:
             if (
                 addon_action == "runtime.subscribe"
                 and isinstance(runtime_id, str)
@@ -296,9 +310,10 @@ class ProjectSession:
                 }
 
     def _poll_addon_events(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
+        with self._action_lock:
+            with self._state_lock:
+                if self._closed:
+                    return
             try:
                 listing = self.application.execute("metablock.list", {})
             except Exception:
@@ -307,7 +322,8 @@ class ProjectSession:
                 metablock_id = item.get("metablock_id")
                 if not isinstance(metablock_id, str):
                     continue
-                cursor = self._addon_cursors.get(metablock_id, "0")
+                with self._state_lock:
+                    cursor = self._addon_cursors.get(metablock_id, "0")
                 try:
                     response = self.application.execute(
                         "metablock.events",
@@ -317,7 +333,8 @@ class ProjectSession:
                     continue
                 next_cursor = response.get("cursor")
                 if isinstance(next_cursor, str):
-                    self._addon_cursors[metablock_id] = next_cursor
+                    with self._state_lock:
+                        self._addon_cursors[metablock_id] = next_cursor
                 dropped = response.get("dropped", 0)
                 if type(dropped) is int and dropped > 0:
                     self.events.publish(

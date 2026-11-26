@@ -25,9 +25,7 @@ packages = [
     "graphimo",
     "graphimo.artifacts",
     "graphimo.service",
-    "graphimo_core",
 ]
-package-dir = { graphimo_core = "core/graphimo_core" }
 
 [tool.setuptools.package-data]
 graphimo = ["workbench/*"]

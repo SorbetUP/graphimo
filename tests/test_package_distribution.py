@@ -35,7 +35,7 @@ def _copy_project(destination: Path) -> None:
             shutil.copy2(source, target)
 
 
-def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> None:
+def test_python_wheel_contains_product_packages_but_not_core_prototype(tmp_path: Path) -> None:
     project = tmp_path / "graphimo"
     project.mkdir()
     _copy_project(project)
@@ -84,14 +84,13 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "graphimo/workbench/index.html" in names
     assert "graphimo/workbench/workbench.js" in names
     assert "graphimo/workbench/workbench.css" in names
-    assert "graphimo_core/artifacts.py" in names
-    assert "graphimo_core/worker.py" in names
     for excluded in (
         "plugin/",
         "components/",
         "examples/",
         "tests/",
         "core/",
+        "graphimo_core/",
         "graphimo_pytorch/",
     ):
         assert not any(name.startswith(excluded) for name in names), excluded
@@ -123,7 +122,7 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
         [
             sys.executable,
             "-c",
-            "import sys; from importlib.resources import files; from graphimo import GraphimoApplication, MetaBlockAddonManager, artifacts, run_group; from graphimo.client import GraphimoClient; from graphimo_core import LocalArtifactStore, WorkspaceGraph; assets=files('graphimo').joinpath('workbench'); assert all(assets.joinpath(name).is_file() for name in ('index.html','workbench.js','workbench.css')); assert callable(artifacts.put) and callable(run_group) and GraphimoClient and not any(name in sys.modules for name in ('torch','torchlens','marimo')); print('import-ok')",
+            "import sys; from importlib.resources import files; from graphimo import GraphimoApplication, MetaBlockAddonManager, artifacts, run_group; from graphimo.client import GraphimoClient; assets=files('graphimo').joinpath('workbench'); assert all(assets.joinpath(name).is_file() for name in ('index.html','workbench.js','workbench.css')); assert callable(artifacts.put) and callable(run_group) and GraphimoClient and not any(name in sys.modules for name in ('torch','torchlens','marimo','graphimo_core')); print('import-ok')",
         ],
         cwd=tmp_path,
         env=env,

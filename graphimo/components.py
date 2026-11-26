@@ -6,6 +6,7 @@ import ast
 import hashlib
 import json
 import keyword
+import math
 import os
 import re
 import shutil
@@ -312,20 +313,35 @@ class ComponentLibrary:
             try:
                 source = target.read_text(encoding="utf-8")
                 tree = ast.parse(source, filename=str(relative))
+                aliases, qualified_aliases = _node_import_aliases(tree)
                 nodes = [
                     item.name
                     for item in tree.body
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and not item.name.startswith("_")
-                    and any(_is_node_decorator(decorator) for decorator in item.decorator_list)
+                    and any(
+                        _is_node_decorator(decorator, aliases, qualified_aliases)
+                        for decorator in item.decorator_list
+                    )
                 ]
                 if nodes:
                     raw = source.encode("utf-8")
+                    callable_items = [
+                        _static_callable(source, item)
+                        for item in tree.body
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name in nodes
+                    ]
                     items.append(
                         {
                             "path": relative.as_posix(),
+                            "id": relative.as_posix(),
+                            "category": list(relative.parts[:-1]),
+                            "kind": "file",
                             "nodes": nodes,
+                            "callables": callable_items,
                             "sha256": hashlib.sha256(raw).hexdigest(),
+                            "source_sha256": hashlib.sha256(raw).hexdigest(),
                         }
                     )
             except (OSError, UnicodeDecodeError, SyntaxError) as exc:
@@ -381,9 +397,12 @@ class ComponentLibrary:
         except UnicodeDecodeError:
             return _invalid("component source must be UTF-8")
         try:
-            ast.parse(source, filename=relative_path)
+            tree = ast.parse(source, filename=relative_path)
         except SyntaxError as exc:
             return _invalid(f"Python syntax error at line {exc.lineno}: {exc.msg}")
+        policy_error = _validate_component_module(tree)
+        if policy_error:
+            return _invalid(policy_error, code="component_top_level_execution")
 
         ruff = shutil.which("ruff")
         if ruff:
@@ -493,9 +512,278 @@ def _invalid(
     }
 
 
-def _is_node_decorator(value: ast.expr) -> bool:
-    if isinstance(value, ast.Call):
-        value = value.func
+def _node_import_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
+    names = {"node"}
+    modules = {"graphimo"}
+    for item in tree.body:
+        if isinstance(item, ast.ImportFrom) and item.module == "graphimo":
+            for alias in item.names:
+                if alias.name == "node":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(item, ast.Import):
+            for alias in item.names:
+                if alias.name == "graphimo":
+                    modules.add(alias.asname or alias.name)
+    return names, modules
+
+
+def _is_node_decorator(
+    value: ast.expr, aliases: set[str] | None = None, module_aliases: set[str] | None = None
+) -> bool:
+    aliases = aliases or {"node"}
+    module_aliases = module_aliases or {"graphimo"}
     if isinstance(value, ast.Name):
-        return value.id == "node"
-    return isinstance(value, ast.Attribute) and value.attr == "node"
+        return value.id in aliases
+    return (
+        isinstance(value, ast.Attribute)
+        and value.attr == "node"
+        and isinstance(value.value, ast.Name)
+        and value.value.id in module_aliases
+    )
+
+
+def _safe_annotation_expression(value: ast.expr) -> bool:
+    if isinstance(value, ast.Name):
+        return True
+    if isinstance(value, ast.Constant):
+        return value.value is None or type(value.value) in (bool, int, float, str)
+    if isinstance(value, ast.Attribute):
+        return _safe_annotation_expression(value.value)
+    if isinstance(value, ast.Subscript):
+        return _safe_annotation_expression(value.value) and _safe_annotation_expression(value.slice)
+    if isinstance(value, (ast.Tuple, ast.List)):
+        return all(_safe_annotation_expression(item) for item in value.elts)
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.BitOr):
+        return _safe_annotation_expression(value.left) and _safe_annotation_expression(value.right)
+    return False
+
+
+def _literal_default(value: ast.expr) -> tuple[bool, Any]:
+    try:
+        result = ast.literal_eval(value)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False, None
+    if isinstance(result, float) and not math.isfinite(result):
+        return False, None
+    return True, result
+
+
+def _validate_component_module(tree: ast.Module) -> str | None:
+    aliases, modules = _node_import_aliases(tree)
+    for index, item in enumerate(tree.body):
+        if isinstance(item, (ast.Import, ast.ImportFrom)):
+            continue
+        if (
+            isinstance(item, ast.Expr)
+            and index == 0
+            and isinstance(item.value, ast.Constant)
+            and isinstance(item.value.value, str)
+        ):
+            continue
+        if isinstance(item, (ast.Assign, ast.AnnAssign)):
+            value = item.value
+            if value is None:
+                continue
+            try:
+                ast.literal_eval(value)
+            except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+                return "module-level assignments must use literal constants; executable expressions are not allowed"
+            continue
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            is_node = any(
+                _is_node_decorator(decorator, aliases, modules) for decorator in item.decorator_list
+            )
+            if any(
+                isinstance(decorator, ast.Call)
+                or not _is_node_decorator(decorator, aliases, modules)
+                for decorator in item.decorator_list
+            ):
+                return f"function '{item.name}' uses an executable decorator; only bare @node is allowed"
+            if item.args.vararg or item.args.kwarg:
+                return (
+                    f"function '{item.name}' cannot use *args or **kwargs as a Graphimo component"
+                )
+            for default in [
+                *item.args.defaults,
+                *[value for value in item.args.kw_defaults if value is not None],
+            ]:
+                safe, _ = _literal_default(default)
+                if not safe:
+                    return f"function '{item.name}' defaults must be literal values"
+            annotations = [
+                arg.annotation
+                for arg in [*item.args.posonlyargs, *item.args.args, *item.args.kwonlyargs]
+                if arg.annotation is not None
+            ]
+            if item.returns is not None:
+                annotations.append(item.returns)
+            if any(not _safe_annotation_expression(annotation) for annotation in annotations):
+                return f"function '{item.name}' uses an executable annotation expression"
+            if is_node and not item.name.startswith("_"):
+                continue
+            continue
+        return (
+            f"module-level {type(item).__name__} statements are not allowed in a Graphimo component"
+        )
+    return None
+
+
+def _static_callable(
+    source: str, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> dict[str, Any]:
+    positional = [*function.args.posonlyargs, *function.args.args]
+    defaults = [None] * (len(positional) - len(function.args.defaults)) + list(
+        function.args.defaults
+    )
+    parameters: list[dict[str, Any]] = []
+    for arg, default in zip(positional, defaults, strict=True):
+        has_default = default is not None
+        parameter: dict[str, Any] = {
+            "name": arg.arg,
+            "required": not has_default,
+            "positional": arg not in function.args.posonlyargs,
+            "has_default": has_default,
+        }
+        if arg.annotation is not None:
+            parameter["annotation"] = ast.unparse(arg.annotation)
+        if has_default:
+            safe, value = _literal_default(default)
+            if safe and (value is None or type(value) in (bool, int, float, str)):
+                parameter["default"] = value
+        parameters.append(parameter)
+    for arg, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True):
+        has_default = default is not None
+        parameter = {
+            "name": arg.arg,
+            "required": not has_default,
+            "positional": False,
+            "has_default": has_default,
+        }
+        if arg.annotation is not None:
+            parameter["annotation"] = ast.unparse(arg.annotation)
+        if has_default:
+            safe, value = _literal_default(default)
+            if safe and (value is None or type(value) in (bool, int, float, str)):
+                parameter["default"] = value
+        parameters.append(parameter)
+
+    class ReturnCollector(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.values: list[ast.expr | None] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function:
+                for statement in node.body:
+                    self.visit(statement)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Return(self, node: ast.Return) -> None:
+            self.values.append(node.value)
+
+    returns = ReturnCollector()
+    returns.visit(function)
+    rows: list[tuple[ast.expr, ...]] = []
+    for value in returns.values:
+        if value is None or isinstance(value, ast.Constant) and value.value is None:
+            rows.append(())
+        elif isinstance(value, ast.Tuple):
+            rows.append(tuple(value.elts))
+        else:
+            rows.append((value,))
+    arities = {len(row) for row in rows}
+    outputs: list[dict[str, Any]] = []
+    diagnostic = None
+    if len(arities) > 1:
+        diagnostic = "node_output_arity_inconsistent"
+    elif arities and next(iter(arities)):
+        arity = next(iter(arities))
+        annotation = function.returns
+        tuple_types = None
+        if isinstance(annotation, ast.Subscript):
+            target = annotation.value
+            if (isinstance(target, ast.Name) and target.id in {"tuple", "Tuple"}) or (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "typing"
+                and target.attr == "Tuple"
+            ):
+                tuple_types = (
+                    annotation.slice.elts
+                    if isinstance(annotation.slice, ast.Tuple)
+                    else [annotation.slice]
+                )
+        if tuple_types is not None and len(tuple_types) != arity:
+            diagnostic = "node_return_annotation_arity_mismatch"
+        for index in range(arity):
+            expressions = list(
+                dict.fromkeys(
+                    ast.get_source_segment(source, row[index]) or ast.unparse(row[index])
+                    for row in rows
+                )
+            )
+            declared = (
+                ast.unparse(tuple_types[index])
+                if tuple_types is not None and len(tuple_types) == arity
+                else ast.unparse(annotation)
+                if annotation is not None
+                else None
+            )
+            outputs.append(
+                {
+                    "index": index + 1,
+                    "name": f"output_{index + 1}",
+                    "declared_type": declared,
+                    "annotation": declared,
+                    "expressions": expressions,
+                    **({"expression": expressions[0]} if len(expressions) == 1 else {}),
+                }
+            )
+    doc = ast.get_docstring(function) or ""
+    positional_defaults = {
+        arg.arg: default
+        for arg, default in zip(positional, defaults, strict=True)
+        if default is not None
+    }
+    signature_parts = []
+    for index, arg in enumerate(positional):
+        part = arg.arg
+        if arg.annotation is not None:
+            part += ": " + ast.unparse(arg.annotation)
+        if arg.arg in positional_defaults:
+            part += " = " + ast.unparse(positional_defaults[arg.arg])
+        signature_parts.append(part)
+        if arg in function.args.posonlyargs and (index + 1 == len(function.args.posonlyargs)):
+            signature_parts.append("/")
+    if function.args.kwonlyargs:
+        signature_parts.append("*")
+        for arg, default in zip(function.args.kwonlyargs, function.args.kw_defaults, strict=True):
+            part = arg.arg
+            if arg.annotation is not None:
+                part += ": " + ast.unparse(arg.annotation)
+            if default is not None:
+                part += " = " + ast.unparse(default)
+            signature_parts.append(part)
+    signature = f"{function.name}({', '.join(signature_parts)})"
+    if function.returns is not None:
+        signature += " -> " + ast.unparse(function.returns)
+    return {
+        "name": function.name,
+        "signature": signature,
+        "description": doc.splitlines()[0] if doc else "",
+        "parameters": parameters,
+        "base_block": {
+            "inputs": parameters,
+            "outputs": outputs,
+            "output_mode": "tuple"
+            if outputs and len(outputs) > 1
+            else "single"
+            if outputs
+            else "empty",
+        },
+        "outputs": outputs,
+        "diagnostic": diagnostic,
+    }

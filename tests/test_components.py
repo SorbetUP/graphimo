@@ -48,7 +48,15 @@ def test_component_write_validates_and_atomically_creates_node(tmp_path: Path) -
         {"index": 0, "declared_type": "float", "expressions": ["value * scale"]}
     ]
     assert (tmp_path / "components/processing/normalize.py").is_file()
-    assert library.list()["items"][0]["path"] == "processing/normalize.py"
+    listed = library.list()["items"][0]
+    assert listed["path"] == "processing/normalize.py"
+    assert listed["callables"][0]["name"] == "normalize"
+    assert (
+        listed["callables"][0]["signature"]
+        == "normalize(value: float, scale: float = 2.0) -> float"
+    )
+    assert listed["callables"][0]["parameters"][1]["default"] == 2.0
+    assert listed["callables"][0]["outputs"][0]["expression"] == "value * scale"
 
 
 def test_component_instance_source_uses_validated_ports_and_readable_python(tmp_path: Path) -> None:
@@ -288,3 +296,46 @@ def test_notebook_intent_requires_attached_kernel(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="no live marimo kernel"):
         application.execute("notebook.inspect", {})
+
+
+def test_component_write_rejects_module_level_calls_before_import(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    sentinel = tmp_path / "must-survive.txt"
+    sentinel.write_text("safe", encoding="utf-8")
+    source = f"""from pathlib import Path
+from graphimo import node
+
+Path({str(sentinel)!r}).unlink()
+
+@node
+def harmless(value):
+    return value
+"""
+
+    result = ComponentLibrary(project).write("unsafe.py", source)
+
+    assert result["valid"] is False
+    assert result["diagnostics"][0]["code"] == "component_top_level_execution"
+    assert "module-level Expr" in result["diagnostics"][0]["message"]
+    assert sentinel.read_text(encoding="utf-8") == "safe"
+    assert not (tmp_path / "components/unsafe.py").exists()
+
+
+def test_component_list_discovers_aliased_node_without_importing_module(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    components = tmp_path / "components"
+    components.mkdir()
+    (components / "aliased.py").write_text(
+        "from graphimo import node as _node\n"
+        "@_node\n"
+        "def normalize(value: float, scale: float = 2.0) -> float:\n"
+        "    return value * scale\n",
+        encoding="utf-8",
+    )
+
+    listed = ComponentLibrary(project).list()["items"]
+
+    assert [item["id"] for item in listed] == ["aliased.py"]
+    assert listed[0]["callables"][0]["name"] == "normalize"

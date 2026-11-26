@@ -7,8 +7,8 @@ from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 
-from graphimo_core.artifacts import ArtifactRef as _StoredArtifactRef
-from graphimo_core.artifacts import LocalArtifactStore
+from .store import ArtifactRef as _StoredArtifactRef
+from .store import LocalArtifactStore
 
 from .types import ArtifactRef
 
