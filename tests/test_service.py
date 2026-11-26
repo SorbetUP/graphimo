@@ -17,7 +17,7 @@ import pytest
 
 from graphimo.client import GraphimoClient, GraphimoServiceError
 from graphimo.service.events import EventJournal
-from graphimo.service.protocol import execute_batch, parse_json_object
+from graphimo.service.protocol import MAX_REQUEST_BYTES, execute_batch, parse_json_object
 from graphimo.service.server import GraphimoService
 
 
@@ -146,7 +146,7 @@ def test_service_rejects_oversized_request_before_reading_body(tmp_path: Path) -
                     "POST /v1/projects/open HTTP/1.1\r\n"
                     f"Host: {host}:{port}\r\n"
                     f"Authorization: Bearer {service.token}\r\n"
-                    "Content-Length: 262145\r\n"
+                    f"Content-Length: {MAX_REQUEST_BYTES + 1}\r\n"
                     "Connection: close\r\n\r\n"
                 ).encode("ascii")
             )
@@ -231,6 +231,44 @@ def test_stdio_adapter_invokes_the_same_application_api(tmp_path: Path) -> None:
         assert response["ok"] is True
         assert response["result"]["scope"]["kind"] == "project"
     finally:
+        service.close()
+
+
+def test_service_batch_writes_then_validates_a_reusable_component(tmp_path: Path) -> None:
+    project_path = tmp_path / "research.py"
+    project_path.write_text("# service component fixture\n", encoding="utf-8")
+    service = GraphimoService(manifest_path=tmp_path / "service.json").start()
+    client = GraphimoClient(service.url, service.token)
+    project = client.open_project(project_path)
+    source = (
+        "from graphimo import node\n\n"
+        "@node\n"
+        "def normalize(value: float) -> float:\n"
+        "    return value / 2\n"
+    )
+    try:
+        result = project.batch(
+            [
+                {
+                    "id": "write",
+                    "action": "component.write",
+                    "args": {"path": "normalize.py", "source": source},
+                },
+                {
+                    "id": "validate",
+                    "action": "component.validate",
+                    "args": {"path": {"$ref": "write.result.path"}},
+                },
+            ]
+        )
+
+        assert result["completed"] is True
+        assert [step["status"] for step in result["operations"]] == ["ok", "ok"]
+        assert result["operations"][0]["result"]["valid"] is True
+        assert result["operations"][1]["result"]["valid"] is True
+        assert (tmp_path / "components/normalize.py").is_file()
+    finally:
+        project.close()
         service.close()
 
 

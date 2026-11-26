@@ -129,7 +129,7 @@ journal.
 
 - Listen and client connections are loopback-only.
 - Each request needs the owner-only manifest's random bearer token.
-- Request JSON is limited to 256 KiB and duplicate object keys are rejected.
+- Request JSON is limited to 5 MiB and duplicate object keys are rejected.
 - Individual events are limited to 64 KiB; the event journal retains a bounded
   number of recent events.
 - Responses and batch journals are limited to 4 MiB.

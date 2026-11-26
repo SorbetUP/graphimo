@@ -285,9 +285,9 @@ def test_application_rejects_unknown_actions_and_oversized_arguments(tmp_path: P
 
     with pytest.raises(ValueError, match="unknown Graphimo action"):
         application.execute("metablock.magic", {})
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="4 MiB"):
         application.execute(
-            "metablock.project", {"metablock_id": "block", "padding": "x" * (256 * 1024)}
+            "metablock.project", {"metablock_id": "block", "padding": "x" * (4 * 1024 * 1024)}
         )
 
 

@@ -41,8 +41,8 @@ class GraphimoApplication:
             raise ValueError("action must be a non-empty string")
         if not isinstance(args, dict):
             raise TypeError("action args must be an object")
-        if len(json.dumps(args, allow_nan=False).encode("utf-8")) > 256 * 1024:
-            raise ValueError("action args exceed the 256 KiB limit")
+        if len(json.dumps(args, allow_nan=False).encode("utf-8")) > 4 * 1024 * 1024:
+            raise ValueError("action args exceed the 4 MiB limit")
 
         operations = {
             "metablock.list": self._list_metablocks,

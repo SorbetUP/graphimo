@@ -104,6 +104,91 @@ zeron.tool({ name = "open_code", run = function(args)
 	return { ok = true, opened = true, session_id = session, cell_id = args.cell_id }
 end })
 
+local function service_project_path(args)
+	local saved = active_notebook:get()
+	local path = if type(args) == "table" and type(args.path) == "string" and args.path ~= "" then args.path else (saved.path or "")
+	if path == "" then
+		return nil, { ok = false, error = { code = "selection_required", message = "Open a local project in Graphimo or provide its path" } }
+	end
+	return path, nil
+end
+
+zeron.tool({ name = "graphimo_inspect", run = function(args)
+	args = args or {}
+	local path, err = service_project_path(args)
+	if err then return err end
+	local saved = active_notebook:get()
+	local url = args.url or saved.url or ""
+	local session = args.session_id or saved.session_id or ""
+	local request = start_tool(function()
+		return Service.batch(zeron, path, {
+			{ id = "scope", action = "scope.current", args = {} },
+			{ id = "groups", action = "group.list", args = {} },
+			{ id = "components", action = "component.list", args = {} },
+			{ id = "metablocks", action = "metablock.list", args = {} },
+		})
+	end)
+	if type(request) ~= "table" or type(request.after) ~= "function" then return request end
+	return request:after(function(batch)
+		local result = { project_path = path, graphimo = batch }
+		if url == "" or session == "" then return result end
+		return Bridge.inspect(zeron, url, "", session):after(function(notebook)
+			if type(notebook) == "table" and notebook.ok == false then return notebook end
+			result.notebook = notebook
+			return result
+		end)
+	end)
+end })
+
+zeron.tool({ name = "graphimo_execute", run = function(args)
+	local path, err = service_project_path(args or {})
+	if err then return err end
+	return start_tool(function()
+		return Service.execute(zeron, path, args.action, args.args or {})
+	end)
+end })
+
+zeron.tool({ name = "graphimo_execute_batch", run = function(args)
+	local path, err = service_project_path(args or {})
+	if err then return err end
+	return start_tool(function()
+		return Service.batch(zeron, path, args.operations, args.continue_on_error == true)
+	end)
+end })
+
+zeron.tool({ name = "graphimo_component_write", run = function(args)
+	local path, err = service_project_path(args or {})
+	if err then return err end
+	return start_tool(function()
+		return Service.execute(zeron, path, "component.write", {
+			path = args.component_path,
+			source = args.source,
+		})
+	end)
+end })
+
+zeron.tool({ name = "graphimo_validate", run = function(args)
+	local path, err = service_project_path(args or {})
+	if err then return err end
+	return start_tool(function()
+		return Service.execute(zeron, path, "component.validate", { path = args.component_path })
+	end)
+end })
+
+zeron.tool({ name = "graphimo_events", run = function(args)
+	local path, err = service_project_path(args or {})
+	if err then return err end
+	return start_tool(function()
+		return Service.events(
+			zeron,
+			path,
+			args.cursor or "0",
+			args.limit or 128,
+			args.wait_ms or 750
+		)
+	end)
+end })
+
 local Page = ui.component(function()
 	local saved = active_notebook:peek()
 	local url = ui.use_state(saved.url or "")

@@ -262,6 +262,23 @@ Le manifeste Graphimo déclare `pages.add`, `tools`, `commands`, `links.open`, `
 | `run` | `cell_id` | Demande au serveur marimo d’exécuter la cellule. |
 | `open_code` | `cell_id` | Ouvre l’éditeur marimo. |
 
+Les outils `graphimo_*` routent les opérations de l’architecture Core par le
+service local authentifié :
+
+| Outil | Contrat |
+| --- | --- |
+| `graphimo_inspect` | Lit le scope, les Groups, les composants, les MetaBlocks et, si une session est active, le snapshot marimo. |
+| `graphimo_execute` | Exécute une action de `GraphimoApplication` avec ses arguments JSON. |
+| `graphimo_execute_batch` | Exécute jusqu’à 128 actions ordonnées avec références de résultats et journal par étape. |
+| `graphimo_component_write` | Crée ou met à jour un fichier Python `@node` avec validation et remplacement atomique. |
+| `graphimo_validate` | Valide un composant existant et retourne ses ports/diagnostics. |
+| `graphimo_events` | Lit les événements bornés du service après un curseur. |
+
+Ces outils ne disposent pas d’un chemin de mutation séparé : les actions
+Graphimo passent par les mêmes méthodes d’application/service que la nouvelle
+interface. Les outils marimo historiques restent présents pendant la migration
+des opérations ordinaires vers le service.
+
 Les fonctions exportées en interne par `plugin/marimo_bridge.luau` incluent `sessions`, `open_notebook`, `inspect`, `list_components`, `list_components_for_active`, `component_source`, `refresh_component_hashes`, `add_component`, `add_cell`, `run`, `delete`, `connect`, et les helpers de lecture/écriture des logs. Elles ne sont pas toutes exposées comme outils agents.
 
 `plugin/layout.luau` fournit `Layout.load`/`Layout.save` pour `.graphimo.json`, limité aux métadonnées d’affichage. L’UI `plugin/init.luau` utilise les sélecteurs de fichiers Zeron, `zeron.store`, les commandes locales et `zeron.open_url`.

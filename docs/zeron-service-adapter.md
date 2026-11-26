@@ -60,3 +60,24 @@ rendered in the same canvas and use the same pan, zoom, card and edge renderer.
 The standalone Workbench remains the conformance surface for host-independent
 application behavior; browser-specific Zeron rendering still requires a live
 plugin check in Zeron.
+
+## Agent tools
+
+The manifest exposes a compact Graphimo service tool set in addition to the
+legacy marimo tools:
+
+| Tool | Service operation |
+| --- | --- |
+| `graphimo_inspect` | Batch reads the active scope, Group catalog, component catalog and MetaBlock catalog; includes the live marimo snapshot when a session is selected. |
+| `graphimo_execute` | Routes one named application action through the local service. |
+| `graphimo_execute_batch` | Routes an ordered action plan through the service batch journal, including result references. |
+| `graphimo_component_write` | Calls `component.write` to atomically validate and create/update a reusable `@node` source file. |
+| `graphimo_validate` | Calls `component.validate` and returns contract diagnostics. |
+| `graphimo_events` | Reads bounded application/addon events by cursor. |
+
+Each tool accepts an optional local notebook `path`; otherwise it uses the
+active Graphimo project. The source-writing tool accepts at most 2 MiB of
+source, while the service request limit is 5 MiB to allow JSON encoding
+overhead. See [Agent-authored components](components.md) for file validation,
+atomic replacement and recoverable delete semantics. The old marimo tools
+remain available for existing notebook workflows during the service migration.

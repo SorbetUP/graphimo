@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 PROTOCOL_VERSION = 1
-MAX_REQUEST_BYTES = 256 * 1024
+MAX_REQUEST_BYTES = 5 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_BATCH_OPERATIONS = 128
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
