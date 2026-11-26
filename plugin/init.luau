@@ -804,6 +804,42 @@ local Page = ui.component(function()
 		end)
 	end
 
+	local function format_checkpoint_migration_report(report)
+		if type(report) ~= "table" then return "Migration report unavailable" end
+		local function shape_text(shape)
+			if type(shape) ~= "table" then return "?" end
+			local dimensions = {}
+			for _, dimension in shape do table.insert(dimensions, tostring(dimension)) end
+			return "(" .. table.concat(dimensions, " x ") .. ")"
+		end
+		local sections = {}
+		local function add_names(label, values)
+			values = if type(values) == "table" then values else {}
+			local lines = { label .. " (" .. tostring(#values) .. ")" }
+			for index = 1, math.min(#values, 6) do
+				local name = tostring(values[index])
+				if #name > 140 then name = string.sub(name, 1, 137) .. "..." end
+				table.insert(lines, "  · " .. name)
+			end
+			if #values > 6 then table.insert(lines, "  · and " .. tostring(#values - 6) .. " more") end
+			table.insert(sections, table.concat(lines, "\n"))
+		end
+		add_names("Copied", report.copied)
+		add_names("Missing in checkpoint", report.missing_in_source)
+		add_names("Unused checkpoint weights", report.missing_in_target)
+		local mismatches = if type(report.shape_mismatch) == "table" then report.shape_mismatch else {}
+		local mismatch_lines = { "Shape mismatches (" .. tostring(#mismatches) .. ")" }
+		for index = 1, math.min(#mismatches, 6) do
+			local mismatch = mismatches[index]
+			local name = tostring(mismatch.name or "unknown")
+			if #name > 100 then name = string.sub(name, 1, 97) .. "..." end
+			table.insert(mismatch_lines, "  · " .. name .. " " .. shape_text(mismatch.source_shape) .. " -> " .. shape_text(mismatch.target_shape))
+		end
+		if #mismatches > 6 then table.insert(mismatch_lines, "  · and " .. tostring(#mismatches - 6) .. " more") end
+		table.insert(sections, table.concat(mismatch_lines, "\n"))
+		return table.concat(sections, "\n")
+	end
+
 	local function open_metablock_parameter_editor(target)
 		local value = target.value
 		if type(value) == "table" then
@@ -2173,10 +2209,8 @@ local Page = ui.component(function()
 						end, ui.column { w_full = true, gap = "$space.1",
 							Text { function()
 								local details = checkpoint_details:get()
-								local report = details and details.migration_preview and details.migration_preview.report or {}
-								local copied = {}
-								for _, name in report.copied or {} do table.insert(copied, tostring(name)) end
-								return "Exact matches: " .. (#copied > 0 and table.concat(copied, ", ") or "none")
+								local report = details and details.migration_preview and details.migration_preview.report or nil
+								return format_checkpoint_migration_report(report)
 							end, style = "caption", tone = "secondary", wrap = true },
 							Text { "Preview only. Use graphimo_pytorch.load_checkpoint(..., strict=False) explicitly to apply migration.", style = "caption", tone = "secondary", wrap = true },
 						}),
