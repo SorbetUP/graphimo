@@ -67,7 +67,14 @@ class GraphimoApplication:
             "component.list": self._list_components,
             "component.write": self._write_component,
             "component.validate": self._validate_component,
+            "component.instance_source": self._component_instance_source,
+            "component.add": self._add_component,
             "component.delete": self._delete_component,
+            "notebook.inspect": lambda value: self._invoke_notebook("inspect", value),
+            "notebook.add_cell": lambda value: self._invoke_notebook("add_cell", value),
+            "notebook.connect": lambda value: self._invoke_notebook("connect", value),
+            "notebook.run": lambda value: self._invoke_notebook("run", value),
+            "notebook.delete": lambda value: self._invoke_notebook("delete", value),
             "scope.enter": self._enter_group,
             "scope.leave": self._leave_scope,
             "scope.current": self._current_scope,
@@ -183,8 +190,27 @@ class GraphimoApplication:
     def _validate_component(self, args: dict[str, Any]) -> Any:
         return self.components.validate(self._required(args, "path"))
 
+    def _component_instance_source(self, args: dict[str, Any]) -> Any:
+        return self.components.instance_source(
+            self._required(args, "path"),
+            self._required(args, "callable"),
+            self._required(args, "output_name"),
+            args.get("bindings", {}),
+        )
+
+    def _add_component(self, args: dict[str, Any]) -> Any:
+        built = self._component_instance_source(args)
+        inserted = self._invoke_notebook("add_cell", {"source": built["source"]})
+        return {**built, **inserted}
+
     def _delete_component(self, args: dict[str, Any]) -> Any:
         return self.components.delete(self._required(args, "path"))
+
+    def _invoke_notebook(self, action: str, args: dict[str, Any]) -> Any:
+        invoke = self.host.invoke_notebook
+        if invoke is None:
+            raise ValueError("no live marimo kernel is attached to this project")
+        return invoke(action, args)
 
     def _enter_group(self, args: dict[str, Any]) -> Any:
         group_id = self._required(args, "container_id")

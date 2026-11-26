@@ -59,6 +59,7 @@ class ProjectSession:
             diagnose=self._emit_diagnostic,
             update_materialization_cell=self._materialization_requested,
             invoke_kernel=self._invoke_kernel,
+            invoke_notebook=self._invoke_notebook,
             read_kernel_events=self._read_kernel_events,
             current_scope=lambda: "root",
         )
@@ -235,6 +236,14 @@ class ProjectSession:
         if port is None:
             return None
         return port.invoke(metablock_id, action, args)
+
+    def _invoke_notebook(self, action: str, args: dict[str, Any]) -> Any:
+        with self._lock:
+            self._ensure_open()
+            port = self._kernel_port
+        if port is None:
+            raise ValueError("no live marimo kernel is attached to this project")
+        return port.invoke_notebook(action, args)
 
     def _read_kernel_events(
         self, metablock_id: str, cursor: str | None, limit: int

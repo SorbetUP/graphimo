@@ -55,7 +55,39 @@ project.close()
 client.close()
 ```
 
-`GraphimoProject` is a convenience handle for execute, batch, events and close.
+When a live marimo session is attached, ordinary component work can use the
+same application intents as the Zeron canvas and agent tools:
+
+```python
+project.attach_kernel(url="http://127.0.0.1:2718", token="", session_id="session-id")
+project.execute(
+    "component.write",
+    {
+        "path": "normalize.py",
+        "source": "from graphimo import node\n\n@node\ndef normalize(value: float) -> float:\n    return value / 2\n",
+    },
+)
+added = project.add_component(
+    "normalize.py",
+    "normalize",
+    output_name="normalized",
+    bindings={"value": {"variable": "data"}},
+)
+snapshot = project.inspect_notebook()
+project.run(added["cell_id"])
+```
+
+`project.connect(source_cell_id, variable, target_cell_id, input_ref)` applies
+the same conservative source validation as the canvas. `project.run(cell_id)`
+checks disabled dependencies, then asks marimo to run that cell and its normal
+reactive dependents. `notebook.add_cell` is available for explicitly supplied
+cell code; reusable components should use `component.add` or
+`GraphimoProject.add_component` so component validation and source markers are
+preserved. Notebook actions fail with `no live marimo kernel is attached` until
+the project has been attached through this method or the Zeron session flow.
+
+`GraphimoProject` is a convenience handle for execute, batch, events, ordinary
+notebook inspect/add/connect/run operations and close.
 Closing it closes the project session and releases service-owned runtime
 subscriptions when their addon supports unsubscribe. Closing a client does not
 stop the shared service. Stop the foreground service with Ctrl+C; a detached
@@ -119,10 +151,19 @@ the step reports `batch_response_too_large` and later work stops because the
 journal cannot fit in the response.
 
 Component actions include `component.list`, `component.write`,
-`component.validate` and recoverable `component.delete`. They are suitable for
-agent source authoring and use the same application layer as interactive
-clients. See [Agent-authored components](components.md) for the write and
-validation contract.
+`component.validate`, `component.instance_source`, `component.add` and
+recoverable `component.delete`. Component insertion uses the same validated
+source builder and marimo host intent from the canvas and Python client. See
+[Agent-authored components](components.md) for the write, validation and
+instance-source contract.
+
+`notebook.inspect`, `notebook.add_cell`, `notebook.connect`, `notebook.run`
+and `notebook.delete` are bounded host intents forwarded to the attached
+marimo code-mode context. They do not maintain a second graph or execution
+queue. `notebook.run` asks marimo to queue the requested cell; marimo owns the
+resulting reactive execution. `notebook.connect` accepts only the supported
+single-assignment function-call shape and checks that the selected live cells
+and ports still exist before editing.
 
 The event route accepts `project`, `cursor`, `limit` and `wait_ms` query
 parameters. It returns `cursor`, `events` and `dropped`. The cursor is an

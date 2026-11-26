@@ -39,6 +39,45 @@ def test_component_write_validates_and_atomically_creates_node(tmp_path: Path) -
     assert library.list()["items"][0]["path"] == "processing/normalize.py"
 
 
+def test_component_instance_source_uses_validated_ports_and_readable_python(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("processing/normalize.py", NODE_SOURCE)
+
+    instance = library.instance_source(
+        "processing/normalize.py",
+        "normalize",
+        "normalized",
+        {"value": {"variable": "data"}, "scale": {"literal": 2.5}},
+    )
+
+    assert instance["source_sha256"] in instance["source"]
+    assert "components.processing.normalize" in instance["source"]
+    assert "normalize(value=data, scale=__import__('json').loads('2.5'))" in instance["source"]
+    compile(instance["source"], "<component-instance>", "exec")
+
+
+@pytest.mark.parametrize(
+    "bindings, message",
+    [
+        ({}, "missing required"),
+        ({"value": {"variable": "data"}, "typo": {"variable": "scale"}}, "unknown component input"),
+        ({"value": {"variable": "bad-name"}}, "Python identifier"),
+    ],
+)
+def test_component_instance_source_rejects_invalid_bindings(
+    tmp_path: Path, bindings: dict[str, object], message: str
+) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("normalize.py", NODE_SOURCE)
+
+    with pytest.raises(ComponentError, match=message):
+        library.instance_source("normalize.py", "normalize", "result", bindings)
+
+
 def test_invalid_component_update_preserves_previous_valid_file(tmp_path: Path) -> None:
     project = tmp_path / "notebook.py"
     project.write_text("# marimo project\n", encoding="utf-8")
@@ -75,6 +114,13 @@ def test_component_packages_can_export_nodes_from_init_file(tmp_path: Path) -> N
     assert created["valid"] is True
     assert created["nodes"][0]["name"] == "normalize"
     assert library.list()["items"][0]["path"] == "math_nodes/__init__.py"
+    instance = library.instance_source(
+        "math_nodes/__init__.py",
+        "normalize",
+        "normalized",
+        {"value": {"variable": "data"}},
+    )
+    assert "import_module('components.math_nodes')" in instance["source"]
 
 
 def test_component_paths_cannot_escape_or_follow_symlinks(tmp_path: Path) -> None:
@@ -124,3 +170,57 @@ def test_graphimo_application_routes_component_operations(tmp_path: Path) -> Non
     assert validated["valid"] is True
     assert catalog["items"][0]["nodes"] == ["normalize"]
     assert application.execute("component.delete", {"path": "normalize.py"})["deleted"] is True
+
+
+def test_application_routes_live_notebook_intents_to_host(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    calls: list[tuple[str, dict[str, object]]] = []
+    host = GraphimoHostAPI(
+        "project",
+        project,
+        invoke_notebook=lambda action, args: calls.append((action, args)) or {"ok": True},
+    )
+    application = GraphimoApplication(host)
+
+    assert application.execute("notebook.run", {"cell_id": "cell-1"}) == {"ok": True}
+    assert calls == [("run", {"cell_id": "cell-1"})]
+
+
+def test_application_add_component_uses_the_attached_marimo_host(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("normalize.py", NODE_SOURCE)
+    inserted: list[dict[str, object]] = []
+    host = GraphimoHostAPI(
+        "project",
+        project,
+        invoke_notebook=lambda action, args: inserted.append({"action": action, **args})
+        or {"cell_id": "cell-new"},
+    )
+    application = GraphimoApplication(host)
+
+    result = application.execute(
+        "component.add",
+        {
+            "path": "normalize.py",
+            "callable": "normalize",
+            "output_name": "normalized",
+            "bindings": {"value": {"variable": "data"}},
+        },
+    )
+
+    assert result["cell_id"] == "cell-new"
+    assert "normalize(value=data)" in result["source"]
+    assert inserted[0]["action"] == "add_cell"
+    assert inserted[0]["source"] == result["source"]
+
+
+def test_notebook_intent_requires_attached_kernel(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    application = GraphimoApplication(GraphimoHostAPI("project", project))
+
+    with pytest.raises(ValueError, match="no live marimo kernel"):
+        application.execute("notebook.inspect", {})

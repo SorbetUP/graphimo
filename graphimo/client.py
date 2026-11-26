@@ -264,6 +264,51 @@ class GraphimoProject:
     def attach_kernel(self, *, url: str, token: str, session_id: str) -> dict[str, Any]:
         return self.client.attach_kernel(self, url=url, token=token, session_id=session_id)
 
+    def inspect_notebook(self) -> dict[str, Any]:
+        """Read bounded cells, definitions, references and edges from live marimo."""
+        return self.execute("notebook.inspect")
+
+    def add_component(
+        self,
+        path: str,
+        callable_name: str,
+        *,
+        output_name: str,
+        bindings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Validate, generate and insert one reusable ``@node`` component call."""
+        return self.execute(
+            "component.add",
+            {
+                "path": path,
+                "callable": callable_name,
+                "output_name": output_name,
+                "bindings": bindings or {},
+            },
+        )
+
+    def connect(
+        self,
+        source_cell_id: str,
+        variable: str,
+        target_cell_id: str,
+        input_ref: str,
+    ) -> dict[str, Any]:
+        """Connect a live marimo definition to one unambiguous call argument."""
+        return self.execute(
+            "notebook.connect",
+            {
+                "from_cell_id": source_cell_id,
+                "variable": variable,
+                "to_cell_id": target_cell_id,
+                "input_ref": input_ref,
+            },
+        )
+
+    def run(self, cell_id: str) -> dict[str, Any]:
+        """Ask marimo to run one cell after Graphimo's disabled-dependency check."""
+        return self.execute("notebook.run", {"cell_id": cell_id})
+
     def close(self) -> bool:
         if self._closed:
             return False

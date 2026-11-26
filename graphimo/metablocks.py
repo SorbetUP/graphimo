@@ -111,6 +111,7 @@ class GraphimoHostAPI:
     diagnose: Callable[[dict[str, Any]], None] = lambda _diagnostic: None
     update_materialization_cell: Callable[[dict[str, Any]], Any] = lambda _spec: None
     invoke_kernel: Callable[[str, str, dict[str, Any]], Any] | None = None
+    invoke_notebook: Callable[[str, dict[str, Any]], Any] | None = None
     read_kernel_events: Callable[[str, str | None, int], dict[str, Any]] | None = None
     current_scope: Callable[[], str] = lambda: "root"
     current_metablock_id: str | None = None

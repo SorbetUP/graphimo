@@ -104,11 +104,14 @@ operation.
 ## Runtime ownership
 
 Marimo remains the owner of ordinary Python cells, dependency analysis,
-reactive execution and cell output. The current Zeron adapter still uses the
-marimo bridge for opening notebooks, inspecting ordinary cells, inserting
-ordinary components, connecting ordinary cell source, running cells and
-deleting cells. Those operations are not reimplemented by the service because
-the Core application does not schedule or replace a live marimo session.
+reactive execution and cell output. The canvas and agent operations for
+component insertion, connections and single-cell runs use
+`component.add`, `notebook.connect` and `notebook.run` through the Graphimo
+application/service. The service forwards these bounded named intents to the
+attached marimo kernel; it does not schedule or replace a live marimo session.
+The private bridge remains responsible for session discovery, rich live-cell
+projection, opening the editor, undo/history restoration and other raw
+marimo-specific operations that have no Core semantic intent yet.
 
 The service adapter does not create a second canvas. PyTorch MetaBlocks are
 rendered in the same canvas and use the same pan, zoom, card and edge renderer.
@@ -154,8 +157,8 @@ already gone.
 
 ## Agent tools
 
-The manifest exposes a compact Graphimo service tool set in addition to the
-legacy marimo tools:
+The manifest exposes a compact Graphimo service tool set and retains the
+original short tool names as aliases for common notebook operations:
 
 | Tool | Service operation |
 | --- | --- |
@@ -169,8 +172,12 @@ legacy marimo tools:
 
 `graphimo_inspect` includes the current Control Block catalog. Agents can call
 `graphimo_execute` with `control.create` to obtain the same validated source
-bundle as the UI. The UI inserts that source through the live marimo bridge;
-the application itself does not schedule notebook execution.
+bundle as the UI. `graphimo_inspect` also attaches the selected local marimo
+kernel to the service for subsequent `notebook.*` actions and configures the
+kernel event publisher. The short `add_component`, `connect` and `run` tools
+delegate to the same `component.add`, `notebook.connect` and `notebook.run`
+application actions used by the canvas. Marimo still owns and performs the
+cell edits and reactive execution.
 Agents can call `graphimo_group_from_selection` with an explicit selection,
 name and Python module identifier to use the same Group inference and safe
 replacement flow as the canvas context menu.

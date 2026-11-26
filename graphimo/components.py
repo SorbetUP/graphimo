@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import keyword
 import os
 import re
 import shutil
@@ -125,6 +126,98 @@ class ComponentLibrary:
         if not target.is_file():
             raise FileNotFoundError(f"component '{path}' does not exist")
         return self._validate_file(target, path)
+
+    def instance_source(
+        self,
+        path: str,
+        callable_name: str,
+        output_name: str,
+        bindings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build one readable component-call cell after checking its ``@node`` contract."""
+        target = self._target(path)
+        validation = self.validate(path)
+        if not validation.get("valid"):
+            raise ComponentError("component must pass validation before creating an instance")
+        if (
+            not isinstance(callable_name, str)
+            or not callable_name.isidentifier()
+            or keyword.iskeyword(callable_name)
+        ):
+            raise ComponentError("callable must be a Python identifier")
+        if (
+            not isinstance(output_name, str)
+            or not output_name.isidentifier()
+            or keyword.iskeyword(output_name)
+        ):
+            raise ComponentError("output_name must be a Python identifier")
+        if not isinstance(bindings, dict):
+            raise ComponentError("bindings must be an object")
+        node = next((item for item in validation["nodes"] if item["name"] == callable_name), None)
+        if node is None:
+            raise ComponentError(f"component does not export Graphimo node {callable_name!r}")
+        inputs = node["inputs"]
+        input_names = [item["name"] for item in inputs]
+        unknown = set(bindings) - set(input_names)
+        if unknown:
+            raise ComponentError(f"unknown component input(s): {', '.join(sorted(unknown))}")
+        missing = [
+            item["name"] for item in inputs if item["required"] and item["name"] not in bindings
+        ]
+        if missing:
+            raise ComponentError(f"missing required component input(s): {', '.join(missing)}")
+
+        rendered: list[str] = []
+        for name in input_names:
+            if name not in bindings:
+                continue
+            value = bindings[name]
+            if not isinstance(value, dict) or set(value) not in ({"variable"}, {"literal"}):
+                raise ComponentError(f"input {name!r} needs exactly one variable or literal")
+            if "variable" in value:
+                variable = value["variable"]
+                if (
+                    not isinstance(variable, str)
+                    or not variable.isidentifier()
+                    or keyword.iskeyword(variable)
+                ):
+                    raise ComponentError(f"input {name!r} variable must be a Python identifier")
+                rendered.append(f"{name}={variable}")
+            else:
+                literal = json.dumps(value["literal"], ensure_ascii=False, allow_nan=False)
+                if len(literal.encode("utf-8")) > 16 * 1024:
+                    raise ComponentError(f"input {name!r} literal exceeds 16 KiB")
+                rendered.append(f"{name}=__import__('json').loads({literal!r})")
+
+        relative = Path(path)
+        module_path = (
+            relative.parent if relative.name == "__init__.py" else relative.with_suffix("")
+        )
+        module_rel = module_path.as_posix().replace("/", ".")
+        module_name = "components" if module_rel in {"", "."} else f"components.{module_rel}"
+        digest_builder = hashlib.sha256()
+        if relative.name == "__init__.py":
+            package_root = target.parent
+            source_files = sorted(package_root.rglob("*.py"))
+            for source_file in source_files:
+                relative_source = source_file.relative_to(package_root).as_posix()
+                digest_builder.update(relative_source.encode("utf-8"))
+                digest_builder.update(source_file.read_bytes())
+        else:
+            digest_builder.update(target.read_bytes())
+        digest = digest_builder.hexdigest()
+        called = (
+            f"__import__('importlib').reload("
+            f"__import__('importlib').import_module({module_name!r})).{callable_name}"
+        )
+        source = (
+            f"# Graphimo component: {path}\n"
+            f"# Graphimo source sha256: {digest}\n"
+            f"# Graphimo callable: {callable_name}\n"
+            f"{output_name} = {called}({', '.join(rendered)})\n"
+        )
+        compile(source, "<graphimo-component-instance>", "exec")
+        return {"source": source, "source_sha256": digest, "output_name": output_name}
 
     def list(self) -> dict[str, Any]:
         """List Python files with public ``@node`` declarations without importing them."""

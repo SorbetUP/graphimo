@@ -24,6 +24,11 @@ local function config_for(args)
 	return args.url or saved.url or "", "", args.session_id or saved.session_id or ""
 end
 
+local function project_path_for(args)
+	local saved = active_notebook:get()
+	return if type(args) == "table" and type(args.path) == "string" and args.path ~= "" then args.path else (saved.root_path or saved.path or "")
+end
+
 local function tool_result(promise)
 	if promise == nil then
 		return { ok = false, error = { code = "command_unavailable", message = "Zeron did not start the request. Check that Graphimo is allowed to run curl and python3 in Settings → Plugins." } }
@@ -94,21 +99,25 @@ zeron.tool({ name = "list_components", run = function(args)
 end })
 
 zeron.tool({ name = "add_component", run = function(args)
-	local url, token, session = config_for(args or {})
-	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
-	return start_tool(function() return Bridge.add_component(zeron, url, token, session, args.component_id, args.callable, args.output_name, args.bindings) end)
+	local path = project_path_for(args or {})
+	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
+	return start_tool(function() return Service.execute(zeron, path, "component.add", {
+		path = args.component_id, callable = args.callable, output_name = args.output_name, bindings = args.bindings or {},
+	}) end)
 end })
 
 zeron.tool({ name = "connect", run = function(args)
-	local url, token, session = config_for(args or {})
-	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
-	return start_tool(function() return Bridge.connect(zeron, url, token, session, args.from_cell_id, args.variable, args.to_cell_id, args.input_ref) end)
+	local path = project_path_for(args or {})
+	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
+	return start_tool(function() return Service.execute(zeron, path, "notebook.connect", {
+		from_cell_id = args.from_cell_id, variable = args.variable, to_cell_id = args.to_cell_id, input_ref = args.input_ref,
+	}) end)
 end })
 
 zeron.tool({ name = "run", run = function(args)
-	local url, token, session = config_for(args or {})
-	if not session then return { ok = false, error = { code = "selection_required", message = "Select a live marimo notebook in Graphimo first" } } end
-	return start_tool(function() return Bridge.run(zeron, url, token, session, args.cell_id) end)
+	local path = project_path_for(args or {})
+	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
+	return start_tool(function() return Service.execute(zeron, path, "notebook.run", { cell_id = args.cell_id }) end)
 end })
 
 zeron.tool({ name = "open_code", run = function(args)
@@ -120,8 +129,7 @@ zeron.tool({ name = "open_code", run = function(args)
 end })
 
 local function service_project_path(args)
-	local saved = active_notebook:get()
-	local path = if type(args) == "table" and type(args.path) == "string" and args.path ~= "" then args.path else (saved.root_path or saved.path or "")
+	local path = project_path_for(args)
 	if path == "" then
 		return nil, { ok = false, error = { code = "selection_required", message = "Open a local project in Graphimo or provide its path" } }
 	end
@@ -151,7 +159,12 @@ zeron.tool({ name = "graphimo_inspect", run = function(args)
 		return Bridge.inspect(zeron, url, "", session):after(function(notebook)
 			if type(notebook) == "table" and notebook.ok == false then return notebook end
 			result.notebook = notebook
-			return result
+			if not is_local_url(url) then return result end
+			return Service.telemetry_config(zeron, path, url, "", session):after(function(config)
+				return Bridge.configure_telemetry(zeron, url, "", session, config):after(function()
+					return result
+				end)
+			end)
 		end)
 	end)
 end })
@@ -1704,7 +1717,10 @@ local Page = ui.component(function()
 							})
 						else
 							observe("Connect " .. drag.variable .. " to " .. ref, function()
-								return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
+								local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+								return Service.execute(zeron, project_path, "notebook.connect", {
+									from_cell_id = drag.cell_id, variable = drag.variable, to_cell_id = cell.id, input_ref = ref,
+								})
 							end, function(value)
 								if type(cell.source) == "string" and type(value.source) == "string" and cell.source ~= value.source then
 									push_history({ kind = "edit", cell_id = cell.id, before = cell.source, after = value.source })
@@ -1851,7 +1867,8 @@ local Page = ui.component(function()
 		if not cell then notice:set("Select a cell first"); return end
 		notice:set("Sending run request to marimo…")
 		observe("Run cell " .. cell.id, function()
-			return Bridge.run(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
+			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+			return Service.execute(zeron, project_path, "notebook.run", { cell_id = cell.id })
 		end, function()
 			notice:set("Marimo queued the cell and its reactive dependents")
 			ui.after(500, refresh_graph)
@@ -1967,7 +1984,9 @@ local Page = ui.component(function()
 		while defined[out] do next_number += 1; out = callable.name .. "_result_" .. tostring(next_number) end
 		output_counter:set(next_number + 1)
 		observe("Add component " .. item.id .. "::" .. callable.name, function()
-			return Bridge.add_component(zeron, url:peek(), token:peek(), session_id:peek(), item.id, callable.name, out, bindings)
+			return Service.execute(zeron, project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or ""), "component.add", {
+				path = item.id, callable = callable.name, output_name = out, bindings = bindings,
+			})
 		end, function(value)
 			if type(value) == "table" and type(value.cell_id) == "string" and type(value.source) == "string" then
 				local point = default_cell_position(#cells_now() + 1)

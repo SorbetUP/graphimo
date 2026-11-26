@@ -18,6 +18,8 @@ The shared application exposes these actions:
 component.list
 component.write   {path, source}
 component.validate {path}
+component.instance_source {path, callable, output_name, bindings}
+component.add      {path, callable, output_name, bindings}
 component.delete  {path}
 ```
 
@@ -35,6 +37,11 @@ rewriting it. `component.list` uses static syntax inspection and does not
 import project components. `component.delete` moves a file into
 `.graphimo/component-trash/` so it can be restored; it does not permanently
 remove the source.
+
+`component.instance_source` generates readable ordinary Python from a
+validated `@node` contract. Bindings are either live Python variable names or
+bounded JSON literals. `component.add` inserts that source into an attached
+marimo session and returns its cell ID; it fails if there is no live kernel.
 
 Each operation uses the same `GraphimoApplication` route as service clients and
 Zeron tools. Multiple writes/edits can be sequenced in `execute_batch`; later

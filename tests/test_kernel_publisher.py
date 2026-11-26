@@ -15,7 +15,7 @@ import pytest
 
 from addons.pytorch.graphimo_pytorch.publisher import KernelEventPublisher
 from addons.pytorch.graphimo_pytorch.runtime import PyTorchEventBus
-from graphimo.client import GraphimoClient
+from graphimo.client import GraphimoClient, GraphimoServiceError
 from graphimo.service.server import GraphimoService
 
 
@@ -316,6 +316,99 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 {"dialect_id": "pytorch.model", "metablock_id": "kernel-model"},
             )
             first_client.attach_kernel(project, url=base, token="", session_id=session)
+
+            data_cell = project.execute("notebook.add_cell", {"source": "data = 3"})
+            component_source = (
+                "from graphimo import node\n\n"
+                "@node\n"
+                "def normalize(value: int) -> int:\n"
+                "    return value * 2\n"
+            )
+            assert (
+                project.execute(
+                    "component.write", {"path": "normalize.py", "source": component_source}
+                )["valid"]
+                is True
+            )
+            component_cell = project.add_component(
+                "normalize.py",
+                "normalize",
+                output_name="normalized",
+                bindings={"value": {"variable": "data"}},
+            )
+            assert "normalize(value=data)" in component_cell["source"]
+            function_cell = project.execute(
+                "notebook.add_cell",
+                {"source": "def transform(value):\n    return value * 2"},
+            )
+            target_cell = project.execute(
+                "notebook.add_cell", {"source": "result = transform(input_value)"}
+            )
+            snapshot = project.inspect_notebook()
+            assert any(cell["id"] == data_cell["cell_id"] for cell in snapshot["cells"])
+            assert any(cell["id"] == function_cell["cell_id"] for cell in snapshot["cells"])
+            assert any(cell["id"] == component_cell["cell_id"] for cell in snapshot["cells"])
+            assert any(
+                edge["source_cell_id"] == data_cell["cell_id"]
+                and edge["target_cell_id"] == component_cell["cell_id"]
+                and edge["variable"] == "data"
+                for edge in snapshot["edges"]
+            )
+            assert any(
+                edge["source_cell_id"] == function_cell["cell_id"]
+                and edge["target_cell_id"] == target_cell["cell_id"]
+                and edge["variable"] == "transform"
+                for edge in snapshot["edges"]
+            )
+            connected = project.connect(
+                data_cell["cell_id"], "data", target_cell["cell_id"], "input_value"
+            )
+            assert connected["changed"] is True
+            assert "transform(data)" in connected["source"]
+            reconnected = project.inspect_notebook()
+            reconnected_target = next(
+                cell for cell in reconnected["cells"] if cell["id"] == target_cell["cell_id"]
+            )
+            assert "data" in reconnected_target["refs"]
+            assert "input_value" not in reconnected_target["refs"]
+            project.run(function_cell["cell_id"])
+            project.run(data_cell["cell_id"])
+            assert project.run(target_cell["cell_id"])["status"] == "queued"
+            deadline = time.monotonic() + 4
+            result_preview = None
+            target_projection = None
+            while time.monotonic() < deadline and result_preview is None:
+                after_run = project.inspect_notebook()
+                target_projection = next(
+                    cell for cell in after_run["cells"] if cell["id"] == target_cell["cell_id"]
+                )
+                result_preview = next(
+                    (item for item in target_projection["outputs"] if item["name"] == "result"),
+                    None,
+                )
+                if result_preview is None:
+                    time.sleep(0.1)
+            assert result_preview is not None, target_projection["output"]
+            assert result_preview["runtime_type"] == "int"
+            assert result_preview["preview"] == "6"
+            from graphimo.instance import build_instance_source, disable_instance_source
+
+            disabled_source, disabled_spec = build_instance_source(
+                "disabled_source", {}, instance_id="deadbeef"
+            )
+            disabled_cell = project.execute(
+                "notebook.add_cell", {"source": disable_instance_source(disabled_source)}
+            )
+            blocked_cell = project.execute(
+                "notebook.add_cell",
+                {"source": f"blocked_value = {disabled_spec.result_var}"},
+            )
+            with pytest.raises(
+                GraphimoServiceError, match="Cell is blocked by disabled upstream"
+            ) as blocked:
+                project.run(blocked_cell["cell_id"])
+            assert getattr(blocked.value, "code", None) == "blocked_by_disabled_dependency"
+            assert disabled_cell["cell_id"] in str(blocked.value)
 
             config = {
                 "service_url": first.url,
