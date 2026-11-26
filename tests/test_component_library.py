@@ -1,5 +1,4 @@
 """Exercise the production component-library projection through the Luau CLI."""
-
 from __future__ import annotations
 
 import shutil
@@ -23,7 +22,5 @@ def test_component_library_groups_searches_and_preserves_metadata():
         text=True,
         timeout=10,
     )
-    assert result.returncode == 0, (
-        f"Luau projection contract failed:\n{result.stdout}\n{result.stderr}"
-    )
+    assert result.returncode == 0, f"Luau projection contract failed:\n{result.stdout}\n{result.stderr}"
     assert "COMPONENT_LIBRARY_PROJECTION_OK" in result.stdout

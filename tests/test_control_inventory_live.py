@@ -1,5 +1,4 @@
 """Opt-in live contract tests for the read-only marimo control inventory."""
-
 from __future__ import annotations
 
 import json
@@ -166,12 +165,12 @@ def test_production_inspect_projects_only_safe_live_slider_and_dropdown_controls
                 time.sleep(0.2)
         assert session, f"marimo session did not start:\n{(tmp_path / 'marimo.log').read_text()}"
 
-        initialize = """import json
+        initialize = '''import json
 import marimo._code_mode as cm
 async with cm.get_context() as ctx:
     for cell in list(ctx.cells): ctx.run_cell(cell.id)
 print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
-"""
+'''
         assert json.loads(_execute(base, session, initialize))["ok"] is True
         inspect_code = _inspect_code()
         snapshot = json.loads(_execute(base, session, inspect_code))
