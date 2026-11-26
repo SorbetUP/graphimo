@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 from collections import OrderedDict
@@ -20,6 +21,28 @@ from .protocol import execute_batch
 
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _MAX_OPERATION_JOURNAL = 256
+
+
+class OperationIdConflict(ValueError):
+    """An operation_id was replayed with a different action or arguments."""
+
+    code = "operation_id_conflict"
+
+
+def _args_fingerprint(action: str, args: dict[str, Any]) -> str:
+    try:
+        encoded = json.dumps(
+            {"action": action, "args": args},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise ValueError("operation arguments must be finite JSON data") from exc
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 _READ_ONLY_ACTIONS = {
     "notebook.inspect",
     "component.list",
@@ -114,7 +137,7 @@ class ProjectSession:
         self._action_lock = threading.RLock()
         self._addon_cursors: dict[str, str] = {}
         self._subscriptions: set[tuple[str, str, str]] = set()
-        self._operation_journal: OrderedDict[str, Any] = OrderedDict()
+        self._operation_journal: OrderedDict[str, tuple[str, str, Any]] = OrderedDict()
         self._closed = False
         self._kernel_port: MarimoKernelPort | None = None
         host = GraphimoHostAPI(
@@ -153,13 +176,18 @@ class ProjectSession:
                 raise ValueError("operation_id must be 1-128 letters, digits, '_' or '-'")
             operation_id = candidate
             args = {key: value for key, value in args.items() if key != "operation_id"}
-        replayed = None
+        fingerprint = _args_fingerprint(action, args)
         if operation_id is not None and action not in _READ_ONLY_ACTIONS:
             with self._state_lock:
-                if operation_id in self._operation_journal:
-                    replayed = self._operation_journal[operation_id]
-        if replayed is not None:
-            return {"replayed": True, "operation_id": operation_id, "result": replayed}
+                entry = self._operation_journal.get(operation_id)
+            if entry is not None:
+                recorded_action, recorded_fingerprint, recorded_result = entry
+                if (recorded_action, recorded_fingerprint) != (action, fingerprint):
+                    raise OperationIdConflict(
+                        f"operation_id {operation_id!r} was already used for a different "
+                        f"action or arguments"
+                    )
+                return {"replayed": True, "operation_id": operation_id, "result": recorded_result}
         result = self.application.execute(action, args)
         self._track_runtime_action(action, args, result)
         self.events.publish(
@@ -171,7 +199,7 @@ class ProjectSession:
         )
         if operation_id is not None and action not in _READ_ONLY_ACTIONS:
             with self._state_lock:
-                self._operation_journal[operation_id] = result
+                self._operation_journal[operation_id] = (action, fingerprint, result)
                 self._operation_journal.move_to_end(operation_id)
                 while len(self._operation_journal) > _MAX_OPERATION_JOURNAL:
                     self._operation_journal.popitem(last=False)

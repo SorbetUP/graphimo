@@ -114,12 +114,26 @@ class MarimoKernelPort:
         return self._execute(_notebook_action_source(action, encoded))
 
     def stop_publisher(self) -> None:
+        """Stop every installed addon kernel hook, discovered by entry point.
+
+        The Core never imports an addon by name: any distribution exposing the
+        ``graphimo.kernel_hooks`` entry-point group with a callable (or an
+        object with a ``stop`` method) is stopped here.
+        """
         source = "\n".join(
             (
                 "import json",
-                "from graphimo_pytorch.publisher import stop_kernel_publisher",
-                "result = stop_kernel_publisher()",
-                "print('GRAPHIMO_KERNEL_RESULT:' + json.dumps({'ok': True, 'result': result}, separators=(',', ':'))) ",
+                "from importlib.metadata import entry_points",
+                "result = {}",
+                "for ep in entry_points(group='graphimo.kernel_hooks'):",
+                "    try:",
+                "        hook = ep.load()",
+                "        stop = getattr(hook, 'stop', None)",
+                "        if not callable(stop) and callable(hook): stop = hook",
+                "        if callable(stop): result[ep.name] = stop()",
+                "    except Exception as exc:",
+                "        result[ep.name] = {'error': str(exc)[:200]}",
+                "print('GRAPHIMO_KERNEL_RESULT:' + json.dumps({'ok': True, 'result': result}, ensure_ascii=False, allow_nan=False, separators=(',', ':'))) ",
             )
         )
         self._execute(source)

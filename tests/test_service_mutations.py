@@ -198,3 +198,37 @@ def test_composed_control_add_rolls_back_on_failure(tmp_path: Path) -> None:
             },
         )
     assert len(deleted) == 2, deleted
+
+
+def test_operation_id_replay_rejects_different_action_or_args(tmp_path: Path) -> None:
+    from graphimo.client import GraphimoServiceError
+
+    service, client, project, _project_path = _open(tmp_path)
+    try:
+        project.execute(
+            "component.write",
+            {"path": "normalize.py", "source": NODE_SOURCE, "operation_id": "op-1"},
+        )
+        # Same id, different args -> explicit conflict, never a silent replay.
+        with pytest.raises(GraphimoServiceError) as exc_info:
+            project.execute(
+                "component.write",
+                {"path": "other.py", "source": NODE_SOURCE, "operation_id": "op-1"},
+            )
+        assert exc_info.value.code == "operation_id_conflict"
+        # Same id, different mutating action -> conflict as well.
+        with pytest.raises(GraphimoServiceError) as exc_info2:
+            project.execute(
+                "layout.set", {"scope_id": "root", "positions": {}, "operation_id": "op-1"}
+            )
+        assert exc_info2.value.code == "operation_id_conflict"
+        # Identical action+args still replays.
+        replayed = project.execute(
+            "component.write",
+            {"path": "normalize.py", "source": NODE_SOURCE, "operation_id": "op-1"},
+        )
+        assert replayed["replayed"] is True
+    finally:
+        project.close()
+        client.close()
+        service.close()

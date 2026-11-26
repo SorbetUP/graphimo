@@ -635,3 +635,23 @@ def test_service_pytorch_metablock_project_apply_materialize_and_events(tmp_path
     finally:
         project.close()
         service.close()
+
+
+def test_kernel_stop_publisher_source_is_addon_agnostic() -> None:
+    """The Core must stop addon hooks via entry points, never by addon name."""
+    from graphimo.service.marimo_kernel import MarimoKernelPort
+
+    port = MarimoKernelPort(
+        url="http://127.0.0.1:9", token="", session_id="s", project_path="/tmp/x.py"
+    )
+    captured = {}
+
+    def fake_execute(source: str) -> None:
+        captured["source"] = source
+
+    port._execute = fake_execute  # type: ignore[method-assign]
+    port.stop_publisher()
+    source = captured["source"]
+    assert "graphimo.kernel_hooks" in source
+    assert "graphimo_pytorch" not in source
+    assert "importlib.metadata" in source

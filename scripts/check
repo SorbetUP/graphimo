@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,8 +41,8 @@ def check_dependencies(mode: str) -> None:
         ) from exc
 
     if mode == "full":
-        if not (ROOT / "addons" / "pytorch" / "pyproject.toml").is_file():
-            raise SystemExit("Full gate requires the graphimo-pytorch addon distribution.")
+        if not discover_addons():
+            raise SystemExit("Full gate requires at least one addon distribution under addons/.")
         try:
             import marimo
             import torch
@@ -59,11 +62,44 @@ def check_dependencies(mode: str) -> None:
             )
 
 
+def discover_addons() -> list[Path]:
+    """Every addon distribution under addons/, discovered without hardcoding."""
+    addons_root = ROOT / "addons"
+    if not addons_root.is_dir():
+        return []
+    return sorted(child for child in addons_root.iterdir() if (child / "pyproject.toml").is_file())
+
+
+def addon_package_dir(addon: Path) -> Path | None:
+    """The importable package directory of an addon (e.g. graphimo_pytorch/)."""
+    package_dir = next(addon.glob("*/__init__.py"), None)
+    return package_dir.parent if package_dir is not None else None
+
+
+def addon_package_names() -> list[str]:
+    """Read each discovered addon's distribution name from its pyproject.toml."""
+    names = []
+    for addon in discover_addons():
+        text = (addon / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^name\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def addon_module_names() -> list[str]:
+    """Importable top-level package names of the discovered addons."""
+    names = []
+    for addon in discover_addons():
+        package_dir = addon_package_dir(addon)
+        if package_dir is not None:
+            names.append(package_dir.name)
+    return names
+
+
 def python_paths() -> list[str]:
-    return [
+    paths = [
         "adapter",
-        "addons/pytorch/graphimo_pytorch",
-        "addons/pytorch/tests",
         "core",
         "components",
         "examples",
@@ -71,16 +107,21 @@ def python_paths() -> list[str]:
         "graphimo/service",
         "tests",
     ]
+    for addon in discover_addons():
+        package_dir = addon_package_dir(addon)
+        if package_dir is not None:
+            paths.append(str(package_dir.relative_to(ROOT)))
+        if (addon / "tests").is_dir():
+            paths.append(str((addon / "tests").relative_to(ROOT)))
+    return [path for path in paths if path]
 
 
 def lint_paths() -> list[str]:
-    return [
+    paths = [
         "adapter",
         "components",
         "examples",
         "graphimo",
-        "addons/pytorch/graphimo_pytorch",
-        "addons/pytorch/tests",
         "core/graphimo_core",
         "tests/test_core_vertical_slice.py",
         "tests/test_groups.py",
@@ -100,13 +141,24 @@ def lint_paths() -> list[str]:
         "tests/test_artifact_catalogue.py",
         "tests/test_verifier.py",
         "tests/test_node_contract.py",
-        "addons/pytorch/tests/test_torchlens.py",
         "tests/test_metablock_host.py",
         "tests/test_package_distribution.py",
-        "tests/test_pytorch_addon_distribution.py",
         "scripts/check",
         "scripts/check_dependencies.py",
+        "scripts/pre-commit",
     ]
+    for addon in discover_addons():
+        package_dir = addon_package_dir(addon)
+        if package_dir is not None:
+            paths.append(str(package_dir.relative_to(ROOT)))
+        tests_dir = addon / "tests"
+        if tests_dir.is_dir():
+            for test_file in sorted(tests_dir.glob("test_*.py")):
+                paths.append(str(test_file.relative_to(ROOT)))
+        dist_test = ROOT / "tests" / f"test_{addon.name}_addon_distribution.py"
+        if dist_test.is_file():
+            paths.append(str(dist_test.relative_to(ROOT)))
+    return [path for path in paths if path]
 
 
 def generated_artifacts() -> set[str]:
@@ -159,8 +211,24 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--fast", action="store_true", help="run the fast local gate")
     group.add_argument("--full", action="store_true", help="run the pre-push gate")
+    group.add_argument(
+        "--e2e", action="store_true", help="run only the live-kernel end-to-end tests"
+    )
+    group.add_argument(
+        "--stress",
+        action="store_true",
+        help="run mutation-reliability, verifier and fuzz tests only",
+    )
+    group.add_argument(
+        "--release",
+        action="store_true",
+        help="run every applicable gate (like --full) plus packaging",
+    )
     args = parser.parse_args()
-    mode = "full" if args.full else "fast"
+    selected = next(flag for flag, value in vars(args).items() if value)
+    mode = {"fast": "fast", "full": "full", "e2e": "e2e", "stress": "stress", "release": "full"}[
+        selected
+    ]
     check_dependencies(mode)
 
     git = require("git", "run the local verification gate from a Git checkout")
@@ -186,23 +254,28 @@ def main() -> int:
     )
     if marimo_python.returncode == 0:
         env["GRAPHIMO_MARIMO_PYTHON"] = marimo_python.stdout.strip()
-    if args.full:
+    if mode == "full":
         require("luau", "install the Luau CLI for live Graphimo bridge tests")
         luau_compile = require(
             "luau-compile", "install the Luau compiler for plugin adapter syntax checks"
         )
-        run(
-            "Zeron service adapter syntax",
-            luau_compile,
-            "--only-parse",
-            "plugin/service_bridge.luau",
-            "plugin/marimo_bridge.luau",
-            "plugin/init.luau",
-            "plugin/canvas.luau",
+        luau_files = sorted(
+            str(path.relative_to(ROOT)) for path in (ROOT / "plugin").glob("*.luau")
         )
+        if not luau_files:
+            raise SystemExit("No Zeron plugin Luau files found under plugin/.")
+        run("Zeron plugin Luau syntax (all files)", luau_compile, "--only-parse", *luau_files)
+        manifest_path = ROOT / "plugin" / "zeron-plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest.get("tools"), list) or not manifest["tools"]:
+            raise SystemExit("zeron-plugin.json must declare a non-empty tools array")
+        for tool in manifest["tools"]:
+            if not isinstance(tool.get("name"), str) or not isinstance(tool.get("input"), dict):
+                raise SystemExit(f"zeron-plugin.json tool is malformed: {tool!r}")
+        print(f"Zeron plugin manifest OK ({len(manifest['tools'])} tools).", flush=True)
 
     with tempfile.TemporaryDirectory(prefix="graphimo-check-") as temporary:
-        if args.full:
+        if mode == "full":
             build_root = Path(temporary) / "source"
             shutil.copytree(
                 ROOT,
@@ -236,18 +309,20 @@ def main() -> int:
                 "-w",
                 str(wheelhouse),
             )
-            run(
-                "PyTorch addon wheel build",
-                sys.executable,
-                "-m",
-                "pip",
-                "wheel",
-                "--no-deps",
-                "--no-build-isolation",
-                str(build_root / "addons" / "pytorch"),
-                "-w",
-                str(wheelhouse),
-            )
+            addons = discover_addons()
+            for addon in addons:
+                run(
+                    f"Addon wheel build: {addon.name}",
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "wheel",
+                    "--no-deps",
+                    "--no-build-isolation",
+                    str(build_root / "addons" / addon.name),
+                    "-w",
+                    str(wheelhouse),
+                )
             install_target = Path(temporary) / "install"
             install_target.mkdir()
             for wheel in sorted(wheelhouse.glob("*.whl")):
@@ -262,6 +337,49 @@ def main() -> int:
                     str(install_target),
                     str(wheel),
                 )
+            # Clean-environment origin check: with the repo NOT on sys.path and
+            # cwd outside the checkout, every distribution must import from the
+            # isolated install target, proving the wheels are self-contained.
+            module_names = ["graphimo", *addon_module_names()]
+            origin_probe = (
+                "import sys; "
+                "names = %r; "
+                "print('GRAPHIMO_ORIGIN:' + repr({n: __import__(n).__file__ for n in names}))"
+                % (module_names,)
+            )
+            origin_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+                "PYTHONPATH": str(install_target),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            probe = subprocess.run(
+                [sys.executable, "-s", "-c", origin_probe],
+                cwd=temporary,
+                env=origin_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if probe.returncode != 0:
+                raise SystemExit(
+                    "Clean-environment wheel import failed:\n" + probe.stdout + probe.stderr
+                )
+            marker = "GRAPHIMO_ORIGIN:"
+            if marker not in probe.stdout:
+                raise SystemExit("Clean-environment wheel import produced no origin report.")
+            origins = ast.literal_eval(probe.stdout.split(marker, 1)[1].splitlines()[0])
+            for package_name, module_file in origins.items():
+                if not str(module_file).startswith(str(install_target)):
+                    raise SystemExit(
+                        f"Package {package_name!r} imported from {module_file}, not from the "
+                        f"isolated install {install_target}; the wheel is not self-contained."
+                    )
+            print(
+                "Clean-environment wheel origins OK: "
+                + ", ".join(f"{name} -> install dir" for name in origins),
+                flush=True,
+            )
             existing_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = os.pathsep.join(
                 part
@@ -278,13 +396,17 @@ def main() -> int:
                 sys.executable,
                 "scripts/check_dependencies.py",
                 "graphimo",
-                "graphimo-pytorch",
+                *addon_package_names(),
                 env=env,
             )
 
         pytest_args = ["-q", "-rs"]
-        if args.fast:
+        if mode == "fast":
             pytest_args.extend(["-m", "not full"])
+        elif mode == "e2e":
+            pytest_args.extend(["-k", "live"])
+        elif mode == "stress":
+            pytest_args.extend(["-k", "mutation or fuzz or verifier or service"])
         run("Python and marimo contracts", sys.executable, "-m", "pytest", *pytest_args, env=env)
 
     verify_generated_artifact_hygiene(artifact_baseline, baseline_tracked=tracked_artifacts)
