@@ -195,6 +195,8 @@ local Page = ui.component(function()
 	local token = ui.use_state("")
 	local session_id = ui.use_state(saved.session_id or "")
 	local sessions = ui.use_state({})
+	local project_root_path = ui.use_state(saved.root_path or saved.path or "")
+	local group_scope_stack = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local notebook_snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local groups = ui.use_state({})
@@ -356,6 +358,7 @@ local Page = ui.component(function()
 			visible_cell_ids:set(ids)
 			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
 			local path = value.notebook.path or ""
+			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or path
 			local function apply_layout(saved_positions)
 				local merged, active = {}, {}
 				for index, cell in value.cells do
@@ -371,7 +374,7 @@ local Page = ui.component(function()
 				if selected:peek() ~= "" and not active[selected:peek()] then selected:set("") end
 				notice:set("Showing " .. tostring(#value.cells) .. " marimo cells")
 				observe("Discover components", function()
-					return Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, path)
+					return Bridge.list_components(zeron, url:peek(), token:peek(), value.notebook.session_id, project_path)
 				end, function(component_result)
 					local available = component_result.components or {}
 					components:set(available)
@@ -387,8 +390,7 @@ local Page = ui.component(function()
 			end
 			if is_local_url(url:peek()) then
 				observe("Load Graphimo project", function()
-					return Service.batch(zeron, path, {
-						{ id = "layout", action = "layout.get", args = { scope_id = "root" } },
+					return Service.batch(zeron, project_path, {
 						{ id = "groups", action = "group.list", args = {} },
 						{ id = "metablocks", action = "metablock.list", args = {} },
 						{ id = "scope", action = "scope.current", args = {} },
@@ -398,9 +400,24 @@ local Page = ui.component(function()
 					for _, item in batch.operations or {} do
 						if item.status == "ok" then results[item.id] = item.result end
 					end
+					local breadcrumbs = (results.scope or {}).breadcrumbs or {}
+					local restored_groups = {}
+					for index = 2, #breadcrumbs do
+						table.insert(restored_groups, breadcrumbs[index])
+					end
+					group_scope_stack:set(restored_groups)
 					groups:set((results.groups or {}).items or {})
 					metablocks:set((results.metablocks or {}).items or {})
-					apply_layout((results.layout or {}).layout or {})
+					local active_scope = (results.scope or {}).scope or {}
+					local layout_scope = active_scope.scope_id or "root"
+					observe("Load canvas layout", function()
+						return Service.execute(zeron, project_path, "layout.get", { scope_id = layout_scope })
+					end, function(layout)
+						apply_layout(layout.layout or {})
+					end, function(layout_error)
+						log("Could not load scope layout: " .. tostring(layout_error), "error")
+						apply_layout({})
+					end)
 				end, function(err)
 					log("Graphimo service unavailable; loading legacy canvas layout: " .. tostring(err), "error")
 					Layout.load(zeron, path, function(saved_positions, layout_error)
@@ -416,9 +433,10 @@ local Page = ui.component(function()
 	end
 
 	local function save_positions()
-		local path = snapshot:peek().notebook.path
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or snapshot:peek().notebook.path
 		if not path or path == "" or not is_local_url(url:peek()) then return end
-		local scope_id = if active_metablock:peek() == "" then "root" else MetaBlockProjection.scope_layout_id(active_metablock:peek(), active_metablock_scope:peek())
+		local active_group = group_scope_stack:peek()[#group_scope_stack:peek()]
+		local scope_id = if active_metablock:peek() ~= "" then MetaBlockProjection.scope_layout_id(active_metablock:peek(), active_metablock_scope:peek()) elseif active_group then active_group.scope_id else "root"
 		observe("Save canvas layout", function()
 			return Service.execute(zeron, path, "layout.set", { scope_id = scope_id, layout = positions:peek() })
 		end, function() log("Canvas layout saved through Graphimo Core") end, function(err)
@@ -441,7 +459,7 @@ local Page = ui.component(function()
 	refresh_metablock = function()
 		local metablock_id = active_metablock:peek()
 		local scope = active_metablock_scope:peek()
-		local path = notebook_snapshot:peek().notebook.path or active_notebook:peek().path or ""
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or active_notebook:peek().root_path or active_notebook:peek().path or "")
 		if metablock_id == "" or path == "" then return end
 		local layout_scope = MetaBlockProjection.scope_layout_id(metablock_id, scope)
 		observe("Inspect PyTorch MetaBlock", function()
@@ -505,9 +523,77 @@ local Page = ui.component(function()
 		refresh_graph()
 	end
 
+	local start_notebook
+
+	local function group_notebook_path(relative_path)
+		local root = project_root_path:peek()
+		if root == "" or type(relative_path) ~= "string" or relative_path == "" then return nil end
+		local parent = string.match(root, "^(.*[/\\])")
+		if not parent then return nil end
+		local relative = string.gsub(relative_path, "\\", "/")
+		if string.sub(relative, 1, 1) == "/" or string.find(relative, "..", 1, true) then return nil end
+		return parent .. relative
+	end
+
+	local function open_group(group)
+		local path = project_root_path:peek()
+		if path == "" then path = active_notebook:peek().root_path or active_notebook:peek().path or "" end
+		if path == "" then notice:set("Open a local project before entering a Group Block"); return end
+		observe("Enter Group Block " .. tostring(group.name or group.group_id), function()
+			return Service.execute(zeron, path, "scope.enter", { container_id = group.group_id })
+		end, function(scope_state)
+			local breadcrumbs = scope_state.breadcrumbs or {}
+			local next_groups = {}
+			for index = 2, #breadcrumbs do table.insert(next_groups, breadcrumbs[index]) end
+			local active = breadcrumbs[#breadcrumbs]
+			local notebook_path = active and group_notebook_path(active.path)
+			if not notebook_path then
+				observe("Restore Group Block scope", function()
+					return Service.execute(zeron, path, "scope.leave", {})
+				end, function() notice:set("Could not resolve the Group Block notebook path") end, function(err)
+					notice:set("Could not restore the Graphimo scope: " .. tostring(err))
+				end)
+				return
+			end
+			project_root_path:set(path)
+			group_scope_stack:set(next_groups)
+			start_notebook(notebook_path, true)
+		end, function(err)
+			notice:set("Could not enter Group Block: " .. tostring(err))
+		end)
+	end
+
+	local function leave_group(on_left)
+		local stack = group_scope_stack:peek()
+		if #stack == 0 then return end
+		local path = project_root_path:peek()
+		observe("Leave Group Block", function()
+			return Service.execute(zeron, path, "scope.leave", {})
+		end, function(scope_state)
+			local breadcrumbs = scope_state.breadcrumbs or {}
+			local next_groups = {}
+			for index = 2, #breadcrumbs do table.insert(next_groups, breadcrumbs[index]) end
+			local active = breadcrumbs[#breadcrumbs]
+			local notebook_path = if #next_groups == 0 then path else group_notebook_path(active and active.path)
+			if not notebook_path then
+				notice:set("Could not resolve the parent Group Block notebook path")
+				return
+			end
+			group_scope_stack:set(next_groups)
+			start_notebook(notebook_path, true, on_left)
+		end, function(err)
+			notice:set("Could not leave Group Block: " .. tostring(err))
+		end)
+	end
+
+	local function leave_to_group_depth(depth)
+		if #group_scope_stack:peek() <= depth then return end
+		leave_group(function() leave_to_group_depth(depth) end)
+	end
+
 	local function apply_metablock_intent(intent)
 		local metablock_id = active_metablock:peek()
-		local path = notebook_snapshot:peek().notebook.path or ""
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if metablock_id == "" or path == "" then return end
 		intent.scope = active_metablock_scope:peek()
 		observe("Update PyTorch MetaBlock", function()
@@ -520,7 +606,7 @@ local Page = ui.component(function()
 	end
 
 	local function create_metablock()
-		local path = snapshot:peek().notebook.path or ""
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
 		if path == "" then notice:set("Open a local notebook before creating a MetaBlock"); return end
 		output_counter:set(output_counter:peek() + 1)
 		local metablock_id = "model_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
@@ -546,7 +632,7 @@ local Page = ui.component(function()
 
 	local function materialize_metablock()
 		local metablock_id = active_metablock:peek()
-		local path = notebook_snapshot:peek().notebook.path or ""
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if metablock_id == "" or path == "" or session_id:peek() == "" then
 			notice:set("Open a live local marimo notebook before inserting a MetaBlock definition")
 			return
@@ -608,6 +694,7 @@ local Page = ui.component(function()
 					session_id:set(item.session_id)
 					local current = table.clone(active_notebook:peek())
 					current.url, current.path, current.session_id = base_url, path, item.session_id
+					current.root_path = project_root_path:peek()
 					active_notebook:set(current)
 					log("Notebook session connected: " .. path)
 					refresh_graph()
@@ -621,7 +708,11 @@ local Page = ui.component(function()
 		end)
 	end
 
-	local function start_notebook(path)
+	start_notebook = function(path, nested, on_started)
+		if not nested then
+			project_root_path:set(path)
+			group_scope_stack:set({})
+		end
 		active_metablock:set("")
 		active_metablock_scope:set("root")
 		metablock_projection:set(nil)
@@ -633,7 +724,13 @@ local Page = ui.component(function()
 		end, function(started)
 			url:set(started.url)
 			session_id:set(started.session_id or "")
-			local current = { url = started.url, session_id = started.session_id or "", path = path, log_path = started.log_path or "" }
+			local current = {
+				url = started.url,
+				session_id = started.session_id or "",
+				path = path,
+				root_path = project_root_path:peek(),
+				log_path = started.log_path or "",
+			}
 			active_notebook:set(current)
 			if started.started then log("Started marimo process " .. tostring(started.pid)) else log("Reused existing marimo process") end
 			if started.session_id and started.session_id ~= "" then
@@ -643,6 +740,7 @@ local Page = ui.component(function()
 				log("Opened marimo editor; waiting for its live notebook session")
 				wait_for_notebook(path, started.url, 0)
 			end
+			if on_started then on_started() end
 		end, function(err)
 			local message = "Could not start marimo: " .. tostring(err)
 			notice:set(message)
@@ -1047,7 +1145,12 @@ local Page = ui.component(function()
 				ui.show(function() return #groups:get() > 0 end, ui.column { w_full = true, gap = "$space.1",
 					Text { "Reusable Groups", style = "heading" },
 					ui.each(groups, function(group)
-						return Text { group.name or group.group_id, style = "caption", tone = "secondary", wrap = true }
+						return Button {
+							"Open · " .. tostring(group.name or group.group_id),
+							tone = "secondary", size = "sm", w_full = true,
+							disabled = function() return session_id:get() == "" end,
+							on_click = function() open_group(group) end,
+						}
 					end),
 				}),
 				Text { "Components", style = "heading" },
@@ -1144,6 +1247,18 @@ local Page = ui.component(function()
 			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
 			Button { function() return if logs_open:get() then "Terminal −" else "Terminal +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
 		},
+		ui.show(function() return #group_scope_stack:get() > 0 and active_metablock:get() == "" end, ui.row {
+			w_full = true, items = "center", gap = "$space.1",
+			Button { "Project", tone = "secondary", size = "sm", on_click = function() leave_to_group_depth(0) end },
+			ui.each(group_scope_stack, function(item, index)
+				return Button {
+					item.name or item.container_id or "Group",
+					tone = if index == #group_scope_stack:get() then "primary" else "secondary",
+					size = "sm",
+					on_click = function() leave_to_group_depth(index) end,
+				}
+			end),
+		}),
 		ui.row { w_full = true, gap = "$space.2", items = "center",
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },

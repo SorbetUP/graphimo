@@ -29,6 +29,15 @@ operation.
 
 - Opening a local project loads its layout, Group catalog, MetaBlock catalog
   and active application scope in one Graphimo service batch.
+- **Reusable Groups** are actionable entries. Opening one enters the matching
+  Graphimo application scope, then opens its `groups/<module>.py` file as the
+  live marimo notebook in the same canvas. Graphimo continues to use the root
+  project path for Group catalog, scope and layout operations, while marimo
+  owns the opened Group file's cells and execution.
+- A breadcrumb above the canvas returns to the project or to an ancestor
+  Group. Each scope uses its stable `scope_id` for its saved canvas layout.
+  The active project root is kept separately from the currently opened Group
+  notebook so service operations continue to address the same project.
 - Root and PyTorch MetaBlock canvas layouts use the Graphimo application
   `layout.get` / `layout.set` actions. Root layout reads and writes the legacy
   Graphimo plugin file shape so old notebook positions remain available.
