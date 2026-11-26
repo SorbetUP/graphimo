@@ -1,18 +1,19 @@
 -- Renderer adapter from a dialect-owned MetaBlock projection to canvas cards.
 local Projection = {}
 
-function Projection.annotate_parent_cells(cells)
+function Projection.annotate_parent_cells(cells, labels)
 	local result = {}
 	for _, original in cells or {} do
 		local cell = table.clone(original)
 		local source = if type(cell.source) == "string" then cell.source else ""
-		if string.find(source, "materialize_definition", 1, true) then
-			local metablock_id = string.match(source, "metablock_id%s*=%s*['\"]([%w_-]+)['\"]")
-			if metablock_id then
-				cell.graphimo_metablock_id = metablock_id
-				cell.name = "PyTorch Model · " .. metablock_id
-				cell.source = "Graphimo PyTorch MetaBlock definition"
-			end
+		-- Any addon's materialization cell passes metablock_id='...' to its own
+		-- builder; no addon-specific symbol is sniffed here.
+		local metablock_id = string.match(source, "metablock_id%s*=%s*['\"]([%w_-]+)['\"]")
+		if metablock_id then
+			local label = (labels or {})[metablock_id] or "MetaBlock"
+			cell.graphimo_metablock_id = metablock_id
+			cell.name = label .. " · " .. metablock_id
+			cell.source = "Graphimo MetaBlock definition"
 		end
 		table.insert(result, cell)
 	end
@@ -69,7 +70,7 @@ function Projection.to_canvas(metablock_id, scope, project_path, value)
 		table.insert(cells, {
 			id = element.id,
 			name = element.name or element.id,
-			source = element.kind or "PyTorch component",
+			source = element.kind or "MetaBlock component",
 			status = if has_error then "error" else "idle",
 			refs = port_names(element.inputs),
 			defs = port_names(element.outputs),

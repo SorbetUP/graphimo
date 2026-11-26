@@ -40,7 +40,7 @@ local parent_cells = Projection.annotate_parent_cells({
 	{ id = "cell_2", source = "print('ordinary')", defs = {} },
 })
 assert(parent_cells[1].graphimo_metablock_id == "model_1")
-assert(parent_cells[1].name == "PyTorch Model · model_1")
+assert(parent_cells[1].name == "MetaBlock · model_1")
 assert(parent_cells[1].defs[1] == "g_pytorch_model_1")
 assert(parent_cells[2].graphimo_metablock_id == nil)
 

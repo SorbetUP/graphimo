@@ -152,6 +152,7 @@ zeron.tool({ name = "graphimo_inspect", run = function(args)
 			{ id = "components", action = "component.list", args = {} },
 			{ id = "controls", action = "control.catalog", args = {} },
 			{ id = "metablocks", action = "metablock.list", args = {} },
+			{ id = "addons", action = "addon.list", args = {} },
 		})
 	end)
 	if type(request) ~= "table" or type(request.after) ~= "function" then return request end
@@ -277,10 +278,12 @@ local Page = ui.component(function()
 	local groups = ui.use_state({})
 	local controls = ui.use_state({})
 	local metablocks = ui.use_state({})
+	local addon_dialects = ui.use_state({})
 	local active_metablock = ui.use_state("")
 	local active_metablock_scope = ui.use_state("root")
 	local metablock_projection = ui.use_state(nil)
 	local metablock_history = ui.use_state({ undo_depth = 0, redo_depth = 0, stale = false })
+	local metablock_revision = ui.use_state("")
 	local metablock_parameter_dialog = ui.use_state(false)
 	local metablock_parameter_target = ui.use_state({})
 	local metablock_parameter_value = ui.use_state("")
@@ -471,7 +474,11 @@ local Page = ui.component(function()
 			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (active_notebook:peek().root_path or active_notebook:peek().path or "")
 			return Service.execute(zeron, project_path, "notebook.inspect", {})
 		end, function(value)
-			value.cells = MetaBlockProjection.annotate_parent_cells(value.cells)
+			local metablock_labels = {}
+			for _, item in metablocks:get() or {} do
+				metablock_labels[item.metablock_id] = item.dialect_id or "MetaBlock"
+			end
+			value.cells = MetaBlockProjection.annotate_parent_cells(value.cells, metablock_labels)
 			notebook_snapshot:set(value)
 			snapshot:set(value)
 			local ids = {}
@@ -490,9 +497,9 @@ local Page = ui.component(function()
 					observe("Attach kernel telemetry", function()
 						return Bridge.configure_telemetry(zeron, url:peek(), token:peek(), telemetry_session, config)
 					end, function()
-						log("Attached asynchronous PyTorch telemetry for marimo session " .. telemetry_session)
+						log("Attached asynchronous kernel telemetry for marimo session " .. telemetry_session)
 					end, function(err)
-						log("Could not attach PyTorch telemetry: " .. tostring(err), "error")
+						log("Could not attach kernel telemetry: " .. tostring(err), "error")
 					end)
 				end, function(err)
 					log("Could not obtain ephemeral telemetry credentials: " .. tostring(err), "error")
@@ -538,6 +545,7 @@ local Page = ui.component(function()
 						{ id = "groups", action = "group.list", args = {} },
 						{ id = "controls", action = "control.catalog", args = {} },
 						{ id = "metablocks", action = "metablock.list", args = {} },
+						{ id = "addons", action = "addon.list", args = {} },
 						{ id = "scope", action = "scope.current", args = {} },
 					})
 				end, function(batch)
@@ -554,6 +562,18 @@ local Page = ui.component(function()
 					groups:set((results.groups or {}).items or {})
 					controls:set((results.controls or {}).items or {})
 					metablocks:set((results.metablocks or {}).items or {})
+					local dialects = {}
+					for _, addon in (results.addons or {}).addons or {} do
+						local caps = addon.capabilities or {}
+						local has_metablock = false
+						for _, cap in caps do if cap == "metablock" then has_metablock = true end end
+						if has_metablock then
+							for _, dialect_id in addon.dialects or {} do
+								table.insert(dialects, { dialect_id = dialect_id, label = addon.id .. " / " .. dialect_id })
+							end
+						end
+					end
+					addon_dialects:set(dialects)
 					local active_scope = (results.scope or {}).scope or {}
 					local layout_scope = active_scope.scope_id or "root"
 					observe("Load canvas layout", function()
@@ -608,7 +628,7 @@ local Page = ui.component(function()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or active_notebook:peek().root_path or active_notebook:peek().path or "")
 		if metablock_id == "" or path == "" then return end
 		local layout_scope = MetaBlockProjection.scope_layout_id(metablock_id, scope)
-		observe("Inspect PyTorch MetaBlock", function()
+		observe("Inspect MetaBlock", function()
 			return Service.batch(zeron, path, {
 				{ id = "projection", action = "metablock.project", args = { metablock_id = metablock_id, scope = scope } },
 				{ id = "layout", action = "layout.get", args = { scope_id = layout_scope } },
@@ -625,6 +645,7 @@ local Page = ui.component(function()
 				results.projection
 			)
 			metablock_projection:set(projection)
+			metablock_revision:set((results.projection or {}).revision or "")
 			metablock_history:set((results.projection or {}).history or { undo_depth = 0, redo_depth = 0, stale = false })
 			local saved_layout = (results.layout or {}).layout or {}
 			local merged, ids = {}, {}
@@ -770,8 +791,15 @@ local Page = ui.component(function()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if metablock_id == "" or path == "" then return end
 		intent.scope = active_metablock_scope:peek()
-		observe("Update PyTorch MetaBlock", function()
-			return Service.execute(zeron, path, "metablock.apply", { metablock_id = metablock_id, intent = intent })
+		local expected = metablock_revision:peek()
+		if expected == "" then expected = nil end
+		observe("Update MetaBlock", function()
+			return Service.execute(zeron, path, "metablock.apply", {
+				metablock_id = metablock_id,
+				intent = intent,
+				scope = active_metablock_scope:peek(),
+				expected_revision = expected,
+			})
 		end, function(value)
 			if type(value) == "table" and type(value.history) == "table" then metablock_history:set(value.history) end
 			refresh_metablock()
@@ -785,7 +813,7 @@ local Page = ui.component(function()
 		local metablock_id = active_metablock:peek()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if metablock_id == "" or path == "" then return end
-		observe("Read PyTorch MetaBlock events", function()
+		observe("Read MetaBlock events", function()
 			return Service.execute(zeron, path, "metablock.events", {
 				metablock_id = metablock_id, cursor = metablock_event_cursor:peek(), limit = 128,
 			})
@@ -814,7 +842,7 @@ local Page = ui.component(function()
 		checkpoint_request_sequence += 1
 		local request_sequence = checkpoint_request_sequence
 		checkpoint_busy:set(true)
-		observe("Inspect PyTorch checkpoint", function()
+		observe("Inspect checkpoint", function()
 			return Service.execute(zeron, path, "metablock.invoke", {
 				metablock_id = metablock_id,
 				action = "checkpoint.inspect",
@@ -864,6 +892,47 @@ local Page = ui.component(function()
 			checkpoint_busy:set(false)
 			if active_metablock:peek() ~= metablock_id then return end
 			notice:set("Could not preview checkpoint migration: " .. tostring(err))
+		end)
+	end
+
+	local function restore_checkpoint(allow_migration)
+		local details = checkpoint_details:peek()
+		local metablock_id = active_metablock:peek()
+		local artifact_id = string.gsub(checkpoint_artifact_id:peek(), "^%s*(.-)%s*$", "%1")
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
+		if metablock_id == "" or path == "" then return end
+		if artifact_id == "" or #artifact_id > 256 then notice:set("Enter a valid Graphimo Artifact ID"); return end
+		local view = metablock_projection:peek()
+		local runtime_id = nil
+		local selector = view and view.runtime_selector
+		if type(selector) == "table" and type(selector.items) == "table" and #selector.items > 0 then
+			runtime_id = selector.items[1].runtime_instance_id
+		end
+		local args = { artifact_id = artifact_id, restore_training_state = true, strict = not allow_migration }
+		if type(runtime_id) == "string" and runtime_id ~= "" then args.runtime_instance_id = runtime_id end
+		checkpoint_request_sequence += 1
+		local request_sequence = checkpoint_request_sequence
+		checkpoint_busy:set(true)
+		observe("Restore checkpoint", function()
+			return Service.execute(zeron, path, "metablock.invoke", {
+				metablock_id = metablock_id,
+				action = "checkpoint.restore",
+				args = args,
+			})
+		end, function(value)
+			if checkpoint_request_sequence ~= request_sequence then return end
+			checkpoint_busy:set(false)
+			if active_metablock:peek() ~= metablock_id then return end
+			local updated = table.clone(details or {})
+			updated.last_restore = value
+			checkpoint_details:set(updated)
+			notice:set("Checkpoint restored (runtime " .. tostring(value and value.runtime_instance_id or "new") .. ")")
+			refresh_metablock()
+		end, function(err)
+			if checkpoint_request_sequence ~= request_sequence then return end
+			checkpoint_busy:set(false)
+			if active_metablock:peek() ~= metablock_id then return end
+			notice:set("Could not restore checkpoint: " .. tostring(err))
 		end)
 	end
 
@@ -1000,16 +1069,20 @@ local Page = ui.component(function()
 		return nil
 	end
 
-	local function create_metablock()
+	local function create_metablock(dialect_id, label)
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
 		if path == "" then notice:set("Open a local notebook before creating a MetaBlock"); return end
+		if type(dialect_id) ~= "string" or dialect_id == "" then
+			notice:set("No MetaBlock addon is installed (addon.list reports no 'metablock' capability)")
+			return
+		end
 		output_counter:set(output_counter:peek() + 1)
-		local metablock_id = "model_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
-		observe("Create PyTorch MetaBlock", function()
+		local metablock_id = "block_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
+		observe("Create MetaBlock (" .. dialect_id .. ")", function()
 			return Service.execute(zeron, path, "metablock.create", {
-				dialect_id = "pytorch.model",
+				dialect_id = dialect_id,
 				metablock_id = metablock_id,
-				request = { name = "PyTorch Model" },
+				request = { name = label or dialect_id },
 			})
 		end, function(created)
 			local next = table.clone(metablocks:peek())
@@ -1021,7 +1094,7 @@ local Page = ui.component(function()
 			metablocks:set(next)
 			open_metablock(created.metablock_id, "root")
 		end, function(err)
-			notice:set("Could not create PyTorch MetaBlock: " .. tostring(err))
+			notice:set("Could not create MetaBlock: " .. tostring(err))
 		end)
 	end
 
@@ -1029,8 +1102,8 @@ local Page = ui.component(function()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
 		if path == "" then notice:set("Open a local notebook before importing a MetaBlock"); return end
 		ui.open_files({
-			title = "Import Graphimo PyTorch state",
-			filters = { { "Graphimo-PyTorch state or source", { "json", "py" } } },
+			title = "Import Graphimo MetaBlock state",
+			filters = { { "Graphimo MetaBlock state or source", { "json", "py" } } },
 		}):after(function(files)
 			local file = files and files[1]
 			if not file then return end
@@ -1043,11 +1116,17 @@ local Page = ui.component(function()
 					notice:set("Selected MetaBlock state exceeds the 1 MiB import limit")
 					return
 				end
+				local dialects = addon_dialects:peek()
+				if #dialects == 0 then
+					notice:set("No MetaBlock addon is installed; cannot import a state file")
+					return
+				end
+				local dialect = dialects[1]
 				output_counter:set(output_counter:peek() + 1)
-				local metablock_id = "model_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
-				observe("Import Graphimo PyTorch MetaBlock", function()
+				local metablock_id = "block_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
+				observe("Import Graphimo MetaBlock state", function()
 					return Service.execute(zeron, path, "metablock.create", {
-						dialect_id = "pytorch.model",
+						dialect_id = dialect.dialect_id,
 						metablock_id = metablock_id,
 						request = { semantic_state_json = source },
 					})
@@ -1061,7 +1140,7 @@ local Page = ui.component(function()
 					metablocks:set(next)
 					open_metablock(created.metablock_id, "root")
 				end, function(err)
-					notice:set("Could not import PyTorch MetaBlock: " .. tostring(err))
+					notice:set("Could not import MetaBlock state: " .. tostring(err))
 				end)
 			end, function(err)
 				notice:set("Could not read the selected MetaBlock file: " .. tostring(err))
@@ -1078,26 +1157,22 @@ local Page = ui.component(function()
 			notice:set("Open a live local marimo notebook before inserting a MetaBlock definition")
 			return
 		end
-		observe("Build PyTorch MetaBlock definition", function()
+		observe("Materialize MetaBlock definition", function()
 			return Service.execute(zeron, path, "metablock.materialize", {
 				metablock_id = metablock_id,
 				bindings = {},
 			})
 		end, function(definition)
-			if type(definition.source) ~= "string" or definition.source == "" then
-				notice:set("Graphimo returned no generated PyTorch definition")
+			-- The service inserts and runs the generated cell itself; "current"
+			-- means the cell really exists in the notebook.
+			if definition.materialization_state ~= "current" or type(definition.cell_id) ~= "string" then
+				notice:set("MetaBlock materialization did not produce a live cell (no kernel attached?)")
 				return
 			end
-			observe("Insert PyTorch definition into marimo", function()
-				return Service.execute(zeron, path, "notebook.add_cell", { source = definition.source })
-			end, function()
-				log("Inserted generated PyTorch definition for " .. metablock_id)
-				leave_metablock()
-			end, function(err)
-				notice:set("Could not insert the generated definition: " .. tostring(err))
-			end)
+			log("Materialized " .. metablock_id .. " into cell " .. definition.cell_id)
+			leave_metablock()
 		end, function(err)
-			notice:set("Could not materialize PyTorch MetaBlock: " .. tostring(err))
+			notice:set("Could not materialize MetaBlock: " .. tostring(err))
 		end)
 	end
 
@@ -1981,6 +2056,25 @@ local Page = ui.component(function()
 		return project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
 	end
 
+	local function decode_inspector_literal(raw, annotation)
+		-- Strict JSON decoding: a syntax error must never silently become a string.
+		local ok, decoded = pcall(ui.json.decode, raw)
+		if not ok then return nil, "invalid JSON: " .. tostring(decoded) end
+		local ann = tostring(annotation or "")
+		if ann == "int" then
+			if type(decoded) ~= "number" or decoded ~= math.floor(decoded) then
+				return nil, "input " .. " expects an integer (annotation int)"
+			end
+		elseif ann == "float" or ann == "number" then
+			if type(decoded) ~= "number" then return nil, "expected a JSON number (annotation " .. ann .. ")" end
+		elseif ann == "bool" or ann == "boolean" then
+			if type(decoded) ~= "boolean" then return nil, "expected true or false (annotation bool)" end
+		elseif ann == "str" or ann == "string" then
+			if type(decoded) ~= "string" then return nil, "expected a JSON string (annotation str)" end
+		end
+		return decoded, nil
+	end
+
 	local function inspector_set_literal()
 		local _cell, instance = inspector_instance()
 		local name = literal_target:peek()
@@ -1989,9 +2083,15 @@ local Page = ui.component(function()
 			notice:set("Choose an input and enter a JSON literal first")
 			return
 		end
-		local value = raw
-		local ok, decoded = pcall(ui.json.decode, raw)
-		if ok then value = decoded end
+		local annotation = nil
+		for _, port in instance.inputs or {} do
+			if type(port) == "table" and port.name == name then annotation = port.annotation end
+		end
+		local value, decode_error = decode_inspector_literal(raw, annotation)
+		if decode_error then
+			notice:set("Literal refused: " .. decode_error)
+			return
+		end
 		observe("Set literal on " .. name, function()
 			return Service.execute(zeron, inspector_project_path(), "notebook.set_literal", {
 				instance_id = instance.instance_id, input_name = name, value = value,
@@ -2264,14 +2364,17 @@ local Page = ui.component(function()
 					}
 				end),
 				Text { "MetaBlocks", style = "heading" },
+				ui.show(function() return #addon_dialects:get() == 0 end, Text { "No MetaBlock addon installed (addon.list)", style = "caption", tone = "secondary" }),
+				ui.each(addon_dialects, function(dialect)
+					return Button {
+						"Create " .. dialect.label,
+						tone = "secondary", size = "sm", w_full = true,
+						disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+						on_click = function() create_metablock(dialect.dialect_id, dialect.label) end,
+					}
+				end),
 				Button {
-					"Create PyTorch MetaBlock",
-					tone = "secondary", size = "sm", w_full = true,
-					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
-					on_click = create_metablock,
-				},
-				Button {
-					"Import PyTorch state",
+					"Import MetaBlock state",
 					tone = "secondary", size = "sm", w_full = true,
 					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
 					on_click = import_metablock_state,
@@ -2331,7 +2434,7 @@ local Page = ui.component(function()
 				Button { "← Project canvas", tone = "secondary", size = "sm", w_full = true, on_click = leave_metablock },
 				Text { function()
 					local view = metablock_projection:get()
-					return if view then tostring(view.name or "PyTorch MetaBlock") .. " · " .. active_metablock_scope:get() else "MetaBlock"
+					return if view then tostring(view.name or "MetaBlock") .. " · " .. active_metablock_scope:get() else "MetaBlock"
 				end, style = "heading", wrap = true },
 				Text { function()
 					local view = metablock_projection:get()
@@ -2385,11 +2488,11 @@ local Page = ui.component(function()
 				end, ui.column { w_full = true, gap = "$space.1",
 					Text { "Model parameters", style = "heading" },
 					Button {
-						function() local view = metablock_projection:get(); return "Rename model · " .. tostring(view and view.name or "PyTorch Model") end,
+						function() local view = metablock_projection:get(); return "Rename · " .. tostring(view and view.name or "MetaBlock") end,
 						tone = "secondary", size = "sm", w_full = true,
 						on_click = function()
 							local view = metablock_projection:peek()
-						open_metablock_parameter_editor({ external = true, id = "name", name = "Model name", type = "str", value = view and view.name or "PyTorch Model" })
+						open_metablock_parameter_editor({ external = true, id = "name", name = "Name", type = "str", value = view and view.name or "MetaBlock" })
 						end,
 					},
 					ui.each(model_parameters, function(parameter)
@@ -2518,7 +2621,7 @@ local Page = ui.component(function()
 						end, style = "caption", tone = "secondary", wrap = true },
 						Text { function()
 							local details = checkpoint_details:get()
-							return "PyTorch " .. tostring(details and details.pytorch_version or "unknown") .. " · addon " .. tostring(details and details.addon_version or "unknown")
+							return "checkpoint " .. tostring(details and details.pytorch_version or "unknown") .. " · addon " .. tostring(details and details.addon_version or "unknown")
 						end, style = "caption", tone = "secondary", wrap = true },
 						Text { function()
 							local details = checkpoint_details:get()
@@ -2550,7 +2653,16 @@ local Page = ui.component(function()
 								local report = details and details.migration_preview and details.migration_preview.report or nil
 								return format_checkpoint_migration_report(report)
 							end, style = "caption", tone = "secondary", wrap = true },
-							Text { "Preview only. Use graphimo_pytorch.load_checkpoint(..., strict=False) explicitly to apply migration.", style = "caption", tone = "secondary", wrap = true },
+							Button { "Apply migration (strict off)", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = function() restore_checkpoint(true) end },
+						}),
+						ui.show(function() return checkpoint_details:get() ~= nil end, ui.column { w_full = true, gap = "$space.1",
+							Button { "Restore checkpoint into live runtime", tone = "primary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = function() restore_checkpoint(false) end },
+							Text { function()
+								local details = checkpoint_details:get()
+								local restore = details and details.last_restore or nil
+								if type(restore) ~= "table" then return "Not restored yet" end
+								return "Last restore: runtime " .. tostring(restore.runtime_instance_id or "?") .. " · migrated " .. tostring(restore.migrated or false) .. " · revision match " .. tostring(restore.revision_match or false)
+							end, style = "caption", tone = "secondary", wrap = true },
 						}),
 						ui.show(function()
 							local details = checkpoint_details:get()
@@ -2695,7 +2807,7 @@ local Page = ui.component(function()
 		Dialog {
 			open = metablock_parameter_dialog,
 			title = "Edit MetaBlock parameter",
-			body = "The value is validated and saved through Graphimo Core and the PyTorch addon.",
+			body = "The value is validated and saved through Graphimo Core and the addon.",
 			confirm = {
 				label = "Apply parameter",
 				on_click = submit_metablock_parameter,

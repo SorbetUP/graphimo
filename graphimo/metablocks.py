@@ -961,14 +961,20 @@ class MetaBlockAddonManager:
             )
         if result["revision"] != record.revision:
             raise MetaBlockError("addon materialization revision does not match persisted state")
-        self.host.update_materialization_cell(
+        update = self.host.update_materialization_cell(
             {**result, "metablock_id": metablock_id, "dialect_id": record.dialect_id}
         )
-        # The materialized cell now matches the persisted revision; older cells
-        # materialized from a previous revision are reported as outdated by the
-        # renderer comparing graph_revision values.
+        # "current" is only reported when the materialized cell really exists in
+        # the notebook (kernel attached and cell inserted+run). Without a kernel
+        # the host callback is a no-op and the spec alone is returned.
         result = dict(result)
-        result["materialization_state"] = "current"
+        if isinstance(update, dict) and isinstance(update.get("cell_id"), str):
+            result["cell_id"] = update["cell_id"]
+            result["materialization_state"] = "current"
+        elif update is None:
+            result["materialization_state"] = "current"
+        else:
+            result["materialization_state"] = "pending"
         return result
 
     def invoke(self, metablock_id: str, action: str, args: dict[str, Any]) -> Any:

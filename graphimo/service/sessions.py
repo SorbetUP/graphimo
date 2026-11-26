@@ -338,15 +338,32 @@ class ProjectSession:
     def _emit_diagnostic(self, diagnostic: dict[str, Any]) -> None:
         self._publish_with_project(diagnostic, default_kind="diagnostic")
 
-    def _materialization_requested(self, specification: dict[str, Any]) -> None:
+    def _materialization_requested(self, specification: dict[str, Any]) -> dict[str, Any]:
+        """Insert and run the materialization cell in the attached kernel.
+
+        Materialization is atomic: the service owns the notebook edit (not the
+        renderer), so ``metablock.materialize`` can only report "current" once
+        the cell really exists and has run.
+        """
+        source = specification.get("source")
+        with self._state_lock:
+            port = self._kernel_port
+        cell_id = None
+        if port is not None and isinstance(source, str) and source.strip():
+            added = port.invoke_notebook("add_cell", {"source": source})
+            if isinstance(added, dict) and isinstance(added.get("cell_id"), str):
+                cell_id = added["cell_id"]
+                port.invoke_notebook("run", {"cell_id": cell_id})
         self.events.publish(
             {
                 "kind": "metablock.materialization.requested",
                 "project_id": self.project_id,
                 "metablock_id": specification.get("metablock_id"),
                 "dialect_id": specification.get("dialect_id"),
+                "cell_id": cell_id,
             }
         )
+        return {"cell_id": cell_id, "inserted": cell_id is not None}
 
     def _publish_with_project(self, value: dict[str, Any], *, default_kind: str) -> None:
         event = dict(value)
