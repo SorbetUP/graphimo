@@ -104,9 +104,12 @@ The standalone Workbench is launched with
 renderer over `GraphimoApplication`, serves only on loopback, and persists
 canvas geometry through the generic Core layout actions. It does not attach to
 an active marimo session: the materialization action previews the generated
-cell source and says explicitly that it was not inserted. The exact marimo
-cell update mechanism is still blocked by the Core specification's
-`HUMAN DECISION REQUIRED` marker.
+cell source and says explicitly that it was not inserted. The addon returns a
+canonical materialization-cell specification that recreates the
+`PyTorchModelDefinition` inside the active marimo Python process. Connecting
+that specification to an active marimo session belongs to the later persistent
+service and Zeron-adapter milestones; this Workbench limitation does not add a
+second scheduler or keep a model object in the renderer process.
 
 ## P5 process-local runtime and live telemetry
 
@@ -306,5 +309,10 @@ Runtime conformance also fakes the monotonic clock at a 2 Hz activation
 subscription: three ordinary forwards still return normally while the
 telemetry seam emits only two summaries. Existing bounds tests cover event
 history eviction, 128-bin histogram caps and 4096-value sample caps. The addon
-wheel check confirms its entry point and the template/training modules are in
-the separately installable distribution.
+wheel lifecycle check confirms its entry point and template/training modules
+are in the separately installable distribution. Through `GraphimoApplication`,
+that lifecycle also creates and materializes a model, lists and subscribes its
+runtime, drains the activation event and explicitly requests TorchLens
+inspection. Projection, semantic editing, materialization, runtime actions,
+event retrieval and deep inspection therefore share the host application
+operation boundary.

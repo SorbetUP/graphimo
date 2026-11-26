@@ -15,7 +15,7 @@ ADDON = ROOT / "addons" / "pytorch"
 
 @pytest.mark.full
 @pytest.mark.skipif(
-    importlib.util.find_spec("torch") is None,
+    importlib.util.find_spec("torch") is None or importlib.util.find_spec("torchlens") is None,
     reason="install the graphimo-pytorch runtime extra for addon lifecycle tests",
 )
 def test_addon_wheel_discovers_materializes_and_preserves_state(tmp_path: Path) -> None:
@@ -114,6 +114,46 @@ model = definition.instantiate()
 assert isinstance(model(__import__("torch").ones(2, 4)), dict)
 assert model.__graphimo_pytorch_runtime__.graph_revision == definition.graph_revision
 assert definition.graph_revision in definition.generated_source
+runtime_id = model.__graphimo_pytorch_runtime__.runtime_instance_id
+runtime_list = application.execute("metablock.invoke", {
+    "metablock_id": "tiny", "action": "runtime.list", "args": {}
+})
+assert runtime_list["items"][0]["runtime_instance_id"] == runtime_id
+backbone_path = next(
+    site["module_path"]
+    for site in runtime_list["items"][0]["bindings"]
+    if site["logical_element_id"] == "backbone"
+)
+subscribed = application.execute("metablock.invoke", {
+    "metablock_id": "tiny",
+    "action": "runtime.subscribe",
+    "args": {
+        "runtime_instance_id": runtime_id,
+        "logical_element_id": "backbone",
+        "signal": "activation",
+        "rate_hz": 10,
+    },
+})
+model(__import__("torch").ones(2, 4))
+events = application.execute("metablock.events", {
+    "metablock_id": "tiny", "cursor": "0", "limit": 128
+})
+assert subscribed["module_path"] == backbone_path
+assert any(
+    event["kind"] == "activation.summary" and event["logical_element_id"] == "backbone"
+    for event in events["events"]
+)
+inspected = application.execute("metablock.invoke", {
+    "metablock_id": "tiny",
+    "action": "torchlens.inspect",
+    "args": {
+        "runtime_instance_id": runtime_id,
+        "logical_element_id": "backbone",
+        "inputs": [[1.0, 2.0, 3.0, 4.0]],
+    },
+})
+assert inspected["module_path"] == backbone_path
+assert inspected["selected_activation"]["available"] is True
 reference = save_checkpoint(model, metadata={"epoch": 2})
 checkpoint = inspect_checkpoint(reference)
 restored = load_checkpoint(definition, reference)
