@@ -58,12 +58,17 @@ Zeron needs the plugin's `commands` permission for `python3`/`curl` and its
 
 The live bridge tests cover automatic port selection, startup and reuse after a
 marimo WebSocket session is established. The network-backed private environment
-bootstrap test is opt-in:
+bootstrap test is opt-in and must run under a Python that does not already have
+marimo installed. For example:
 
 ```bash
-GRAPHIMO_TEST_BOOTSTRAP=1 GRAPHIMO_MARIMO_PYTHON="$(command -v python3)" \
-  rtk proxy pytest -q tests/test_luau_marimo_live.py::test_managed_launcher_bootstraps_pinned_marimo_when_python_has_no_marimo
+python3 -m venv /tmp/graphimo-bootstrap-test
+/tmp/graphimo-bootstrap-test/bin/python -m pip install pytest
+GRAPHIMO_TEST_BOOTSTRAP=1 /tmp/graphimo-bootstrap-test/bin/python -m pytest -q \
+  tests/test_luau_marimo_live.py::test_managed_launcher_bootstraps_pinned_marimo_when_python_has_no_marimo
 ```
 
-It uses a temporary `HOME`, installs only into the test's temporary directory,
-and terminates the test server when done.
+Keep the shell's normal `PATH` so the test can find the Luau CLI. The test uses
+a temporary `HOME`, installs marimo only into that test directory, and
+terminates the test server when done. A successful clean-environment run was
+verified on 2026-11-26 (`1 passed`).
