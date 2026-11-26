@@ -73,6 +73,11 @@ def test_python_wheel_contains_adapter_and_core_prototype(tmp_path: Path) -> Non
     assert "graphimo/groups.py" in names
     assert "graphimo/artifacts/__init__.py" in names
     assert "graphimo/artifacts/local.py" in names
+    assert "graphimo/client.py" in names
+    assert "graphimo/service/__init__.py" in names
+    assert "graphimo/service/server.py" in names
+    assert "graphimo/service/protocol.py" in names
+    assert "graphimo/service/sessions.py" in names
     assert "graphimo/metablocks.py" in names
     assert "graphimo/workbench.py" in names
     assert "graphimo/workbench/index.html" in names

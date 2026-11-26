@@ -109,7 +109,8 @@ distribution registers through this API. Its P1-P9 implementation includes
 semantic graph editing, model compilation, live runtime inspection, checkpoints,
 TorchLens integration, Llama templates, and package/unavailable-addon lifecycle
 coverage. The host-independent application API is the current integration seam;
-the later persistent service and Zeron migration remain separate milestones.
+the local persistent service now exposes it, and Zeron migration remains a
+later adapter milestone.
 See [`docs/pytorch-addon.md`](docs/pytorch-addon.md) for the implemented surface
 and its process-boundary limitations.
 
@@ -120,6 +121,11 @@ local model canvas, contextual PyTorch palette, inspectors, shape diagnostics,
 generated source, and scoped layout persistence. See the
 [Workbench guide](docs/workbench.md) for its local HTTP boundary and the
 current marimo materialization limitation.
+
+The authenticated local service exposes the same application actions to
+renderers and automation. Use `graphimo.client.GraphimoClient` for project
+sessions, batches and cursor-based events; see the [service guide](docs/service.md).
+It does not add a graph scheduler or replace marimo execution.
 
 ## Development
 

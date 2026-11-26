@@ -28,13 +28,16 @@ class BlockTorch(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, BlockTorch())
 from graphimo import GraphimoApplication
+from graphimo.client import GraphimoClient
 from graphimo.metablocks import GraphimoHostAPI, MetaBlockAddonManager
+from graphimo.service import EventJournal
 
 project = Path(sys.argv[1])
 host = GraphimoHostAPI("core-only", project)
 manager = MetaBlockAddonManager(host, entry_points=list)
 application = GraphimoApplication(host, manager)
 assert application.execute("metablock.list", {})["items"] == []
+assert GraphimoClient and EventJournal
 assert not any(name in sys.modules for name in ("torch", "torchlens", "marimo"))
 print("core-only-ok")
 """
