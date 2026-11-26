@@ -840,6 +840,14 @@ local Page = ui.component(function()
 		return table.concat(sections, "\n")
 	end
 
+	local function format_checkpoint_metadata(metadata)
+		if type(metadata) ~= "table" or next(metadata) == nil then return "Saved metadata: none" end
+		local ok, encoded = pcall(ui.json.encode, metadata)
+		if not ok or type(encoded) ~= "string" then return "Saved metadata: unavailable" end
+		if #encoded > 1000 then encoded = string.sub(encoded, 1, 997) .. "..." end
+		return "Saved metadata: " .. encoded
+	end
+
 	local function open_metablock_parameter_editor(target)
 		local value = target.value
 		if type(value) == "table" then
@@ -2190,7 +2198,29 @@ local Page = ui.component(function()
 						end, style = "caption", tone = "secondary", wrap = true },
 						Text { function()
 							local details = checkpoint_details:get()
+							return "Model: " .. tostring(details and details.model_name or "unknown") .. " · MetaBlock: " .. tostring(details and details.metablock_id or "unknown")
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
 							return "Graph revision: " .. tostring(details and details.graph_revision or "unknown")
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
+							return "Materialization: " .. tostring(details and details.materialization_key or "unknown")
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
+							return "PyTorch " .. tostring(details and details.pytorch_version or "unknown") .. " · addon " .. tostring(details and details.addon_version or "unknown")
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
+							local optimizer = details and details.optimizer_state_present and "present" or "absent"
+							local scheduler = details and details.scheduler_state_present and "present" or "absent"
+							return "Optimizer state: " .. optimizer .. " · scheduler state: " .. scheduler
+						end, style = "caption", tone = "secondary", wrap = true },
+						Text { function()
+							local details = checkpoint_details:get()
+							return format_checkpoint_metadata(details and details.metadata)
 						end, style = "caption", tone = "secondary", wrap = true },
 						Text { function()
 							local details = checkpoint_details:get()

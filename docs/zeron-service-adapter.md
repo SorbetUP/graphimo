@@ -85,8 +85,10 @@ operation.
 - The MetaBlock checkpoint panel inspects an explicit Artifact ID and offers
   exact-shape migration preview only when graph revisions differ. The preview
   summarizes copied names, missing names and shape mismatches, with a bounded
-  number of entries displayed per category. It never loads or migrates a model
-  from the renderer; applying a migration remains an explicit Python
+  number of entries displayed per category. Inspection shows checkpoint
+  provenance, library versions, optimizer/scheduler presence and a bounded
+  metadata summary. It never loads or migrates a model from the renderer;
+  applying a migration remains an explicit Python
   `load_checkpoint(..., strict=False)` operation. Late
   checkpoint responses are ignored after switching MetaBlocks, so they cannot
   overwrite the current model's panel state or clear a newer request's busy
