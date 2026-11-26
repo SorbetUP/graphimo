@@ -26,14 +26,24 @@ the application returns an unavailable placeholder with the original state
 and revision.
 
 `GraphimoApplication.execute()` is the shared action seam for host adapters.
-It routes create/catalog/project/apply/materialize/invoke/events operations to
-the same manager, bounds action arguments and JSON results, and leaves canvas
-state and notebook scheduling to their respective host systems.
+It routes list/create/catalog/project/apply/materialize/invoke/events operations
+to the same manager, bounds action arguments and JSON results, and leaves
+canvas state and notebook scheduling to their respective host systems. The
+`metablock.list` action reads sidecar metadata without loading addon modules;
+invalid sidecars appear as bounded warning diagnostics.
 
-The current tests use a fake entry-point addon to verify lazy discovery,
+Canvas positions are stored separately from addon-owned semantic state in the
+project sibling file `.graphimo.json`. `GraphimoHostAPI.read_layout(scope_id)`
+and `write_layout(scope_id, layout)` store finite `x`, `y`, `width` and
+`height` values keyed by element ID. Writes preserve other scopes and unknown
+presentation metadata and use atomic replacement. The shared application
+exposes those operations as `layout.get` and `layout.set` actions. This keeps
+renderer layout out of PyTorch graph revisions and addon sidecars.
+
+The tests use a fake entry-point addon to verify lazy discovery,
 state creation/editing, atomic failure behavior, project serialization,
-missing-addon preservation, materialization revision checks, bounded events
-and the application action seam. The separate PyTorch wheel now registers
+missing-addon preservation, materialization revision checks, bounded events,
+scoped layout persistence and the application action seam. The separate PyTorch wheel now registers
 through this API and returns a `PyTorchModelDefinition` from an ordinary
 marimo materialization cell. Its current semantic state is a small MLP
 specification; the complete visual element graph/compiler, reusable groups,

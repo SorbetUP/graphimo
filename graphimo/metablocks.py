@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import re
 import tempfile
@@ -166,6 +167,66 @@ class GraphimoHostAPI:
                 path.unlink(missing_ok=True)
         legacy_path.unlink(missing_ok=True)
 
+    @property
+    def presentation_path(self) -> Path:
+        return self.project_path.parent / ".graphimo.json"
+
+    def read_layout(self, scope_id: str) -> dict[str, dict[str, float]]:
+        _validate_scope_id(scope_id)
+        path = self.presentation_path
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {}
+        if len(raw) > MAX_STATE_BYTES:
+            raise MetaBlockStateError("Graphimo presentation file exceeds the 8 MiB limit")
+        try:
+            document = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MetaBlockStateError(f"invalid Graphimo presentation JSON: {exc}") from exc
+        if not isinstance(document, dict) or document.get("format") != 1:
+            raise MetaBlockStateError("unsupported Graphimo presentation format")
+        layout = document.get("layout", {})
+        if not isinstance(layout, dict) or not isinstance(layout.get(scope_id, {}), dict):
+            raise MetaBlockStateError("Graphimo presentation layout must be an object")
+        return _validate_layout(layout.get(scope_id, {}))
+
+    def write_layout(self, scope_id: str, layout: dict[str, Any]) -> None:
+        _validate_scope_id(scope_id)
+        validated = _validate_layout(layout)
+        path = self.presentation_path
+        document: dict[str, Any] = {"format": 1, "layout": {}}
+        if path.exists():
+            try:
+                raw = path.read_bytes()
+                if len(raw) > MAX_STATE_BYTES:
+                    raise MetaBlockStateError("Graphimo presentation file exceeds the 8 MiB limit")
+                existing = json.loads(raw)
+                if not isinstance(existing, dict) or existing.get("format") != 1:
+                    raise MetaBlockStateError("unsupported Graphimo presentation format")
+                document = dict(existing)
+                layout_root = existing.get("layout", {})
+                if not isinstance(layout_root, dict):
+                    raise MetaBlockStateError("Graphimo presentation layout must be an object")
+                document["layout"] = dict(layout_root)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise MetaBlockStateError(f"invalid Graphimo presentation JSON: {exc}") from exc
+        document["layout"][scope_id] = validated
+        encoded = _encode_json(document)
+        if len(encoded) > MAX_STATE_BYTES:
+            raise MetaBlockStateError("Graphimo presentation file exceeds the 8 MiB limit")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
     def for_metablock(self, metablock_id: str) -> GraphimoHostAPI:
         self.sidecar_path(metablock_id)
         return replace(self, current_metablock_id=metablock_id)
@@ -181,6 +242,31 @@ def _encode_json(value: Any) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError, UnicodeEncodeError) as exc:
         raise MetaBlockStateError(f"MetaBlock state must be UTF-8 JSON data: {exc}") from exc
+
+
+def _validate_scope_id(value: str) -> None:
+    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+        raise ValueError("scope ID must contain 1-128 letters, digits, '_' or '-'")
+
+
+def _validate_layout(value: Any) -> dict[str, dict[str, float]]:
+    if not isinstance(value, dict):
+        raise MetaBlockStateError("Graphimo layout must be an object")
+    result: dict[str, dict[str, float]] = {}
+    for element_id, rect in value.items():
+        if not isinstance(element_id, str) or not _ID_RE.fullmatch(element_id):
+            raise MetaBlockStateError("Graphimo layout has an invalid element ID")
+        if not isinstance(rect, dict) or set(rect) != {"x", "y", "width", "height"}:
+            raise MetaBlockStateError("Graphimo element layout requires x, y, width and height")
+        normalized: dict[str, float] = {}
+        for key, number in rect.items():
+            if type(number) not in {int, float} or not math.isfinite(number):
+                raise MetaBlockStateError("Graphimo layout coordinates must be finite numbers")
+            normalized[key] = float(number)
+        if normalized["width"] <= 0 or normalized["height"] <= 0:
+            raise MetaBlockStateError("Graphimo layout width and height must be positive")
+        result[element_id] = normalized
+    return result
 
 
 def state_revision(state: Any) -> str:
@@ -234,6 +320,49 @@ class MetaBlockAddonManager:
                 )
             )
         return sorted(result, key=lambda item: item.name)
+
+    def list(self) -> dict[str, Any]:
+        """List persisted MetaBlocks without requiring their addons to load."""
+        root = self.host.metablock_root
+        records: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, str]] = []
+        if not root.exists():
+            return {"items": records, "diagnostics": diagnostics}
+        for path in sorted(root.glob("*.json")):
+            try:
+                raw = path.read_bytes()
+                if len(raw) > MAX_STATE_BYTES:
+                    raise MetaBlockStateError("sidecar exceeds the 8 MiB limit")
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    raise MetaBlockStateError("sidecar root must be a JSON object")
+                record = _record_from_sidecar(value)
+                if self.host.sidecar_path(record.metablock_id) != path:
+                    raise MetaBlockStateError("sidecar filename does not match its metadata")
+                records.append(
+                    {
+                        "metablock_id": record.metablock_id,
+                        "dialect_id": record.dialect_id,
+                        "addon_version": record.addon_version,
+                        "api_version": record.api_version,
+                        "revision": record.revision,
+                    }
+                )
+            except (
+                OSError,
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                MetaBlockError,
+                ValueError,
+            ) as exc:
+                diagnostics.append(
+                    {
+                        "code": "metablock_sidecar_invalid",
+                        "message": f"{path.name}: {exc}",
+                        "severity": "warning",
+                    }
+                )
+        return {"items": records, "diagnostics": diagnostics}
 
     def _load(self, dialect_id: str) -> MetaBlockDialect:
         handler = self._handlers.get(dialect_id)

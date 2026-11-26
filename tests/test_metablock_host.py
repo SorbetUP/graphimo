@@ -256,3 +256,62 @@ def test_failed_projection_does_not_persist_a_partial_addon_edit(tmp_path: Path)
         manager.apply("block", {"type": "increment"})
 
     assert manager.load("block").state["value"] == 0
+
+
+def test_layout_persists_per_scope_and_preserves_other_document_metadata(tmp_path: Path) -> None:
+    host, _manager, _entry = setup_manager(tmp_path)
+    host.presentation_path.parent.mkdir(parents=True, exist_ok=True)
+    host.presentation_path.write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "layout": {"nested": {"old": {"x": 1, "y": 2, "width": 3, "height": 4}}},
+                "camera": {"zoom": 1.2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    host.write_layout("root", {"element_1": {"x": 11, "y": 12, "width": 240, "height": 96}})
+
+    assert host.read_layout("root") == {
+        "element_1": {"x": 11.0, "y": 12.0, "width": 240.0, "height": 96.0}
+    }
+    document = json.loads(host.presentation_path.read_text(encoding="utf-8"))
+    assert document["layout"]["nested"]["old"]["width"] == 3
+    assert document["camera"] == {"zoom": 1.2}
+
+
+@pytest.mark.parametrize(
+    ("scope_id", "layout", "message"),
+    [
+        ("../outside", {}, "scope ID"),
+        ("root", {"../outside": {"x": 0, "y": 0, "width": 1, "height": 1}}, "element ID"),
+        ("root", {"block": {"x": float("nan"), "y": 0, "width": 1, "height": 1}}, "finite"),
+        ("root", {"block": {"x": 0, "y": 0, "width": 0, "height": 1}}, "positive"),
+    ],
+)
+def test_layout_rejects_invalid_scope_and_geometry(
+    tmp_path: Path, scope_id: str, layout: dict[str, Any], message: str
+) -> None:
+    host, _manager, _entry = setup_manager(tmp_path)
+
+    with pytest.raises((ValueError, MetaBlockStateError), match=message):
+        host.write_layout(scope_id, layout)
+
+
+def test_application_routes_layout_and_list_actions(tmp_path: Path) -> None:
+    host, manager, _entry = setup_manager(tmp_path)
+    application = GraphimoApplication(host, manager)
+    manager.create("test.counter", "block", {})
+
+    saved = application.execute(
+        "layout.set",
+        {"scope_id": "root", "layout": {"block": {"x": 10, "y": 20, "width": 200, "height": 90}}},
+    )
+    layout = application.execute("layout.get", {"scope_id": "root"})
+    listed = application.execute("metablock.list", {})
+
+    assert saved == {"saved": True}
+    assert layout["layout"]["block"]["x"] == 10
+    assert listed["items"][0]["metablock_id"] == "block"

@@ -29,6 +29,7 @@ class GraphimoApplication:
             raise ValueError("action args exceed the 256 KiB limit")
 
         operations = {
+            "metablock.list": self._list_metablocks,
             "metablock.create": self._create_metablock,
             "metablock.catalog": self._catalog,
             "metablock.project": self._project,
@@ -36,6 +37,8 @@ class GraphimoApplication:
             "metablock.materialize": self._materialize,
             "metablock.invoke": self._invoke,
             "metablock.events": self._events,
+            "layout.get": self._get_layout,
+            "layout.set": self._set_layout,
         }
         operation = operations.get(action)
         if operation is None:
@@ -55,6 +58,9 @@ class GraphimoApplication:
             self._required(args, "metablock_id"),
             args.get("request", {}),
         )
+
+    def _list_metablocks(self, _args: dict[str, Any]) -> Any:
+        return self.metablocks.list()
 
     def _catalog(self, args: dict[str, Any]) -> Any:
         return self.metablocks.catalog(
@@ -89,6 +95,13 @@ class GraphimoApplication:
             args.get("cursor"),
             args.get("limit", 128),
         )
+
+    def _get_layout(self, args: dict[str, Any]) -> Any:
+        return {"layout": self.host.read_layout(self._required(args, "scope_id"))}
+
+    def _set_layout(self, args: dict[str, Any]) -> Any:
+        self.host.write_layout(self._required(args, "scope_id"), self._required(args, "layout"))
+        return {"saved": True}
 
 
 def _bounded_json(value: Any, *, max_bytes: int = 4 * 1024 * 1024) -> Any:
