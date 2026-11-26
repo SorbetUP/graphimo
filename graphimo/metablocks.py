@@ -110,6 +110,8 @@ class GraphimoHostAPI:
     emit_event: Callable[[dict[str, Any]], None] = lambda _event: None
     diagnose: Callable[[dict[str, Any]], None] = lambda _diagnostic: None
     update_materialization_cell: Callable[[dict[str, Any]], Any] = lambda _spec: None
+    invoke_kernel: Callable[[str, str, dict[str, Any]], Any] | None = None
+    read_kernel_events: Callable[[str, str | None, int], dict[str, Any]] | None = None
     current_scope: Callable[[], str] = lambda: "root"
     current_metablock_id: str | None = None
 
@@ -728,6 +730,14 @@ class MetaBlockAddonManager:
         if type(limit) is not int or not 1 <= limit <= 512:
             raise ValueError("event limit must be between 1 and 512")
         record = self.load(metablock_id)
+        if self.host.read_kernel_events is not None:
+            response = self.host.read_kernel_events(metablock_id, cursor, min(limit, 256))
+            if response is not None and (
+                not isinstance(response, dict) or not isinstance(response.get("events"), list)
+            ):
+                raise MetaBlockError("kernel event spool must return a bounded event list")
+            if response is not None:
+                return response
         response = self._load(record.dialect_id).drain_events(
             cursor, limit, self.host.for_metablock(metablock_id)
         )

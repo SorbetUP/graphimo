@@ -329,7 +329,8 @@ local function execute(zeron, base, token, session_id, code, timeout)
 		if not value then return failure(why, "execute_failed") end
 		if value.ok == false then
 			local detail = if type(value.error) == "table" then value.error.message else value.error
-			return failure(detail or "Marimo operation failed", "marimo_operation_failed")
+			local code = if type(value.error) == "table" then value.error.code else nil
+			return failure(detail or "Marimo operation failed", code or "marimo_operation_failed")
 		end
 		return value
 	end)
@@ -341,6 +342,7 @@ local function code_for(operation, args)
 		return table.concat({
 			"import ast, json, math, re",
 			"import marimo._code_mode as cm",
+			"from graphimo.dependencies import annotate_blocked_dependencies",
 			"def graphimo_reference(source):",
 			"    if not isinstance(source, str): return None",
 			"    lines = source.splitlines()",
@@ -455,6 +457,7 @@ local function code_for(operation, args)
 			"        reference = graphimo_reference(cell.code)",
 			"        if reference is not None: row['graphimo_component'] = reference",
 			"        cells.append(row)",
+			"    annotate_blocked_dependencies(cells, edges)",
 			"    result = {'notebook': {'path': " .. ui.json.encode(args.notebook_path or "") .. ", 'session_id': " .. session_id .. "}, 'cells': cells, 'edges': edges}",
 			"    if controls is not None: result['controls'] = controls",
 			"print('GRAPHIMO_RESULT:' + json.dumps(result, default=str, separators=(',', ':'))) ",
@@ -612,10 +615,13 @@ local function code_for(operation, args)
 		return table.concat({
 			"import json",
 			"import marimo._code_mode as cm",
+			"from graphimo.dependencies import blocked_dependencies_for_graph",
 			"async with cm.get_context() as ctx:",
 			"    cell_id = " .. ui.json.encode(args.cell_id),
-			"    ctx.run_cell(cell_id)",
-			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'status': 'queued', 'request_id': cell_id}))",
+			"    blocked_by = blocked_dependencies_for_graph(ctx.graph.cells, cell_id)",
+			"    if blocked_by: result = {'ok': False, 'error': {'code': 'blocked_by_disabled_dependency', 'message': 'Cell is blocked by disabled upstream cell(s): ' + ', '.join(blocked_by), 'blocked_by': blocked_by}}",
+			"    else: ctx.run_cell(cell_id); result = {'ok': True, 'status': 'queued', 'request_id': cell_id}",
+			"print('GRAPHIMO_RESULT:' + json.dumps(result, separators=(',', ':'))) ",
 		}, "\n")
 	elseif operation == "add_cell" then
 		return table.concat({
@@ -917,6 +923,29 @@ end
 
 function Bridge.run(zeron, base, token, session_id, cell_id)
 	return execute(zeron, base, token, session_id, code_for("run", { cell_id = cell_id }), 300)
+end
+
+function Bridge.configure_telemetry(zeron, base, token, session_id, config)
+	if type(config) ~= "table" or type(config.service_url) ~= "string" or type(config.service_token) ~= "string" or type(config.project_id) ~= "string" or type(config.session_id) ~= "string" then
+		return failure("Incomplete ephemeral Graphimo telemetry configuration", "invalid_telemetry_config")
+	end
+	local code = table.concat({
+		"import json",
+		"from graphimo_pytorch.publisher import configure_kernel_publisher",
+		"status = configure_kernel_publisher(service_url=" .. ui.json.encode(config.service_url) .. ", token=" .. ui.json.encode(config.service_token) .. ", project_id=" .. ui.json.encode(config.project_id) .. ", session_id=" .. ui.json.encode(config.session_id) .. ")",
+		"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'publisher': status}, separators=(',', ':'))) ",
+	}, "\n")
+	return execute(zeron, base, token, session_id, code, 15)
+end
+
+function Bridge.stop_telemetry(zeron, base, token, session_id)
+	local code = table.concat({
+		"import json",
+		"from graphimo_pytorch.publisher import stop_kernel_publisher",
+		"status = stop_kernel_publisher()",
+		"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'publisher': status}, separators=(',', ':'))) ",
+	}, "\n")
+	return execute(zeron, base, token, session_id, code, 10)
 end
 
 function Bridge.add_cell(zeron, base, token, session_id, source)

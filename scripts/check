@@ -62,7 +62,8 @@ def check_dependencies(mode: str) -> None:
 def python_paths() -> list[str]:
     return [
         "adapter",
-        "addons/pytorch",
+        "addons/pytorch/graphimo_pytorch",
+        "addons/pytorch/tests",
         "core",
         "components",
         "examples",
@@ -84,6 +85,7 @@ def lint_paths() -> list[str]:
         "tests/test_core_vertical_slice.py",
         "tests/test_groups.py",
         "tests/test_service.py",
+        "tests/test_kernel_publisher.py",
         "tests/test_luau_plugin_adapter.py",
         "tests/test_artifact_api.py",
         "tests/test_base_block_contract.py",
@@ -168,6 +170,7 @@ def main() -> int:
     run("Ruff lint", ruff, "check", *checked_paths)
 
     env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["GRAPHIMO_TEST_BOOTSTRAP"] = "1" if args.full else "0"
     marimo_python = subprocess.run(
         [sys.executable, "-c", "import sys, marimo; print(sys.executable)"],
@@ -188,7 +191,9 @@ def main() -> int:
             luau_compile,
             "--only-parse",
             "plugin/service_bridge.luau",
+            "plugin/marimo_bridge.luau",
             "plugin/init.luau",
+            "plugin/canvas.luau",
         )
 
     with tempfile.TemporaryDirectory(prefix="graphimo-check-") as temporary:

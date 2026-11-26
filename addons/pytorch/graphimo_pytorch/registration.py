@@ -210,13 +210,19 @@ class PyTorchModelDialect:
         semantic = state_from_dict(state)
         projection = project_model(semantic, scope)
         projection["graph_revision"] = graph_revision(semantic)
-        from .runtime import RUNTIME_REGISTRY, _model_device
-
         metablock_id = context.current_metablock_id
-        runtimes = RUNTIME_REGISTRY.list_for_metablock(metablock_id) if metablock_id else []
-        projection["runtime_selector"] = {
-            "available": bool(runtimes),
-            "items": [
+        runtime_listing = None
+        invoke_kernel = getattr(context, "invoke_kernel", None)
+        if metablock_id and invoke_kernel is not None:
+            try:
+                runtime_listing = invoke_kernel(metablock_id, "runtime.list", {})
+            except Exception as exc:
+                runtime_listing = {"items": [], "reason": str(exc)}
+        if runtime_listing is None:
+            from .runtime import RUNTIME_REGISTRY, _model_device
+
+            runtimes = RUNTIME_REGISTRY.list_for_metablock(metablock_id) if metablock_id else []
+            items = [
                 {
                     "runtime_instance_id": item.runtime_instance_id,
                     "graph_revision": item.graph_revision,
@@ -225,8 +231,17 @@ class PyTorchModelDialect:
                 }
                 for item in runtimes
                 if (model := RUNTIME_REGISTRY.resolve(item.runtime_instance_id)) is not None
-            ],
-            "reason": None if runtimes else "No active runtime is registered in this process.",
+            ]
+            reason = None if runtimes else "No active runtime is registered in this process."
+        else:
+            items = runtime_listing.get("items", [])
+            reason = runtime_listing.get("reason") or (
+                None if items else "No active runtime is registered in the marimo kernel."
+            )
+        projection["runtime_selector"] = {
+            "available": bool(items),
+            "items": items,
+            "reason": reason,
         }
         return projection
 
@@ -270,6 +285,25 @@ class PyTorchModelDialect:
     def invoke(
         self, state: Any, action: str, args: dict[str, Any], context: GraphimoHostAPI
     ) -> Any:
+        if (
+            action
+            in {
+                "runtime.list",
+                "runtime.subscribe",
+                "runtime.unsubscribe",
+                "runtime.unsubscribe_all",
+                "runtime.release",
+                "torchlens.inspect",
+                "torchlens.save_inspection",
+            }
+            and getattr(context, "invoke_kernel", None) is not None
+        ):
+            metablock_id = context.current_metablock_id
+            if not metablock_id:
+                raise ValueError("runtime action requires a scoped MetaBlock")
+            remote = context.invoke_kernel(metablock_id, action, args)
+            if remote is not None:
+                return remote
         from .runtime import RUNTIME_REGISTRY, SubscriptionSpec, _model_device
 
         if action == "parameter_summary":
@@ -329,6 +363,11 @@ class PyTorchModelDialect:
             return RUNTIME_REGISTRY.unsubscribe(
                 args.get("runtime_instance_id"), args.get("subscription_id")
             )
+        if action == "runtime.unsubscribe_all":
+            metablock_id = context.current_metablock_id
+            if not metablock_id:
+                raise ValueError("subscription cleanup requires a scoped MetaBlock")
+            return RUNTIME_REGISTRY.unsubscribe_all_for_metablock(metablock_id)
         if action == "runtime.release":
             _require_scoped_runtime(RUNTIME_REGISTRY, args.get("runtime_instance_id"), context)
             model = RUNTIME_REGISTRY.resolve(args.get("runtime_instance_id"))

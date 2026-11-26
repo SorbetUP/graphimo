@@ -122,4 +122,14 @@ function Service.events(zeron, project_path, cursor, limit, wait_ms)
 	}, 15)
 end
 
+function Service.telemetry_config(zeron, project_path, marimo_url, marimo_token, session_id)
+	return call(zeron, {
+		path = project_path,
+		operation = "telemetry_config",
+		marimo_url = marimo_url,
+		marimo_token = marimo_token,
+		session_id = session_id,
+	}, 15)
+end
+
 return Service

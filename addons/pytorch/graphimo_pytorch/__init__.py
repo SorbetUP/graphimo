@@ -31,6 +31,12 @@ from .runtime import (
     summarize_tensor,
     summarize_tree,
 )
+from .publisher import (
+    KernelEventPublisher,
+    configure_kernel_publisher,
+    kernel_publisher_stats,
+    stop_kernel_publisher,
+)
 from .checkpoint import (
     CheckpointError,
     get_migration_report,
@@ -67,6 +73,10 @@ __all__ = [
     "PyTorchModelDefinition",
     "PyTorchEventBus",
     "PyTorchEvent",
+    "KernelEventPublisher",
+    "configure_kernel_publisher",
+    "kernel_publisher_stats",
+    "stop_kernel_publisher",
     "GroupRuntimeIndex",
     "RuntimeBindingMap",
     "RuntimeModelInfo",

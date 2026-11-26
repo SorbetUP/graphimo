@@ -87,6 +87,49 @@ class EventJournal:
                 "dropped": dropped,
             }
 
+    def read_matching(
+        self,
+        cursor: str | int | None = None,
+        *,
+        metablock_id: str,
+        source: str,
+        limit: int = 128,
+        wait_ms: int = 0,
+    ) -> dict[str, Any]:
+        sequence = _parse_cursor(cursor)
+        if type(limit) is not int or not 1 <= limit <= MAX_EVENT_LIMIT:
+            raise ValueError(f"event limit must be between 1 and {MAX_EVENT_LIMIT}")
+        if type(wait_ms) is not int or not 0 <= wait_ms <= MAX_WAIT_MS:
+            raise ValueError(f"wait_ms must be between 0 and {MAX_WAIT_MS}")
+        deadline = time.monotonic() + wait_ms / 1000
+
+        def matches(event: dict[str, Any]) -> bool:
+            return event.get("metablock_id") == metablock_id and event.get("source") == source
+
+        with self._condition:
+            while not self._closed and not any(
+                item_sequence > sequence and matches(event) for item_sequence, event in self._events
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            oldest = self._events[0][0] if self._events else self._next_sequence
+            dropped = max(0, oldest - sequence - 1)
+            selected = [
+                (item_sequence, event)
+                for item_sequence, event in self._events
+                if item_sequence > sequence and matches(event)
+            ][:limit]
+            next_cursor = selected[-1][0] if selected else max(sequence, oldest - 1)
+            return {
+                "cursor": str(next_cursor),
+                "events": [
+                    {**event, "sequence": item_sequence} for item_sequence, event in selected
+                ],
+                "dropped": dropped,
+            }
+
     def close(self) -> None:
         with self._condition:
             self._closed = True

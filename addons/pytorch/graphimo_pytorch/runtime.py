@@ -167,6 +167,11 @@ class PyTorchEventBus:
                 "dropped": missed,
             }
 
+    def metablock_ids(self) -> list[str]:
+        """Return identities with event streams, for an attached async publisher."""
+        with self._lock:
+            return sorted(self._next_by_metablock)
+
 
 @dataclass(frozen=True)
 class SubscriptionSpec:
@@ -319,6 +324,21 @@ class RuntimeRegistry:
             if not subscriptions:
                 self._subscriptions.pop(runtime_instance_id, None)
             return {"removed": True, "subscription_id": subscription_id}
+
+    def unsubscribe_all_for_metablock(self, metablock_id: str) -> dict[str, Any]:
+        with self._lock:
+            pending = [
+                (runtime_id, subscription_id)
+                for runtime_id, subscriptions in self._subscriptions.items()
+                for subscription_id, subscription in subscriptions.items()
+                if (info := self._infos.get(runtime_id)) is not None
+                and info.metablock_id == metablock_id
+            ]
+        removed = sum(
+            bool(self.unsubscribe(runtime_id, subscription_id)["removed"])
+            for runtime_id, subscription_id in pending
+        )
+        return {"removed": removed}
 
     def release(self, model: Any) -> bool:
         info = _runtime_info(model)

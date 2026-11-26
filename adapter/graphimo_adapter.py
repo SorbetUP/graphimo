@@ -32,6 +32,7 @@ from graphimo.instance import (
     parse_instance_source,
     reconnect_instance_source,
 )
+from graphimo.dependencies import annotate_blocked_dependencies
 
 _LITERAL_ALIAS_TYPE = type(Literal[0])
 _TUPLE_ALIAS_TYPES = {type(tuple[int, ...]), type(typing.Tuple[int, ...])}  # noqa: UP006 - support the typing.Tuple spelling
@@ -209,49 +210,8 @@ def _snapshot(context: Any, session_id: str) -> dict[str, Any]:
                     }
                 )
                 known.add(edge_key)
-    # A disabled node invalidates its outputs and every value derived from them.
-    # Keep the graph intact and annotate affected descendants instead of changing
-    # their source or cascading the user's explicit disabled state.
-    blocked_by: dict[str, set[str]] = {}
-    cell_ids = {item.get("id") for item in cells if isinstance(item, dict)}
-    changed = True
-    while changed:
-        changed = False
-        for edge in edges:
-            if not isinstance(edge, dict):
-                continue
-            source_id = edge.get("source_cell_id")
-            target_id = edge.get("target_cell_id")
-            if target_id not in cell_ids:
-                continue
-            roots = set()
-            if source_id in disabled:
-                roots.add(source_id)
-            roots.update(blocked_by.get(source_id, set()))
-            if roots - blocked_by.get(target_id, set()):
-                blocked_by.setdefault(target_id, set()).update(roots)
-                changed = True
-    for item in cells:
-        if not isinstance(item, dict):
-            continue
-        cell_id = item.get("id")
-        if cell_id in disabled:
-            item["graphimo_dependency_state"] = {
-                "state": "disabled",
-                "blocked_by": [cell_id],
-            }
-        elif blocked_by.get(cell_id):
-            item["graphimo_dependency_state"] = {
-                "state": "blocked",
-                "blocked_by": sorted(blocked_by[cell_id]),
-                "stale": True,
-            }
-    for edge in edges:
-        if isinstance(edge, dict) and (
-            edge.get("source_cell_id") in disabled
-            or edge.get("source_cell_id") in blocked_by
-        ):
-            edge["status"] = "stale"
+    # Keep source and connections intact while marking transitively stale values.
+    annotate_blocked_dependencies(cells, edges)
     projected["cells"] = cells
     projected["edges"] = edges
     return projected

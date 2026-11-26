@@ -63,8 +63,9 @@ function Canvas.draw_edges(c, cells, edges, zoom, pan_x, pan_y, selected, pendin
 			local x2, y2 = screen(to.x or 0, Canvas.port(to, target_port, false))
 			local bend = math.max(52 * zoom, math.abs(x2 - x1) * 0.42)
 			local path = ui.path():move(x1, y1):cubic(x1 + bend, y1, x2 - bend, y2, x2, y2)
+			local edge_color = if edge.status == "stale" then "$text.tertiary" else "$text.secondary"
 			c:stroke(path, "$background", 5 * zoom, { cap = "round" })
-			c:stroke(path, "$text.secondary", 1.8 * zoom, { cap = "round" })
+			c:stroke(path, edge_color, 1.8 * zoom, { cap = "round" })
 			c:circle(x1, y1, 4 * zoom, "$accent")
 			c:circle(x2, y2, 4 * zoom, "$accent")
 		end

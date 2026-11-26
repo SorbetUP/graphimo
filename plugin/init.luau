@@ -435,6 +435,22 @@ local Page = ui.component(function()
 			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
 			local path = value.notebook.path or ""
 			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or path
+			local telemetry_session = value.notebook.session_id or session_id:peek()
+			if is_local_url(url:peek()) and telemetry_session ~= "" then
+				observe("Configure kernel telemetry", function()
+					return Service.telemetry_config(zeron, project_path, url:peek(), token:peek(), telemetry_session)
+				end, function(config)
+					observe("Attach kernel telemetry", function()
+						return Bridge.configure_telemetry(zeron, url:peek(), token:peek(), telemetry_session, config)
+					end, function()
+						log("Attached asynchronous PyTorch telemetry for marimo session " .. telemetry_session)
+					end, function(err)
+						log("Could not attach PyTorch telemetry: " .. tostring(err), "error")
+					end)
+				end, function(err)
+					log("Could not obtain ephemeral telemetry credentials: " .. tostring(err), "error")
+				end)
+			end
 			local function apply_layout(saved_positions)
 				local merged, active = {}, {}
 				for index, cell in value.cells do
@@ -1266,7 +1282,19 @@ local Page = ui.component(function()
 		table.insert(style, ui.column { w_full = true, h_full = true, gap = "$space.1", p = "$space.3",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function() local value = cell(); return if value and value.name then value.name else "Cell " .. string.sub(id, 1, 7) end, style = "label", grow = 1 },
-				Text { function() local value = cell(); return value and value.status or "unknown" end, style = "caption", tone = function() local value = cell(); return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary" end },
+				Text { function()
+					local value = cell()
+					local dependency = value and value.graphimo_dependency_state
+					if dependency and dependency.state == "disabled" then return "disabled" end
+					if dependency and dependency.state == "blocked" then return "stale / blocked" end
+					return value and value.status or "unknown"
+				end, style = "caption", tone = function()
+					local value = cell()
+					local dependency = value and value.graphimo_dependency_state
+					if dependency and dependency.state == "blocked" then return "danger" end
+					if dependency and dependency.state == "disabled" then return "secondary" end
+					return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary"
+				end },
 			},
 			Text { function() local value = cell(); return string.match(value and value.source or "", "^[^\n]*") or "Empty cell" end, style = "caption", tone = "secondary", wrap = true },
 			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
@@ -1280,8 +1308,10 @@ local Page = ui.component(function()
 					local mime = value.output.mimetype or "text/plain"
 					if value.output.image_data_url or mime == "text/markdown" then return "" end
 					local preview = value.output.preview or ""
-					if preview == "" then return tostring(mime) end
-					return tostring(mime) .. " · " .. tostring(preview)
+					local dependency = value.graphimo_dependency_state
+					local stale = dependency and dependency.state == "blocked"
+					if preview == "" then return (if stale then "STALE · " else "") .. tostring(mime) end
+					return (if stale then "STALE · " else "") .. tostring(mime) .. " · " .. tostring(preview)
 				end
 				if value.output and value.output ~= "None" then return tostring(value.output) end
 				return value.errors and value.errors[1] and value.errors[1].message or ""

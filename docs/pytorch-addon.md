@@ -160,13 +160,34 @@ activation histogram/sample and output-gradient summary events. It shows the
 actual output shape and module parameter count when a matching event/runtime
 binding exists.
 
-The registry and event bus are process-local. The standalone Workbench does
-not attach to the marimo execution process, so it cannot show or subscribe to
-runtimes instantiated only in a separate marimo process. The Core spec leaves
-the cross-process telemetry transport unspecified; this implementation does
-not invent one. A host adapter that shares the Python process can use the same
-application actions today; marimo-to-Workbench live routing remains pending
-that product/architecture decision.
+The registry and event bus are process-local, so a Graphimo service cannot
+inspect a model object in a separate marimo kernel. In Zeron, the project
+session now attaches an ephemeral `MarimoKernelPort`: runtime listing,
+subscription, unsubscription, release and TorchLens actions are sent as named
+`GraphimoApplication` actions to marimo, where the addon resolves the actual
+`RuntimeRegistry`. Neither the model nor a serialized `nn.Module` crosses the
+process boundary. The standalone Workbench still uses its own process-local
+runtime unless a host attaches a marimo session.
+
+Continuous telemetry takes the opposite, push-only path. The kernel publisher
+drains the existing `PyTorchEventBus` on a daemon thread, batches at most 64
+events and 256 KiB, and posts JSON to the authenticated loopback
+`/v1/events/publish` endpoint. The publisher has a bounded pending queue and
+bounded request timeout/backoff. It never performs network work in a model
+hook; queue eviction and bus history eviction increment a cumulative loss
+counter and enqueue a `telemetry.dropped` event for the UI. Reconfiguration
+updates the service URL/token without replacing the publisher or its pending
+events, allowing it to reconnect after a service restart. The service stores
+these records in its bounded `EventJournal`, with project, session, MetaBlock,
+graph revision, runtime, logical element and module path identity. Event
+payloads are JSON-safe summaries only.
+
+Zeron supplies URL, token and session identity to the kernel through the
+transient marimo execute API when it inspects a connected notebook. The
+credentials remain in process memory and are not written into notebook source
+or sidecars. On project close, the service asks the kernel to unsubscribe the
+tracked hooks and stop the publisher; a disconnected kernel simply makes
+cleanup best-effort while training continues.
 
 ## P6 checkpoints and conservative migration
 
@@ -336,3 +357,12 @@ are requested through service actions, and the checkpoint is inspected and
 previewed against a changed revision. Separate import tests exercise raw
 semantic JSON, sidecar envelopes, the generic `metablock.create` application
 route, and the explicit unsupported-source diagnostic.
+
+The live kernel integration test starts a real marimo process, constructs and
+registers a `torch.nn.Module` there, requests `runtime.list` and activation and
+gradient subscriptions through the service, executes forward/backward, and
+checks that both summaries arrive in the service spool. It then stops the
+service while continuing training, starts a replacement service, reconfigures
+the same kernel publisher and confirms telemetry resumes. The test also reads
+the kernel events through `metablock.events` and asserts that no model object
+appears in service events.

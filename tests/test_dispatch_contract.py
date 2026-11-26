@@ -492,3 +492,35 @@ def test_disabled_instance_keeps_stale_ports_and_connections(project, host):
         {"op": "run", "session_id": "fixture", "cell_id": "downstream"}, host.context
     )
     assert resumed["ok"] is True
+
+
+def test_live_graph_preflight_finds_transitive_disabled_roots(project):
+    from types import SimpleNamespace
+
+    from graphimo import build_instance_source, disable_instance_source
+    from graphimo.dependencies import blocked_dependencies_for_graph
+
+    active, instance = build_instance_source(
+        "normalize", {"image": "data", "mean": "0.0", "std": "1.0"}, instance_id="f00dbeef"
+    )
+    disabled = disable_instance_source(active)
+    cells = {
+        "source": SimpleNamespace(
+            code="processed = normalize(data)",
+            defs={instance.result_var},
+            refs={"normalize", "data"},
+        ),
+        "middle": SimpleNamespace(
+            code="middle = use(processed)", defs={"middle"}, refs={"use", instance.result_var}
+        ),
+        "target": SimpleNamespace(
+            code="result = finish(middle)", defs={"result"}, refs={"finish", "middle"}
+        ),
+    }
+    # The disabled node keeps its marker source, which remains parseable even
+    # though marimo no longer reports its output definition.
+    cells["source"].code = disabled
+    assert blocked_dependencies_for_graph(cells, "target") == ["source"]
+
+    cells["source"].code = active
+    assert blocked_dependencies_for_graph(cells, "target") == []

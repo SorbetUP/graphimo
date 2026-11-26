@@ -5,7 +5,10 @@ Graphimo service for project semantics. `plugin/service_bridge.luau` only
 encodes a bounded request and invokes `python3 -m graphimo.service.invoke`;
 the Python service remains responsible for action routing, MetaBlock addons,
 Group catalogs, layouts and events. The service bearer token stays in its
-owner-only manifest and is never passed through Luau or a canvas state value.
+owner-only manifest. During a live notebook attach, the service bridge returns
+an ephemeral kernel configuration to the plugin, which passes it through the
+marimo execute API into kernel memory. Neither service nor marimo credentials
+are written into notebook source, sidecars or canvas state.
 
 ## Installation requirement
 
@@ -113,24 +116,39 @@ The standalone Workbench remains the conformance surface for host-independent
 application behavior; browser-specific Zeron rendering still requires a live
 plugin check in Zeron.
 
-## Live telemetry routing boundary
+## Live kernel/runtime bridge
 
-`metablock.events` drains the PyTorch addon's in-process event bus. The model
-runtime created inside the active marimo kernel lives in a different process
-from the Graphimo service, so Zeron cannot currently list that runtime, attach
-activation/gradient hooks to it, or receive its events through this action.
-The new event panel reports service-visible events and explicitly indicates
-this boundary; it does not present an empty service-side runtime list as proof
-that the notebook has no active model.
+When `graphimo_inspect` inspects a live local notebook, Zeron sends its local
+marimo URL, optional marimo token and session ID to `graphimo.service.invoke`.
+That process attaches a `MarimoKernelPort` to the in-memory project session and
+returns the service URL/token/project/session identity to Zeron. Zeron then
+executes `graphimo_pytorch.publisher.configure_kernel_publisher(...)` in the
+kernel through the transient marimo execute endpoint. Credentials remain in
+process memory.
 
-Before live runtime inspection can be enabled in Zeron, the product contract
-still needs to decide how the marimo process publishes events and accepts
-subscription changes through the persistent service. That decision must cover
-MetaBlock/runtime correlation, event delivery and cursor ownership, bounded
-payloads, unsubscribe/cleanup on scope or run completion, and failure behavior
-when the notebook process disconnects. The current local API has the required
-generic event envelope and service long-poll endpoint, but it does not define
-that cross-process bridge.
+Runtime operations (`runtime.list`, subscribe, unsubscribe, release and
+TorchLens inspection) go from Zeron through `GraphimoClient`,
+`ProjectSession`, `GraphimoApplication` and the addon to the named kernel port.
+The port accepts a strict action allowlist and JSON arguments; it executes the
+same `metablock.invoke` application action in the kernel, where the actual
+`RuntimeRegistry` and model live. `torch.nn.Module` instances never cross the
+HTTP boundary. Request arguments are capped at 1 MiB and results at 4 MiB.
+
+Continuous events travel kernel → service instead. A daemon publisher drains
+the addon's existing bounded event bus, batches at most 64 JSON events/256 KiB
+and posts them to authenticated loopback `POST /v1/events/publish`. The service
+places them into its cursor-based `EventJournal`; `metablock.events` reads the
+MetaBlock-filtered view of that same spool. The service records project,
+session, MetaBlock, revision, runtime, logical element, module path and step.
+No code is accepted by the event endpoint.
+
+The publisher uses bounded pending storage, timeout and backoff. If the service
+stops, forward/backward and training continue; events retry until the bounded
+queue fills, then losses are counted and a `telemetry.dropped` event is sent
+when connectivity returns. A later attach reconfigures the existing publisher
+with the new URL/token and preserves queued events. Closing a project asks the
+kernel to remove tracked subscriptions and stop the publisher; cleanup is
+best-effort if the kernel is already gone.
 
 ## Agent tools
 
@@ -167,6 +185,7 @@ same client boundary: a batch creates and edits a connected MetaBlock, the
 service materializes its definition, the ordinary addon training helper runs
 one external training step, activation events and a TorchLens inspection are
 read through service actions, and a saved checkpoint is inspected and given a
-shape-migration preview after the graph revision changes. This validates the
-service/application/addon path in one process; it does not claim to validate
-the unresolved telemetry bridge from an independent live marimo kernel.
+shape-migration preview after the graph revision changes. A separate live
+marimo integration test exercises service-to-kernel subscriptions,
+kernel-to-service activation/gradient events, training during service outage,
+and publisher reconnection.

@@ -165,6 +165,30 @@ class GraphimoClient:
             query["cursor"] = str(cursor)
         return self._request("GET", "/v1/events?" + urllib.parse.urlencode(query))
 
+    def publish_kernel_events(
+        self, project: str | GraphimoProject, events: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Push a bounded batch emitted by an attached marimo kernel."""
+        project_id = project.project_id if isinstance(project, GraphimoProject) else project
+        return self._request(
+            "POST", "/v1/events/publish", {"project": project_id, "events": events}
+        )
+
+    def attach_kernel(
+        self,
+        project: str | GraphimoProject,
+        *,
+        url: str,
+        token: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        project_id = project.project_id if isinstance(project, GraphimoProject) else project
+        return self._request(
+            "POST",
+            "/v1/kernels/attach",
+            {"project": project_id, "url": url, "token": token, "session_id": session_id},
+        )
+
     def close(self) -> None:
         self._closed = True
 
@@ -236,6 +260,9 @@ class GraphimoProject:
     ) -> dict[str, Any]:
         self._ensure_open()
         return self.client.events(self, cursor=cursor, limit=limit, wait_ms=wait_ms)
+
+    def attach_kernel(self, *, url: str, token: str, session_id: str) -> dict[str, Any]:
+        return self.client.attach_kernel(self, url=url, token=token, session_id=session_id)
 
     def close(self) -> bool:
         if self._closed:

@@ -241,6 +241,22 @@ class GraphimoService:
             if not isinstance(project_id, str):
                 raise ServiceProtocolError("invalid_request", "project must be text")
             return {"closed": self.sessions.close_project(project_id)}
+        if path == "/v1/events/publish":
+            session = self._project(request)
+            try:
+                return session.publish_kernel_events(request.get("events"))
+            except (ValueError, TypeError) as exc:
+                raise ServiceProtocolError("invalid_kernel_events", str(exc), status=422) from exc
+        if path == "/v1/kernels/attach":
+            session = self._project(request)
+            try:
+                return session.attach_kernel(
+                    url=request.get("url"),
+                    token=request.get("token"),
+                    session_id=request.get("session_id"),
+                )
+            except (ValueError, TypeError) as exc:
+                raise ServiceProtocolError("invalid_kernel_config", str(exc), status=422) from exc
         if path == "/v1/execute":
             session = self._project(request)
             action = request.get("action")

@@ -15,10 +15,28 @@ def dispatch(request: dict[str, Any]) -> Any:
     operation = request.get("operation")
     if not isinstance(path, str) or not path:
         raise ValueError("path must be a non-empty project path")
-    if operation not in {"execute", "batch", "events"}:
-        raise ValueError("operation must be execute, batch or events")
+    if operation not in {"execute", "batch", "events", "telemetry_config"}:
+        raise ValueError("operation must be execute, batch, events or telemetry_config")
     client = GraphimoClient.connect_local()
     project = client.open_project(path)
+    if operation == "telemetry_config":
+        session_id = request.get("session_id")
+        kernel_url = request.get("marimo_url")
+        kernel_token = request.get("marimo_token")
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or not isinstance(kernel_url, str)
+            or not isinstance(kernel_token, str)
+        ):
+            raise ValueError("telemetry_config requires the marimo URL, token and session_id")
+        project.attach_kernel(url=kernel_url, token=kernel_token, session_id=session_id)
+        return {
+            "service_url": client.url,
+            "service_token": client.token,
+            "project_id": project.project_id,
+            "session_id": session_id,
+        }
     if operation == "execute":
         action = request.get("action")
         args = request.get("args", {})

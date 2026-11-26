@@ -118,6 +118,48 @@ def test_service_client_projects_batches_and_cursor_events(tmp_path: Path) -> No
     assert not manifest_path.exists()
 
 
+def test_authenticated_kernel_event_bridge_publishes_to_project_spool(tmp_path: Path) -> None:
+    notebook = tmp_path / "kernel-notebook.py"
+    notebook.write_text("# Graphimo kernel bridge fixture\n", encoding="utf-8")
+    service = GraphimoService(manifest_path=tmp_path / "state" / "service.json").start()
+    try:
+        client = GraphimoClient(service.url, service.token)
+        project = client.open_project(notebook)
+        event = {
+            "schema_version": 1,
+            "event_id": "event-1",
+            "kind": "activation.summary",
+            "timestamp": 1.0,
+            "project_id": project.project_id,
+            "session_id": "marimo-session-a",
+            "metablock_id": "model-a",
+            "graph_revision": "revision-a",
+            "runtime_instance_id": "runtime-a",
+            "logical_element_id": "encoder",
+            "module_path": "encoder.0",
+            "step": 7,
+            "payload": {"mean": 0.25},
+        }
+        assert client.publish_kernel_events(project, [event]) == {"accepted": 1}
+        events = project.events(cursor="0", wait_ms=0)
+        published = next(item for item in events["events"] if item["kind"] == "addon.event")
+        assert published["source"] == "marimo_kernel"
+        assert published["project_id"] == project.project_id
+        assert published["metablock_id"] == "model-a"
+        assert published["addon_event"] == event
+
+        mismatched = {**event, "project_id": "another-project"}
+        with pytest.raises(GraphimoServiceError) as failure:
+            client.publish_kernel_events(project, [mismatched])
+        assert failure.value.code == "invalid_kernel_events"
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            client.publish_kernel_events(project, [{**event, "payload": {"model": object()}}])
+        project.close()
+        client.close()
+    finally:
+        service.close()
+
+
 def test_service_rejects_unauthorized_requests_and_non_loopback_bind(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="127.0.0.1"):
         GraphimoService(host="0.0.0.0", manifest_path=tmp_path / "service.json")

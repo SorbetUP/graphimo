@@ -12,6 +12,7 @@ from graphimo.application import GraphimoApplication
 from graphimo.metablocks import GraphimoHostAPI, MetaBlockError
 
 from .events import EventJournal
+from .marimo_kernel import MarimoKernelPort
 
 
 class HostArtifactStore:
@@ -49,6 +50,7 @@ class ProjectSession:
         self._addon_cursors: dict[str, str] = {}
         self._subscriptions: set[tuple[str, str, str]] = set()
         self._closed = False
+        self._kernel_port: MarimoKernelPort | None = None
         host = GraphimoHostAPI(
             project_id=self.project_id,
             project_path=path,
@@ -56,6 +58,8 @@ class ProjectSession:
             emit_event=self._emit_host_event,
             diagnose=self._emit_diagnostic,
             update_materialization_cell=self._materialization_requested,
+            invoke_kernel=self._invoke_kernel,
+            read_kernel_events=self._read_kernel_events,
             current_scope=lambda: "root",
         )
         self.application = GraphimoApplication(host)
@@ -74,34 +78,96 @@ class ProjectSession:
             )
             return result
 
+    def attach_kernel(self, *, url: str, token: str, session_id: str) -> dict[str, Any]:
+        port = MarimoKernelPort(
+            url=url, token=token, session_id=session_id, project_path=str(self.path)
+        )
+        with self._lock:
+            self._ensure_open()
+            self._kernel_port = port
+        return {"attached": True, "session_id": session_id}
+
     def poll_events(
         self, cursor: str | None = None, *, limit: int = 128, wait_ms: int = 750
     ) -> dict[str, Any]:
         self._poll_addon_events()
         return self.events.read(cursor, limit=limit, wait_ms=wait_ms)
 
+    def publish_kernel_events(self, batch: Any) -> dict[str, Any]:
+        """Ingest bounded JSON events pushed by the attached marimo kernel."""
+        if not isinstance(batch, list) or not 1 <= len(batch) <= 128:
+            raise ValueError("events must be an array containing 1-128 event objects")
+        accepted = 0
+        for event in batch:
+            if not isinstance(event, dict):
+                raise ValueError("each kernel event must be an object")
+            required = (
+                "kind",
+                "project_id",
+                "session_id",
+                "metablock_id",
+                "graph_revision",
+                "runtime_instance_id",
+            )
+            if any(not isinstance(event.get(key), str) or not event[key] for key in required):
+                raise ValueError("kernel event is missing runtime identity fields")
+            if event.get("project_id") != self.project_id:
+                raise ValueError("kernel event project_id does not match the open project")
+            with self._lock:
+                attached_kernel = self._kernel_port
+            if (
+                attached_kernel is not None
+                and event.get("session_id") != attached_kernel.session_id
+            ):
+                raise ValueError(
+                    "kernel event session_id does not match the attached marimo session"
+                )
+            if "module" in event or "model" in event or "nn_module" in event:
+                raise ValueError("kernel event must not contain live model objects")
+            kind = event["kind"]
+            if kind == "telemetry.dropped":
+                count = event.get("count")
+                if type(count) is not int or count < 0:
+                    raise ValueError("telemetry drop count must be a non-negative integer")
+            self.events.publish(
+                {
+                    "kind": "addon.event",
+                    "source": "marimo_kernel",
+                    "project_id": self.project_id,
+                    "session_id": event["session_id"],
+                    "metablock_id": event["metablock_id"],
+                    "addon_event": event,
+                }
+            )
+            accepted += 1
+        return {"accepted": accepted}
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
-            self._closed = True
             pending = tuple(self._subscriptions)
             self._subscriptions.clear()
-            for metablock_id, runtime_id, subscription_id in pending:
+            port = self._kernel_port
+            for metablock_id in {item[0] for item in pending}:
                 try:
                     self.application.execute(
                         "metablock.invoke",
                         {
                             "metablock_id": metablock_id,
-                            "action": "runtime.unsubscribe",
-                            "args": {
-                                "runtime_instance_id": runtime_id,
-                                "subscription_id": subscription_id,
-                            },
+                            "action": "runtime.unsubscribe_all",
+                            "args": {},
                         },
                     )
                 except Exception:
                     continue
+            if port is not None:
+                try:
+                    port.stop_publisher()
+                except Exception:
+                    pass
+            self._kernel_port = None
+            self._closed = True
             self.events.close()
 
     def _ensure_open(self) -> None:
@@ -139,6 +205,29 @@ class ProjectSession:
                     "project_id": self.project_id,
                 }
             )
+
+    def _invoke_kernel(self, metablock_id: str, action: str, args: dict[str, Any]) -> Any:
+        with self._lock:
+            self._ensure_open()
+            port = self._kernel_port
+        if port is None:
+            return None
+        return port.invoke(metablock_id, action, args)
+
+    def _read_kernel_events(
+        self, metablock_id: str, cursor: str | None, limit: int
+    ) -> dict[str, Any]:
+        if self._kernel_port is None:
+            return None
+        result = self.events.read_matching(
+            cursor, limit=limit, metablock_id=metablock_id, source="marimo_kernel"
+        )
+        events = []
+        for item in result["events"]:
+            event = item.get("addon_event")
+            if isinstance(event, dict):
+                events.append({**event, "sequence": item["sequence"]})
+        return {**result, "events": events}
 
     def _track_runtime_action(self, action: str, args: dict[str, Any], result: Any) -> None:
         if action != "metablock.invoke" or not isinstance(result, dict):
