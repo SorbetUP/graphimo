@@ -280,6 +280,7 @@ local Page = ui.component(function()
 	local selected_many = ui.use_state({})
 	local group_dialog = ui.use_state(false)
 	local group_name = ui.use_state("")
+	local generated_source_open = ui.use_state(false)
 	local zoom = ui.use_state(0.85)
 	local pan_x = ui.use_state(24)
 	local pan_y = ui.use_state(24)
@@ -585,6 +586,7 @@ local Page = ui.component(function()
 		if active_metablock:peek() == "" then notebook_snapshot:set(snapshot:peek()) end
 		active_metablock:set(metablock_id)
 		active_metablock_scope:set(scope or "root")
+		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
 		refresh_metablock()
@@ -594,6 +596,7 @@ local Page = ui.component(function()
 		active_metablock:set("")
 		active_metablock_scope:set("root")
 		metablock_projection:set(nil)
+		generated_source_open:set(false)
 		selected:set("")
 		selected_many:set({})
 		snapshot:set(notebook_snapshot:peek())
@@ -1637,6 +1640,17 @@ local Page = ui.component(function()
 			local view = metablock_projection:get()
 			return view and view.palette or {}
 		end)
+		local function copy_generated_source()
+			local projection = metablock_projection:peek()
+			local source = projection and projection.generated_source
+			if type(source) ~= "string" or source == "" then
+				notice:set("Generated Python is unavailable while the MetaBlock has errors")
+				return
+			end
+			local ok, err = pcall(ui.clipboard.write, source)
+			if ok then notice:set("Copied generated Python for revision " .. string.sub(tostring(projection.graph_revision or "unknown"), 1, 12))
+			else notice:set("Could not copy generated Python: " .. tostring(err)) end
+		end
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
 				Text { "Controls", style = "heading" },
@@ -1722,6 +1736,37 @@ local Page = ui.component(function()
 					disabled = function() return session_id:get() == "" or (not is_local_url(url:get())) end,
 					on_click = materialize_metablock,
 				},
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					Button {
+						function() return if generated_source_open:get() then "Hide generated Python" else "Inspect generated Python" end,
+						tone = "secondary", size = "sm", grow = 1,
+						disabled = function() return metablock_projection:get() == nil end,
+						on_click = function() generated_source_open:set(not generated_source_open:peek()) end,
+					},
+					Button { "Copy", tone = "secondary", size = "sm", disabled = function()
+						local view = metablock_projection:get()
+						return not view or type(view.generated_source) ~= "string" or view.generated_source == ""
+					end, on_click = copy_generated_source },
+				},
+				ui.show(generated_source_open, ui.column { w_full = true, max_h = 360, min_h = 0, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.primary.bg",
+					Text { function()
+						local view = metablock_projection:get()
+						return "Generated Python · revision " .. string.sub(tostring(view and view.graph_revision or "unknown"), 1, 12)
+					end, style = "caption", tone = "secondary" },
+					ui.show(function()
+						local view = metablock_projection:get()
+						return not view or type(view.generated_source) ~= "string" or view.generated_source == ""
+					end, Text { "Source is unavailable until the MetaBlock graph validates.", style = "caption", tone = "secondary", wrap = true }),
+					ui.show(function()
+						local view = metablock_projection:get()
+						return view ~= nil and type(view.generated_source) == "string" and view.generated_source ~= ""
+					end, Markdown { text = function()
+						local view = metablock_projection:get()
+						local source = view and view.generated_source
+						if type(source) ~= "string" or source == "" then return "" end
+						return "```python\n" .. source .. (string.sub(source, -1) == "\n" and "" or "\n") .. "```"
+					end }),
+				}),
 				ui.each(model_methods, function(method)
 					return Button {
 						method.name, tone = if active_metablock_scope:get() == method.name then "primary" else "secondary",

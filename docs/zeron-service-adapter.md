@@ -59,6 +59,9 @@ operation.
   `pytorch.model` MetaBlock through `metablock.create`.
 - Selecting a model calls `metablock.project`; the renderer maps its elements,
   ports, edges, shapes and diagnostics into the existing Graphimo canvas.
+- The PyTorch sidebar can inspect the addon's read-only generated Python for
+  the currently projected graph revision and copy that source. It does not
+  edit the semantic graph or present a false Python-to-graph round trip.
 - The sidebar shows method/group scopes and the palette returned by the
   PyTorch projection. Add, connect and delete edits use `metablock.apply`.
 - **Insert generated definition** calls `metablock.materialize`, then inserts
