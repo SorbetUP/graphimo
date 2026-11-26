@@ -7,6 +7,7 @@ import pytest
 from graphimo import (
     Binding,
     build_instance_source,
+    disconnect_instance_source,
     disable_instance_source,
     enable_instance_source,
     new_instance_id,
@@ -82,6 +83,19 @@ def test_reconnect_changes_only_the_requested_binding() -> None:
         reconnect_instance_source(source, input_name="right", expression="not valid !")
     with pytest.raises(ValueError, match="canonical"):
         reconnect_instance_source("result = combine()", input_name="right", expression="x")
+
+
+def test_disconnect_removes_only_the_requested_binding() -> None:
+    source, _ = build_instance_source(
+        "combine", {"left": "left_source", "right": "right_source"}, instance_id="12345678"
+    )
+    disconnected = disconnect_instance_source(source, input_name="right")
+    parsed = parse_instance_source(disconnected)
+    assert parsed is not None
+    assert parsed.bindings == (Binding("left", "left_source"),)
+    assert parsed.instance_id == "12345678"
+    with pytest.raises(ValueError, match="no bound input"):
+        disconnect_instance_source(disconnected, input_name="right")
 
 
 def test_output_expression_uses_result_or_tuple_index() -> None:

@@ -83,6 +83,8 @@ class GraphimoApplication:
             "notebook.enable_instance": lambda value: self._invoke_notebook(
                 "enable_instance", value
             ),
+            "notebook.set_literal": lambda value: self._invoke_notebook("set_literal", value),
+            "notebook.disconnect": lambda value: self._invoke_notebook("disconnect", value),
             "scope.enter": self._enter_group,
             "scope.leave": self._leave_scope,
             "scope.current": self._current_scope,

@@ -191,6 +191,25 @@ def reconnect_instance_source(source: str, *, input_name: str, expression: str) 
     return regenerated
 
 
+def disconnect_instance_source(source: str, *, input_name: str) -> str:
+    """Remove exactly one bound input from a canonical Graphimo instance."""
+    spec = parse_instance_source(source)
+    if spec is None:
+        raise ValueError("source is not a canonical Graphimo node instance")
+    if (
+        not isinstance(input_name, str)
+        or not input_name.isidentifier()
+        or keyword.iskeyword(input_name)
+    ):
+        raise ValueError("input_name must be a valid Python identifier")
+    bindings = {binding.input_name: binding.expression for binding in spec.bindings}
+    if input_name not in bindings:
+        raise ValueError(f"instance has no bound input named {input_name!r}")
+    del bindings[input_name]
+    regenerated, _ = build_instance_source(spec.node_name, bindings, instance_id=spec.instance_id)
+    return regenerated
+
+
 def output_expression(instance: InstanceSpec, output_index: int, output_count: int) -> str:
     """Return the Python expression used to wire one node result port."""
     if type(output_index) is not int or type(output_count) is not int or output_count < 1:

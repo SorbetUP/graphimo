@@ -87,6 +87,11 @@ preserved. `project.disable_instance(cell_id)` and
 `project.enable_instance(cell_id)` operate only on canonical Graphimo node
 instance cells; disabling keeps source connections intact, and blocked
 descendants are rejected by `run` until the upstream instance is enabled.
+`project.set_literal(instance_id, input_name, value)` updates one validated
+`@node` argument from a bounded JSON literal while preserving its other
+bindings. `project.disconnect_instance(cell_id, input_name)` removes one
+binding from a canonical instance; running that instance is refused with
+`missing_required_binding` until every required input is bound again.
 Notebook actions fail with `no live marimo kernel is attached` until
 the project has been attached through this method or the Zeron session flow.
 

@@ -319,6 +319,17 @@ class GraphimoProject:
         """Re-enable a canonical Graphimo node instance in the live notebook."""
         return self.execute("notebook.enable_instance", {"cell_id": cell_id})
 
+    def set_literal(self, instance_id: str, input_name: str, value: Any) -> dict[str, Any]:
+        """Set one Graphimo node input to a bounded JSON literal."""
+        return self.execute(
+            "notebook.set_literal",
+            {"instance_id": instance_id, "input_name": input_name, "value": value},
+        )
+
+    def disconnect_instance(self, cell_id: str, input_name: str) -> dict[str, Any]:
+        """Remove one input binding from a canonical node instance."""
+        return self.execute("notebook.disconnect", {"cell_id": cell_id, "input_name": input_name})
+
     def inspect_artifact(self, artifact_id: str) -> dict[str, Any]:
         """Read an ArtifactStore reference without exposing its storage backend."""
         return self.execute("artifact.inspect", {"artifact_id": artifact_id})

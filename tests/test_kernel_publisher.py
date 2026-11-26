@@ -321,8 +321,8 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             component_source = (
                 "from graphimo import node\n\n"
                 "@node\n"
-                "def normalize(value: int) -> int:\n"
-                "    return value * 2\n"
+                "def normalize(value: int, scale: int = 2) -> int:\n"
+                "    return value * scale\n"
             )
             assert (
                 project.execute(
@@ -342,8 +342,11 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 "normalize.py",
                 "normalize",
                 output_name="reconnected",
-                bindings={"value": {"literal": 1}},
+                bindings={"value": {"literal": 1}, "scale": {"literal": 4}},
             )
+            literal_update = project.set_literal(target_cell["instance_id"], "value", 2)
+            assert "__import__('json').loads('2')" in literal_update["source"]
+            assert "scale=__import__('json').loads('4')," in literal_update["source"]
             snapshot = project.inspect_notebook()
             library_projection = next(
                 cell
@@ -374,6 +377,17 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
             )
             assert connected["changed"] is True
             assert "normalize(" in connected["source"]
+            assert "value=data," in connected["source"]
+            disconnected = project.disconnect_instance(target_cell["cell_id"], "value")
+            assert disconnected["changed"] is True
+            with pytest.raises(
+                GraphimoServiceError, match="Required node input"
+            ) as missing_binding:
+                project.run(target_cell["cell_id"])
+            assert getattr(missing_binding.value, "code", None) == "missing_required_binding"
+            connected = project.connect(
+                data_cell["cell_id"], "data", target_cell["cell_id"], "value"
+            )
             assert "value=data," in connected["source"]
             reconnected = project.inspect_notebook()
             reconnected_target = next(
@@ -422,7 +436,7 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                     time.sleep(0.1)
             assert result_preview is not None, target_projection["output"]
             assert result_preview["runtime_type"] == "int"
-            assert result_preview["preview"] == "6"
+            assert result_preview["preview"] == "12"
             chained_projection = next(
                 cell for cell in after_run["cells"] if cell["id"] == chained_cell["cell_id"]
             )
@@ -431,8 +445,10 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 for item in chained_projection["outputs"]
                 if item["name"] == chained_cell["result_var"]
             )
-            assert chained_preview["preview"] == "12"
-            updated_component_source = component_source.replace("value * 2", "value * 3")
+            assert chained_preview["preview"] == "24"
+            updated_component_source = component_source.replace(
+                "value * scale", "value * (scale + 1)"
+            )
             updated_write = project.execute(
                 "component.write",
                 {"path": "normalize.py", "source": updated_component_source},
