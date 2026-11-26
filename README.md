@@ -110,6 +110,14 @@ runtime capabilities are still being implemented milestone by milestone.
 The addon schema and current milestone boundary are documented in
 [`docs/pytorch-addon.md`](docs/pytorch-addon.md).
 
+The standalone Workbench exercises the shared application layer without
+Zeron. After installing the PyTorch addon, run
+`python -m graphimo.workbench --project /path/to/notebook.py`. It provides a
+local model canvas, contextual PyTorch palette, inspectors, shape diagnostics,
+generated source, and scoped layout persistence. See the
+[Workbench guide](docs/workbench.md) for its local HTTP boundary and the
+current marimo materialization limitation.
+
 ## Development
 
 For the Zeron plugin API reference and examples from Graphimo and Orchestrator Builder, see [the plugin development guide](docs/zeron-plugin-api.md).

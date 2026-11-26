@@ -81,6 +81,32 @@ models are executable, and registration now materializes these semantic graphs
 as `PyTorchModelDefinition` values. Until the compiler supports every kind in a
 state, unknown kinds must remain non-materializable.
 
-P4 Workbench projection/editing, P5 runtime subscriptions, P6 checkpoint
-migration, P7 TorchLens workflows, P8 Llama templates and P9 integration
-hardening remain later milestones.
+## P4 Workbench projection and editing
+
+`graphimo_pytorch.workbench_projection.project_model()` creates a renderer-
+neutral JSON view model from the semantic state and static inference results.
+It provides the addon palette, method tabs, outer ports, internal elements,
+parameter descriptors, edge/output tensor shapes, validation diagnostics,
+Group templates/instances and the generated readable Python source when the
+graph compiles. It contains no `nn.Module` objects. For a Group scope, inferred
+shapes are taken from its saved model call sites; uninstantiated Groups have no
+runtime-specific shape preview.
+
+The PyTorch dialect accepts semantic `metablock.apply` intents for adding,
+renaming, deleting and parameterizing elements, connecting/disconnecting edges,
+creating/deleting Group instances and changing repetition counts. The host
+application persists state after successful projection. Incomplete graphs may
+be saved and display diagnostics; malformed parameter values are rejected
+before persistence.
+
+The standalone Workbench is launched with
+`python -m graphimo.workbench --project /path/to/notebook.py`. It is a local
+renderer over `GraphimoApplication`, serves only on loopback, and persists
+canvas geometry through the generic Core layout actions. It does not attach to
+an active marimo session: the materialization action previews the generated
+cell source and says explicitly that it was not inserted. The exact marimo
+cell update mechanism is still blocked by the Core specification's
+`HUMAN DECISION REQUIRED` marker.
+
+P5 runtime subscriptions, P6 checkpoint migration, P7 TorchLens workflows,
+P8 Llama templates and P9 integration hardening remain later milestones.

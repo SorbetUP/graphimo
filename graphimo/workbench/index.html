@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Graphimo Workbench</title>
+    <link rel="stylesheet" href="workbench.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">G</span><span>Graphimo</span><span class="muted">Workbench</span></div>
+      <div id="project-label" class="project-label">Loading project…</div>
+      <div class="top-actions">
+        <button id="new-model">New PyTorch MetaBlock</button>
+        <button id="generate-cell" disabled>Generate marimo cell</button>
+      </div>
+    </header>
+    <main class="shell">
+      <aside class="panel left-panel">
+        <div class="panel-heading"><h2>Project</h2><button id="refresh" class="quiet">Refresh</button></div>
+        <div id="metablock-list" class="metablock-list"></div>
+        <div class="panel-heading palette-heading"><h2>PyTorch palette</h2><span id="palette-count" class="muted"></span></div>
+        <div id="palette" class="palette"></div>
+      </aside>
+      <section class="workspace">
+        <nav id="breadcrumbs" class="breadcrumbs"></nav>
+        <div class="canvas-wrap"><canvas id="canvas" aria-label="Graphimo model canvas"></canvas><div id="empty-state" class="empty-state">Choose a MetaBlock or create a PyTorch model.</div></div>
+        <div class="diagnostics"><div class="panel-heading"><h2>Diagnostics</h2><span id="diagnostic-count" class="muted"></span></div><div id="diagnostic-list"></div></div>
+      </section>
+      <aside class="panel inspector-panel">
+        <div class="panel-heading"><h2>Inspector</h2><button id="delete-selection" class="danger quiet" disabled>Delete</button></div>
+        <div id="inspector" class="inspector"><p class="muted">Select an element to inspect its ports and parameters.</p></div>
+        <div class="panel-heading source-heading"><h2>Generated Python</h2></div>
+        <pre id="source" class="source"><code>Select a model to compile its generated source.</code></pre>
+      </aside>
+    </main>
+    <script src="workbench.js" defer></script>
+  </body>
+</html>

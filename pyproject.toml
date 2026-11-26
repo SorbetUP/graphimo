@@ -19,6 +19,9 @@ dev = ["pytest>=8,<9", "ruff>=0.8"]
 packages = ["adapter", "graphimo", "graphimo.artifacts", "graphimo_core"]
 package-dir = { graphimo_core = "core/graphimo_core" }
 
+[tool.setuptools.package-data]
+graphimo = ["workbench/*"]
+
 [tool.marimo.runtime]
 cache_cells = true
 
