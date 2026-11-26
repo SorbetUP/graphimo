@@ -6,6 +6,20 @@ change to `plugin/*.luau` or to `notebook.inspect`:
 
 ## Canvas
 
+- [ ] The Graphimo page shows the node-graph glyph (`git-branch`) in the
+      sidebar and rail; the plugin tile in Settings → Plugins shows
+      `graphimo.svg`.
+- [ ] The page header shows the Graphimo mark on an accent-tinted tile, the
+      notebook path, and icon buttons (refresh, fit, zoom, grid).
+- [ ] Cards show a role stripe + glyph, a friendly title (node name, variable
+      name, metablock label — never a raw cell id), and a status pill
+      (idle=success, running=info, stale=warning, error/blocked=danger,
+      disabled=neutral).
+- [ ] Input ports read as dots at the card's left edge (filled accent when
+      bound, hollow when unbound/default); output ports as rings at the right
+      edge. Edge arrowheads land exactly on the target dot.
+- [ ] With no notebook open, the canvas shows the empty state with
+      Open/New actions.
 - [ ] Nodes render with formal input/output ports (not refs/defs positions) for
       Graphimo instances; ordinary Python cells keep refs/defs ports.
 - [ ] A 3-output node shows three distinct output dots; each can be dragged to

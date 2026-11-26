@@ -1,4 +1,6 @@
--- Card height must account for the summary rows without moving port anchors.
+-- Card height follows the fixed layout contract: a header of
+-- Canvas.header_height, then one Canvas.port_row per port row, then the
+-- preview strip. Port anchors never move when the preview changes.
 local Canvas = require("../plugin/canvas")
 
 local cell = {
@@ -6,27 +8,21 @@ local cell = {
 	defs = { "output" },
 	y = 40,
 }
-local generic_height = Canvas.height(cell)
-assert(Canvas.height(cell, nil) == generic_height, "nil summary must preserve generic card height")
-assert(Canvas.height(cell, { inputs = {}, outputs = {} }) == generic_height, "empty summary must preserve generic card height")
+local base = Canvas.height(cell)
+assert(base == Canvas.header_height + Canvas.port_row + 14, "base height = header + one port row + bottom padding")
 
-local input_port_before = Canvas.port(cell, "input", false)
-local output_port_before = Canvas.port(cell, "output", true)
-local short = { inputs = { "x" }, outputs = { "y" } }
-local short_height = Canvas.height(cell, short)
-assert(short_height == generic_height + 40, "one short In and Out row should reserve 20 units each")
+local many = { refs = { "a", "b", "c", "d" }, defs = { "out" }, y = 0 }
+assert(Canvas.height(many) == Canvas.header_height + 4 * Canvas.port_row + 14, "each extra port adds one row")
 
-local long_label = string.rep("a", 60)
-local long = { inputs = { long_label }, outputs = {} }
-local long_height = Canvas.height(cell, long)
-local rendered_input = "In: " .. long_label
-local expected_lines = math.ceil(#rendered_input / 24)
-assert(long_height == generic_height + expected_lines * 20, "wrapped summary height must reserve each 24-byte line")
-assert(long_height > short_height, "long wrapped labels must increase card height monotonically")
+local with_preview = { refs = { "a" }, defs = { "out" }, y = 0, output = { preview = "[1, 2]" } }
+assert(Canvas.height(with_preview) > Canvas.height({ refs = { "a" }, defs = { "out" }, y = 0 }), "a preview strip adds height")
 
--- Summary layout is below the existing port-label row and cannot move anchors.
-local cell_with_summary = table.clone(cell)
-cell_with_summary.summary = long
-assert(Canvas.port(cell_with_summary, "input", false) == input_port_before, "input anchor moved when summary was present")
-assert(Canvas.port(cell_with_summary, "output", true) == output_port_before, "output anchor moved when summary was present")
+local input_anchor = Canvas.port(cell, "input", false)
+local output_anchor = Canvas.port(cell, "output", true)
+assert(input_anchor == 40 + Canvas.header_height + Canvas.port_row / 2, "input anchor = cell top + header + half a row")
+assert(output_anchor == input_anchor, "first input and first output share the first port row")
+local cell_with_preview = table.clone(cell)
+cell_with_preview.output = { preview = "x" }
+assert(Canvas.port(cell_with_preview, "input", false) == input_anchor, "preview must not move port anchors")
+assert(Canvas.port(cell_with_preview, "output", true) == output_anchor, "preview must not move port anchors")
 print("BASE_BLOCK_HEIGHT_OK")

@@ -14,6 +14,12 @@ local SearchField = require("@ds/search_field")
 local ContextMenu = require("@ds/context_menu")
 local Dialog = require("@ds/dialog").Dialog
 local TextField = require("@ds/text_field")
+local Badge = require("@ds/badge").Badge
+local EmptyState = require("@ds/empty_state")
+local SectionTitle = require("@ds/section_title")
+local IconButton = require("@ds/icon_button").IconButton
+local Icon = require("@ds/icon")
+local Logo = require("./logo")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -1500,28 +1506,91 @@ local Page = ui.component(function()
 		end, function(err) log("Could not choose log export location: " .. tostring(err), "error") end)
 	end
 
+	local role_colors = {
+		node_instance = "$accent",
+		metablock = "$accent",
+		control = "$warning",
+		group = "$success",
+		library = "$text.tertiary",
+		ordinary_python = "$text.secondary",
+	}
+	local function role_color(role) return role_colors[role] or "$text.secondary" end
+
+	local function truncate(text, max_chars)
+		text = tostring(text)
+		if #text <= max_chars then return text end
+		return string.sub(text, 1, max_chars - 1) .. "…"
+	end
+
+	-- A card's title: the human name of what the cell is, never a raw id.
+	local function cell_title(value, id)
+		local role = cell_role(value)
+		if role == "node_instance" and type(value.graphimo_instance) == "table" then
+			local instance = value.graphimo_instance
+			return tostring(instance.node_name or "node")
+		end
+		if role == "library" then return "Library" end
+		if role == "control" then return "Control" end
+		if role == "group" then return "Group" end
+		if type(value.name) == "string" and value.name ~= "" then return value.name end
+		local source = type(value.source) == "string" and value.source or ""
+		local var = string.match(source, "^%s*([%a_][%w_]*)%s*=")
+		if var then return var end
+		local first = string.match(source, "^[^\n]*") or ""
+		return if first ~= "" then truncate(first, 30) else "Empty cell"
+	end
+
+	local function cell_subtitle(value)
+		local role = cell_role(value)
+		if role == "node_instance" and type(value.graphimo_instance) == "table" then
+			local instance = value.graphimo_instance
+			local component = instance.component_path
+			local short = tostring(instance.instance_id or ""):sub(1, 8)
+			return truncate(tostring(component or "node") .. " · " .. short, 34)
+		end
+		if role == "library" then
+			local marker = string.match(type(value.source) == "string" and value.source or "", "# Graphimo node library: ([^\n]*)")
+			return truncate(tostring(marker or "components"), 34)
+		end
+		if role == "control" then
+			local marker = string.match(type(value.source) == "string" and value.source or "", "# Graphimo control: ([^\n]*)")
+			return truncate(tostring(marker or "widget"), 34)
+		end
+		if role == "group" then
+			local marker = string.match(type(value.source) == "string" and value.source or "", "# Graphimo group: ([^\n]*)")
+			return truncate(tostring(marker or "group"), 34)
+		end
+		if role == "metablock" or value.graphimo_metablock_id then
+			return truncate(tostring(value.graphimo_metablock_id or "metablock"), 34)
+		end
+		return "python"
+	end
+
+	local function status_of(value)
+		local dependency = value and value.graphimo_dependency_state
+		if dependency and dependency.state == "disabled" then return "disabled", "neutral" end
+		if dependency and dependency.state == "blocked" then return "blocked", "danger" end
+		if dependency and dependency.state == "component_unavailable" then return "unavailable", "warning" end
+		local status = value and value.status or "unknown"
+		if status == "idle" or status == "success" then return "idle", "success" end
+		if status == "queued" or status == "running" then return "running", "info" end
+		if status == "stale" then return "stale", "warning" end
+		if status == "error" or status == "exception" or status == "marimo-error" then return "error", "danger" end
+		return tostring(status), "neutral"
+	end
+
 	local function card(id)
 		local function cell() return Canvas.node(snapshot:get().cells or {}, id) end
-		local function base_summary() return base_summaries:get()[id] end
-		local function ports(names, prefix, suffix)
-			local labels = {}
-			for _, name in names or {} do table.insert(labels, prefix .. name .. suffix) end
-			return table.concat(labels, "\n")
-		end
-		local function input_labels(value)
-			local labels = {}
-			if type(value) == "table" then
-				for _, name in Canvas.input_ports(value) do table.insert(labels, Canvas.input_label(value, name)) end
+		local function port_rows(value)
+			local inputs = if type(value) == "table" then Canvas.input_ports(value) else {}
+			local outputs = if type(value) == "table" then Canvas.output_ports(value) else {}
+			local rows, count = {}, math.max(#inputs, #outputs)
+			for index = 1, count do
+				table.insert(rows, { input = inputs[index], output = outputs[index] })
 			end
-			return labels
+			return rows
 		end
-		local function output_labels(value)
-			local labels = {}
-			if type(value) == "table" then
-				for _, key in Canvas.output_ports(value) do table.insert(labels, Canvas.output_label(value, key)) end
-			end
-			return labels
-		end
+		local port_rows_state = ui.computed(function() return port_rows(cell()) end)
 		local style = Glass.style({
 			absolute = true,
 			left = function() local p = positions:get()[id] or {}; return pan_x:get() + (p.x or 0) * zoom:get() end,
@@ -1529,81 +1598,80 @@ local Page = ui.component(function()
 			w = Canvas.width * zoom:get(),
 			h = function()
 				local value = cell()
-				return Canvas.height(value or {}, base_summary()) * zoom:get()
+				return Canvas.height(value or {}) * zoom:get()
 			end,
 			rounded = "$radius.lg",
 			pointer_events = "none",
+			overflow = "hidden",
 		}, "island")
 		style.border_color = function() return if selected_many:get()[id] then "$accent" else "$border.strong" end
 		style.bg = "$zeron.secondary.bg"
-		table.insert(style, ui.column { w_full = true, h_full = true, gap = "$space.1", p = "$space.3",
-			ui.row { w_full = true, items = "center", gap = "$space.2",
-				Text { function() local value = cell(); return if value and value.name then value.name else "Cell " .. string.sub(id, 1, 7) end, style = "label", grow = 1 },
-				Text { function()
-					local value = cell()
-					local role = cell_role(value)
-					if role == "ordinary_python" or role == "node_instance" then return "" end
-					return role
-				end, style = "caption", tone = "secondary" },
-				Text { function()
-					local value = cell()
-					local dependency = value and value.graphimo_dependency_state
-					if dependency and dependency.state == "disabled" then return "disabled" end
-					if dependency and dependency.state == "blocked" then return "stale / blocked" end
-					if dependency and dependency.state == "component_unavailable" then return "component unavailable" end
-					return value and value.status or "unknown"
-				end, style = "caption", tone = function()
-					local value = cell()
-					local dependency = value and value.graphimo_dependency_state
-					if dependency and dependency.state == "blocked" then return "danger" end
-					if dependency and dependency.state == "disabled" then return "secondary" end
-					return if value and (value.status == "success" or value.status == "idle") then "success" elseif value and (value.status == "error" or value.status == "exception" or value.status == "marimo-error") then "danger" else "secondary"
-				end },
-			},
-			Text { function() local value = cell(); return string.match(value and value.source or "", "^[^\n]*") or "Empty cell" end, style = "caption", tone = "secondary", wrap = true },
-			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.image_data_url ~= nil end,
-				ui.image { src = function() local value = cell(); return value and value.output and value.output.image_data_url or "" end, w_full = true, h = 64, fit = "contain" }),
-			ui.show(function() local value = cell(); return value and type(value.output) == "table" and value.output.mimetype == "text/markdown" end,
-				Markdown { text = function() local value = cell(); return value and value.output and value.output.preview or "" end }),
-			Text { function()
-				local value = cell()
-				if not value then return "" end
-				if type(value.output) == "table" then
-					local mime = value.output.mimetype or "text/plain"
-					if value.output.image_data_url or mime == "text/markdown" then return "" end
-					local preview = value.output.preview or ""
-					local dependency = value.graphimo_dependency_state
-					local stale = dependency and dependency.state == "blocked"
-					if preview == "" then return (if stale then "STALE · " else "") .. tostring(mime) end
-					return (if stale then "STALE · " else "") .. tostring(mime) .. " · " .. tostring(preview)
-				end
-				if value.output and value.output ~= "None" then return tostring(value.output) end
-				return value.errors and value.errors[1] and value.errors[1].message or ""
-			end, style = "caption", tone = "secondary", wrap = true },
-			ui.row { w_full = true, grow = 1, items = "stretch", gap = "$space.2",
-				ui.column { w = 82, gap = "$space.1", justify = "start",
-					Text { function() local value = cell(); return ports(input_labels(value), "● ", "") end, style = "caption", tone = "secondary", wrap = true },
+		table.insert(style, ui.row { w_full = true, h_full = true, gap = 0,
+			-- Role stripe on the card's left edge.
+			ui.div { w = 3, h_full = true, shrink = 0, bg = function() return role_color(cell_role(cell())) end },
+			ui.column { grow = 1, min_w = 0, h_full = true, gap = 0, overflow = "hidden",
+				-- Fixed-height header: port rows below start exactly at
+				-- Canvas.header_height, matching Canvas.port's geometry.
+				ui.div { w_full = true, h = Canvas.header_height, shrink = 0, p = "$space.3",
+					ui.row { w_full = true, h_full = true, items = "center", gap = "$space.2",
+						ui.div { w = 28, h = 28, shrink = 0, rounded = "$radius.md", bg = "$background", items = "center", justify = "center",
+							ui.presence(function() return cell_role(cell()) end, function(role)
+								return ui.svg { code = Logo.roles[role] or Logo.roles.ordinary_python, w = 16, h = 16, tint = "currentColor", color = role_color(role) }
+							end),
+						},
+						ui.column { grow = 1, min_w = 0, gap = 2,
+							Text { function() return cell_title(cell(), id) end, style = "body", weight = 600, truncate = true },
+							Text { function() return cell_subtitle(cell()) end, style = "caption", tone = "secondary", truncate = true },
+						},
+						ui.presence(function() local v = cell(); return (v and v.status or "") .. "|" .. tostring(v and v.graphimo_dependency_state and v.graphimo_dependency_state.state or "") end, function()
+							local label, tone = status_of(cell())
+							return Badge { label, tone = tone, dot = true, size = "sm", shape = "pill" }
+						end),
+					},
 				},
-				ui.div { grow = 1 },
-				ui.column { w = 82, gap = "$space.1", items = "end",
-					Text { function() local value = cell(); return ports(output_labels(value), "", " ●") end, style = "caption", tone = "primary", wrap = true },
-				},
+				-- Port rows: one 22-unit row per port, dots are drawn on the
+				-- canvas layer exactly at these rows' edges and centres.
+				ui.each(port_rows_state, function(row)
+					local value = cell()
+					return ui.row { w_full = true, h = Canvas.port_row, shrink = 0, px = "$space.3", items = "center", justify = "between", gap = "$space.2",
+							ui.row { items = "center", gap = "$space.1", shrink = 1, min_w = 0,
+								Text {
+									function()
+										if not row.input then return "" end
+										local label = Canvas.input_label(value, row.input)
+										return (string.gsub(label, " %((%w+)%)", ""))
+									end,
+									style = "caption", mono = true,
+									tone = function() return if value and row.input and Canvas.input_bound(value, row.input) then "primary" else "tertiary" end,
+									truncate = true, grow = 1,
+								},
+								Text { function() return if row.input then Canvas.input_hint(value, row.input) else "" end, style = "caption", tone = "tertiary", truncate = true },
+							},
+							Text { function() return if row.output then Canvas.output_label(value, row.output) else "" end, style = "caption", mono = true, tone = "secondary", truncate = true },
+						}
+					end, { key = function(row, index) return tostring(row.input or "") .. "|" .. tostring(row.output or "") .. "|" .. tostring(index) end }),
+				-- Output preview / errors at the bottom of the card.
+				ui.show(function() local v = cell(); return v and type(v.output) == "table" and v.output.image_data_url ~= nil end,
+					ui.image { src = function() local v = cell(); return v and v.output and v.output.image_data_url or "" end, w_full = true, h = 52, fit = "contain" }),
+				ui.show(function() local v = cell(); return v and type(v.output) == "table" and v.output.mimetype == "text/markdown" end,
+					Markdown { text = function() local v = cell(); return v and v.output and v.output.preview or "" end }),
+				ui.show(function()
+					local v = cell()
+					return v and type(v.output) == "table" and not v.output.image_data_url and v.output.mimetype ~= "text/markdown" and (v.output.preview or "") ~= ""
+				end, ui.div { mx = "$space.3", mt = "$space.1", mb = "$space.2", w_full = true, rounded = "$radius.md", bg = "$background", p = "$space.2", shrink = 0,
+					Text { function()
+						local v = cell()
+						local out = v and v.output
+						if not out then return "" end
+						local stale = v.graphimo_dependency_state and v.graphimo_dependency_state.state == "blocked"
+						return (if stale then "stale · " else "") .. tostring(out.mimetype or "output") .. " · " .. tostring(out.preview or "")
+					end, style = "caption", tone = "secondary", wrap = true },
+				}),
+				ui.show(function() local v = cell(); return v and v.errors and #v.errors > 0 end,
+					ui.div { mx = "$space.3", mt = "$space.1", mb = "$space.2", w_full = true, rounded = "$radius.md", bg = "$background", p = "$space.2", shrink = 0,
+						Text { function() local v = cell(); return v and v.errors and v.errors[1] and v.errors[1].message or "" end, style = "caption", tone = "danger", wrap = true },
+					}),
 			},
-			ui.show(function()
-				local summary = base_summary()
-				return summary ~= nil and (#summary.inputs > 0 or #summary.outputs > 0)
-			end, ui.column { w_full = true, gap = "$space.1",
-				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.inputs > 0 end,
-					Text { function()
-						local summary = base_summary()
-						return "In: " .. table.concat(summary and summary.inputs or {}, " · ")
-					end, style = "caption", tone = "secondary", wrap = true }),
-				ui.show(function() local summary = base_summary(); return summary ~= nil and #summary.outputs > 0 end,
-					Text { function()
-						local summary = base_summary()
-						return "Out: " .. table.concat(summary and summary.outputs or {}, " · ")
-					end, style = "caption", tone = "secondary", wrap = true }),
-			}),
 		})
 		return ui.div(style)
 	end
@@ -1625,7 +1693,7 @@ local Page = ui.component(function()
 		for _, cell in snapshot:peek().cells do
 			local p = ps[cell.id] or { x = 0, y = 0 }
 			left = math.min(left, p.x); top = math.min(top, p.y)
-			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell, base_summaries:peek()[cell.id]))
+			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell))
 		end
 		local w, h = canvas.width or 800, canvas.height or 600
 		local scale = math.min((w - 64) / math.max(1, right - left), (h - 64) / math.max(1, bottom - top), 1.3)
@@ -1920,7 +1988,7 @@ local Page = ui.component(function()
 			for _, name in Canvas.input_ports(cell) do
 				if Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, name, false), 12 / zoom:peek()) then select_cell(cell.id, e.shift == true); return end
 			end
-			local height = Canvas.height(cell, base_summaries:peek()[cell.id])
+			local height = Canvas.height(cell)
 			if x >= pos.x and x <= pos.x + Canvas.width and y >= pos.y and y <= pos.y + height then
 				select_cell(cell.id, e.shift == true)
 				local origins = {}
@@ -2109,7 +2177,7 @@ local Page = ui.component(function()
 		for index = #current_cells, 1, -1 do
 			local cell = current_cells[index]
 			local point = ps[cell.id] or { x = 0, y = 0 }
-			if x >= point.x and x <= point.x + Canvas.width and y >= point.y and y <= point.y + Canvas.height(cell, base_summaries:peek()[cell.id]) then
+			if x >= point.x and x <= point.x + Canvas.width and y >= point.y and y <= point.y + Canvas.height(cell) then
 				return cell
 			end
 		end
@@ -2471,7 +2539,7 @@ local Page = ui.component(function()
 		end
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
-				Text { "Controls", style = "heading" },
+				SectionTitle { "Controls" },
 				ui.each(controls, function(control)
 					local labels = {
 						slider = "Slider", range_slider = "Range Slider", number = "Number Input",
@@ -2484,7 +2552,7 @@ local Page = ui.component(function()
 						on_click = function() add_control(control.kind) end,
 					}
 				end),
-				Text { "MetaBlocks", style = "heading" },
+				SectionTitle { "MetaBlocks" },
 				ui.show(function() return #addon_dialects:get() == 0 end, Text { "No MetaBlock addon installed (addon.list)", style = "caption", tone = "secondary" }),
 				ui.each(addon_dialects, function(dialect)
 					return Button {
@@ -2519,19 +2587,23 @@ local Page = ui.component(function()
 						}
 					end),
 				}),
-				Text { "Components", style = "heading" },
+				SectionTitle { "Components" },
 				SearchField { value = library_query, placeholder = "Search components", name = "Search components", size = "sm", quiet = true, w_full = true },
-				ui.show(function() return #component_groups:get() == 0 end, Text { function()
-					return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"
-				end, style = "caption", tone = "secondary", wrap = true }),
+				ui.show(function() return #component_groups:get() == 0 end, EmptyState {
+					icon = "file-code", size = "sm",
+					title = function() return if #components:get() == 0 then "No components yet" else "No matches" end,
+					body = function() return if #components:get() == 0 then "Add @node functions under components/ and they appear here" else "Try another search" end,
+				}),
 				ui.each(component_groups, function(group)
 					return ui.column { w_full = true, gap = "$space.1",
-						Text { group.category, style = "caption", tone = "secondary" },
+						SectionTitle { function() return group.category end },
 						ui.each(group.components, function(item)
 							return ui.column { w_full = true, gap = "$space.1",
 								Button {
+									icon = true,
 									function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
 									tone = "secondary", size = "sm", w_full = true,
+									Icon { name = "file-code", size = 13 },
 									on_click = function()
 										component_id:set(item.id)
 										callable_name:set(item.callables and item.callables[1] and item.callables[1].name or "")
@@ -2817,23 +2889,26 @@ local Page = ui.component(function()
 
 	return ui.column { w_full = true, h_full = true, min_h = 0, gap = "$space.3", p = "$space.4",
 		ui.row { w_full = true, items = "center", gap = "$space.2",
-			ui.canvas { w = 30, h = 30, draw = function(c)
-				local path = ui.path():move(7, 15):cubic(10, 5, 20, 5, 23, 15):cubic(20, 25, 10, 25, 7, 15)
-				c:stroke(path, "$accent", 2, { cap = "round" })
-				c:circle(7, 15, 3, "$accent"); c:circle(23, 15, 3, "$accent"); c:circle(15, 8, 3, "$accent"); c:circle(15, 22, 3, "$accent")
-			end, pointer_events = "none" },
-			Text { "Graphimo", style = "heading" },
-			Text { function() return snapshot:get().notebook.path or "Visual view of your marimo notebook" end, style = "caption", tone = "secondary", grow = 1 },
-			Button { "Open notebook", size = "sm", on_click = choose_notebook },
-			Button { "New notebook", tone = "secondary", size = "sm", on_click = create_notebook },
-			Button { "Refresh", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
-			Button { "Fit", tone = "secondary", size = "sm", on_click = fit },
-			Button { "−", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			Button { "+", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+			ui.div { w = 30, h = 30, shrink = 0, rounded = "$radius.md", bg = "$zeron.secondary.bg", items = "center", justify = "center",
+				ui.svg { code = Logo.svg, w = 20, h = 20, tint = "currentColor", color = "$accent" }
+			},
+			ui.column { gap = 2, shrink = 1, min_w = 0,
+				Text { "Graphimo", style = "heading" },
+				Text { function() return snapshot:get().notebook.path or "Visual view of your marimo notebook" end, style = "caption", tone = "secondary", truncate = true },
+			},
+			ui.div { grow = 1 },
+			Button { icon = true, size = "sm", on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
+			Button { icon = true, tone = "secondary", size = "sm", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
+			IconButton { icon = "refresh", label = "Refresh", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
+			IconButton { icon = "expand-arrows", label = "Fit to view", tone = "secondary", size = "sm", on_click = fit },
+			IconButton { icon = "minus", label = "Zoom out", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+			IconButton { icon = "plus", label = "Zoom in", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+			IconButton { icon = if grid:get() then "grip-horizontal" else "close-thin", label = if grid:get() then "Hide grid" else "Show grid", tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
+			ui.div { w = 1, h = 18, bg = "$border", shrink = 0 },
 			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
 			Button { function() return if inspector_open:get() then "Inspector −" else "Inspector +" end, tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function() inspector_open:set(not inspector_open:peek()) end },
 			Button { function() return if show_technical:get() then "Technical −" else "Technical +" end, tone = "secondary", size = "sm", on_click = function() show_technical:set(not show_technical:peek()); refresh_graph() end },
-			Button { function() return if logs_open:get() then "Terminal −" else "Terminal +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
+			Button { function() return if logs_open:get() then "Logs −" else "Logs +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
 		},
 		ui.show(function() return #group_scope_stack:get() > 0 and active_metablock:get() == "" end, ui.row {
 			w_full = true, items = "center", gap = "$space.1",
@@ -2875,6 +2950,18 @@ local Page = ui.component(function()
 			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
 				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
 			},
+			ui.show(function() return (snapshot:get().notebook.path or "") == "" and active_metablock:get() == "" end,
+				ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, items = "center", justify = "center", pointer_events = "none",
+					ui.div { pointer_events = "auto", rounded = "$radius.lg", p = "$space.3",
+						EmptyState {
+							icon = "git-branch", fill = false,
+							title = "Open a notebook to see its graph",
+							body = "Graphimo draws your live marimo notebook as a node canvas. @node functions in components/ become draggable blocks.",
+							action = { label = "Open notebook", icon = "folder", on_click = choose_notebook },
+							secondary = { label = "New notebook", icon = "document-add", on_click = create_notebook },
+						},
+					},
+				}),
 			ContextMenu {
 				items = canvas_menu,
 				label = "Graphimo canvas actions",
@@ -2971,4 +3058,4 @@ local Page = ui.component(function()
 	}
 end)
 
-zeron.page({ id = "canvas", title = "Graphimo", icon = "share", build = function() return Page {} end })
+zeron.page({ id = "canvas", title = "Graphimo", icon = "git-branch", build = function() return Page {} end })
