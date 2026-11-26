@@ -262,6 +262,9 @@ local Page = ui.component(function()
 	local active_metablock_scope = ui.use_state("root")
 	local metablock_projection = ui.use_state(nil)
 	local metablock_history = ui.use_state({ undo_depth = 0, redo_depth = 0, stale = false })
+	local metablock_parameter_dialog = ui.use_state(false)
+	local metablock_parameter_target = ui.use_state({})
+	local metablock_parameter_value = ui.use_state("")
 	local service_event_cursor = ui.use_state("0")
 	local service_polling = ui.use_state(false)
 	local visible_cell_ids = ui.use_state({})
@@ -675,7 +678,7 @@ local Page = ui.component(function()
 		leave_group(function() leave_to_group_depth(depth) end)
 	end
 
-	local function apply_metablock_intent(intent)
+	local function apply_metablock_intent(intent, on_success)
 		local metablock_id = active_metablock:peek()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if metablock_id == "" or path == "" then return end
@@ -685,9 +688,97 @@ local Page = ui.component(function()
 		end, function(value)
 			if type(value) == "table" and type(value.history) == "table" then metablock_history:set(value.history) end
 			refresh_metablock()
+			if on_success then on_success(value) end
 		end, function(err)
 			notice:set("MetaBlock update failed: " .. tostring(err))
 		end)
+	end
+
+	local function open_metablock_parameter_editor(target)
+		local value = target.value
+		if type(value) == "table" then
+			local ok, encoded = pcall(ui.json.encode, value)
+			value = if ok then encoded else ""
+		elseif value == nil then
+			value = ""
+		else
+			value = tostring(value)
+		end
+		metablock_parameter_target:set(target)
+		metablock_parameter_value:set(value)
+		metablock_parameter_dialog:set(true)
+	end
+
+	local function parse_metablock_parameter_value(raw, parameter)
+		local kind = parameter.type
+		if kind == "int" or kind == "integer" then
+			local number = tonumber(raw)
+			if not number or number % 1 ~= 0 then error("Enter a whole number for " .. parameter.name) end
+			return number
+		elseif kind == "float" or kind == "number" or kind == "optional_float" then
+			if raw == "" and kind == "optional_float" then return nil end
+			local number = tonumber(raw)
+			if not number then error("Enter a number for " .. parameter.name) end
+			return number
+		elseif kind == "optional_str" then
+			if raw == "" then return nil end
+			return raw
+		elseif kind == "bool" or kind == "boolean" then
+			local normalized = string.lower(string.gsub(raw, "^%s*(.-)%s*$", "%1"))
+			if normalized == "true" then return true end
+			if normalized == "false" then return false end
+			error("Enter true or false for " .. parameter.name)
+		elseif kind == "shape" or kind == "json" then
+			local ok, decoded = pcall(ui.json.decode, raw)
+			if not ok then error("Enter valid JSON for " .. parameter.name) end
+			return decoded
+		end
+		return raw
+	end
+
+	local function submit_metablock_parameter()
+		local target = metablock_parameter_target:peek()
+		local ok, value = pcall(parse_metablock_parameter_value, metablock_parameter_value:peek(), target)
+		if not ok then notice:set(tostring(value)); return end
+		if type(value) == "number" and target.minimum ~= nil and value < target.minimum then
+			notice:set(tostring(target.name) .. " must be at least " .. tostring(target.minimum))
+			return
+		end
+		if type(value) == "number" and target.maximum ~= nil and value > target.maximum then
+			notice:set(tostring(target.name) .. " must be at most " .. tostring(target.maximum))
+			return
+		end
+		if target.choices then
+			local found = false
+			for _, choice in target.choices do if choice == value then found = true end end
+			if not found then
+				notice:set("Choose one of the supported values: " .. table.concat(target.choices, ", "))
+				return
+			end
+		end
+		local intent
+		if target.external then
+			intent = { type = "set_model_parameter", name = target.id, value = value }
+		elseif target.group_repeat then
+			intent = { type = "set_group_repeat", scope = active_metablock_scope:peek(), instance_id = target.element_id, ["repeat"] = value }
+		else
+			intent = {
+				type = "set_element_parameter",
+				scope = active_metablock_scope:peek(),
+				element_id = target.element_id,
+				parameter = target.name,
+				value = value,
+			}
+		end
+		apply_metablock_intent(intent, function() metablock_parameter_dialog:set(false) end)
+	end
+
+	local function selected_metablock_element()
+		local view = metablock_projection:get()
+		for _, element in view and view.elements or {} do
+			if element.id == selected:get() then return element end
+		end
+		return nil
 	end
 
 	local function create_metablock()
@@ -1675,6 +1766,14 @@ local Page = ui.component(function()
 			local view = metablock_projection:get()
 			return view and view.palette or {}
 		end)
+		local model_parameters = ui.computed(function()
+			local view = metablock_projection:get()
+			return view and view.external_parameters or {}
+		end)
+		local selected_element_parameters = ui.computed(function()
+			local element = selected_metablock_element()
+			return element and element.parameters or {}
+		end)
 		local function copy_generated_source()
 			local projection = metablock_projection:peek()
 			local source = projection and projection.generated_source
@@ -1685,6 +1784,13 @@ local Page = ui.component(function()
 			local ok, err = pcall(ui.clipboard.write, source)
 			if ok then notice:set("Copied generated Python for revision " .. string.sub(tostring(projection.graph_revision or "unknown"), 1, 12))
 			else notice:set("Could not copy generated Python: " .. tostring(err)) end
+		end
+		local function display_parameter_value(value)
+			if type(value) == "table" then
+				local ok, encoded = pcall(ui.json.encode, value)
+				return if ok then encoded else "complex value"
+			end
+			return tostring(value)
 		end
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
@@ -1801,6 +1907,73 @@ local Page = ui.component(function()
 						if type(source) ~= "string" or source == "" then return "" end
 						return "```python\n" .. source .. (string.sub(source, -1) == "\n" and "" or "\n") .. "```"
 					end }),
+				}),
+				ui.show(function()
+					local view = metablock_projection:get()
+					return view ~= nil and active_metablock_scope:get() == "root" and selected:get() == ""
+				end, ui.column { w_full = true, gap = "$space.1",
+					Text { "Model parameters", style = "heading" },
+					ui.each(model_parameters, function(parameter)
+						return Button {
+							"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.default),
+							tone = "secondary", size = "sm", w_full = true,
+							on_click = function()
+								open_metablock_parameter_editor({
+									external = true, id = parameter.id, name = parameter.name,
+									type = parameter.type, value = parameter.default,
+								})
+							end,
+						}
+					end),
+				}),
+				ui.show(function() return selected_metablock_element() ~= nil end, ui.column { w_full = true, gap = "$space.1",
+					Text { function()
+						local element = selected_metablock_element()
+						return element and (element.name or element.id) or "Selection"
+					end, style = "heading", wrap = true },
+					Text { function()
+						local element = selected_metablock_element()
+						return element and tostring(element.kind or "component") or ""
+					end, style = "caption", tone = "secondary" },
+					Text { function()
+						local element = selected_metablock_element()
+						local shape = element and element.output_shape
+						if type(shape) ~= "table" then return "Output shape unresolved" end
+						local dimensions = {}
+						for _, size in shape.shape or {} do table.insert(dimensions, tostring(size)) end
+						return (shape.dtype or "?") .. " [" .. table.concat(dimensions, " × ") .. "]"
+					end, style = "caption", tone = "secondary", wrap = true },
+					ui.each(selected_element_parameters, function(parameter)
+						return Button {
+							"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.value),
+							tone = "secondary", size = "sm", w_full = true,
+							on_click = function()
+								open_metablock_parameter_editor({
+									element_id = selected:peek(), name = parameter.name,
+									type = parameter.type, value = parameter.value,
+									choices = parameter.choices, minimum = parameter.minimum,
+									maximum = parameter.maximum,
+								})
+							end,
+						}
+					end),
+					ui.show(function()
+						local element = selected_metablock_element()
+						return element ~= nil and element.kind == "group_instance"
+					end, Button {
+						function()
+							local element = selected_metablock_element()
+							return "Edit repetitions · " .. tostring(element and element["repeat"] or 1)
+					end,
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function()
+							local element = selected_metablock_element()
+						open_metablock_parameter_editor({
+								group_repeat = true, element_id = element.id, name = "repetitions",
+								type = "int", value = element["repeat"],
+							})
+						end,
+					}),
 				}),
 				ui.each(model_methods, function(method)
 					return Button {
@@ -1943,6 +2116,45 @@ local Page = ui.component(function()
 			body = "Shift-click blocks to select them. The selected cells become one reusable Group Block; marimo keeps the data dependencies between this Group and the surrounding notebook.",
 			confirm = { label = "Create Group Block", on_click = start_group_from_selection, disabled = function() return group_name:get() == "" or #selected_ids() < 2 end },
 			TextField { value = group_name, label = "Name", placeholder = "Clean and scale", w_full = true, autofocus = true },
+		},
+		Dialog {
+			open = metablock_parameter_dialog,
+			title = "Edit MetaBlock parameter",
+			body = "The value is validated and saved through Graphimo Core and the PyTorch addon.",
+			confirm = {
+				label = "Apply parameter",
+				on_click = submit_metablock_parameter,
+				disabled = function() return metablock_parameter_target:get().name == nil end,
+			},
+			Text {
+				function()
+					local target = metablock_parameter_target:get()
+					return "Parameter: " .. tostring(target.name or "unknown")
+				end,
+				style = "caption", tone = "secondary",
+			},
+			TextField {
+				value = metablock_parameter_value,
+				label = "Value",
+				placeholder = "Enter a value",
+				w_full = true,
+				autofocus = true,
+			},
+			Text {
+				function()
+					local target = metablock_parameter_target:get()
+					local details = {}
+					if target.minimum ~= nil then table.insert(details, "minimum " .. tostring(target.minimum)) end
+					if target.maximum ~= nil then table.insert(details, "maximum " .. tostring(target.maximum)) end
+					if target.choices then
+						local choices = {}
+						for _, choice in target.choices do table.insert(choices, tostring(choice)) end
+						table.insert(details, "choices: " .. table.concat(choices, ", "))
+					end
+					return table.concat(details, " · ")
+				end,
+				style = "caption", tone = "secondary", wrap = true,
+			},
 		},
 	}
 end)

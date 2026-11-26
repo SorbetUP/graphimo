@@ -65,6 +65,11 @@ operation.
   edit the semantic graph or present a false Python-to-graph round trip.
 - The sidebar shows method/group scopes and the palette returned by the
   PyTorch projection. Add, connect and delete edits use `metablock.apply`.
+- Selecting a PyTorch element shows its inferred output shape and
+  addon-declared parameters. Parameter edits, external model parameter edits
+  and Group repetition changes are submitted as `metablock.apply` intents. The
+  renderer parses the declared scalar/JSON input type; the addon remains
+  authoritative for semantic validation.
 - **Insert generated definition** calls `metablock.materialize`, then inserts
   the returned ordinary Python into the active marimo notebook through the
   existing notebook bridge. The inserted Python remains visible and runnable

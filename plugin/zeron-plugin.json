@@ -5,7 +5,7 @@
   "description": "A live canvas view over marimo notebooks.",
   "entry": "init.luau",
   "icon": "graphimo.svg",
-  "permissions": ["pages.add", "tools", "commands", "links.open", "files"],
+  "permissions": ["pages.add", "tools", "commands", "links.open", "files", "clipboard"],
   "commands": ["curl", "python3"],
   "tools": [
     {"name":"inspect","description":"Inspect the live cells and dependencies of the selected marimo notebook.","input":{"type":"object","properties":{"url":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
