@@ -70,6 +70,8 @@ class GraphimoApplication:
             "component.instance_source": self._component_instance_source,
             "component.add": self._add_component,
             "component.delete": self._delete_component,
+            "artifact.inspect": self._inspect_artifact,
+            "artifact.stats": self._artifact_stats,
             "notebook.inspect": lambda value: self._invoke_notebook("inspect", value),
             "notebook.add_cell": lambda value: self._invoke_notebook("add_cell", value),
             "notebook.connect": lambda value: self._invoke_notebook("connect", value),
@@ -205,6 +207,28 @@ class GraphimoApplication:
 
     def _delete_component(self, args: dict[str, Any]) -> Any:
         return self.components.delete(self._required(args, "path"))
+
+    def _inspect_artifact(self, args: dict[str, Any]) -> Any:
+        artifact_id = self._required(args, "artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("artifact_id must be a non-empty string")
+        store = self.host.artifact_store
+        if store is None or not callable(getattr(store, "get", None)):
+            raise ValueError("ArtifactStore inspection is unavailable for this host")
+        reference = store.get(artifact_id)
+        result = {"id": getattr(reference, "id", None), "kind": getattr(reference, "kind", None)}
+        if not isinstance(result["id"], str) or not isinstance(result["kind"], str):
+            raise TypeError("ArtifactStore get() must return an ArtifactRef with id and kind")
+        return result
+
+    def _artifact_stats(self, _args: dict[str, Any]) -> Any:
+        store = self.host.artifact_store
+        if store is None or not callable(getattr(store, "stats", None)):
+            raise ValueError("ArtifactStore statistics are unavailable for this host")
+        stats = store.stats()
+        if not isinstance(stats, dict):
+            raise TypeError("ArtifactStore stats() must return an object")
+        return {"stats": stats}
 
     def _invoke_notebook(self, action: str, args: dict[str, Any]) -> Any:
         invoke = self.host.invoke_notebook

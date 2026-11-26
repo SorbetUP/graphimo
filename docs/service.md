@@ -88,6 +88,12 @@ the project has been attached through this method or the Zeron session flow.
 
 `GraphimoProject` is a convenience handle for execute, batch, events, ordinary
 notebook inspect/add/connect/run operations and close.
+Use `project.inspect_artifact(artifact_id)` to resolve a stored reference to
+its stable ID and kind, and `project.artifact_stats()` to read logical bytes,
+physical bytes, deduplication and object counts. The equivalent read-only
+application actions are `artifact.inspect` and `artifact.stats`; agents can
+call them directly or include them in a batch. Artifact inspection does not
+materialize file contents or expose backend paths.
 Closing it closes the project session and releases service-owned runtime
 subscriptions when their addon supports unsubscribe. Closing a client does not
 stop the shared service. Stop the foreground service with Ctrl+C; a detached

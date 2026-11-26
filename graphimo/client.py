@@ -309,6 +309,14 @@ class GraphimoProject:
         """Ask marimo to run one cell after Graphimo's disabled-dependency check."""
         return self.execute("notebook.run", {"cell_id": cell_id})
 
+    def inspect_artifact(self, artifact_id: str) -> dict[str, Any]:
+        """Read an ArtifactStore reference without exposing its storage backend."""
+        return self.execute("artifact.inspect", {"artifact_id": artifact_id})
+
+    def artifact_stats(self) -> dict[str, Any]:
+        """Read logical and physical ArtifactStore usage statistics."""
+        return self.execute("artifact.stats")
+
     def close(self) -> bool:
         if self._closed:
             return False

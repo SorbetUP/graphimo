@@ -119,6 +119,43 @@ def test_service_client_projects_batches_and_cursor_events(tmp_path: Path) -> No
     assert not manifest_path.exists()
 
 
+def test_agent_can_inspect_artifact_references_and_store_statistics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graphimo import artifacts
+    from graphimo.artifacts import local as local_artifacts
+
+    artifact_root = tmp_path / "artifact-store"
+    monkeypatch.setenv("GRAPHIMO_ARTIFACT_STORE", str(artifact_root))
+    local_artifacts._store_at.cache_clear()
+    reference = artifacts.put_bytes(b"model-checkpoint", kind="checkpoint")
+    service = GraphimoService(manifest_path=tmp_path / "state" / "service.json").start()
+    notebook = tmp_path / "artifact-notebook.py"
+    notebook.write_text("# Graphimo artifact inspection fixture\n", encoding="utf-8")
+    try:
+        client = GraphimoClient(service.url, service.token)
+        project = client.open_project(notebook)
+
+        assert project.inspect_artifact(reference.id) == {
+            "id": reference.id,
+            "kind": "checkpoint",
+        }
+        assert project.artifact_stats() == {
+            "stats": {
+                "artifacts": 1,
+                "blobs": 1,
+                "logical_bytes": len(b"model-checkpoint"),
+                "physical_bytes": len(b"model-checkpoint"),
+                "deduplicated_bytes": 0,
+            }
+        }
+        project.close()
+        client.close()
+    finally:
+        service.close()
+        local_artifacts._store_at.cache_clear()
+
+
 def test_authenticated_kernel_event_bridge_publishes_to_project_spool(tmp_path: Path) -> None:
     notebook = tmp_path / "kernel-notebook.py"
     notebook.write_text("# Graphimo kernel bridge fixture\n", encoding="utf-8")
