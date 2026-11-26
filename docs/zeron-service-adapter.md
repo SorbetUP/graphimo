@@ -43,6 +43,11 @@ operation.
   graph, and the marimo bridge replaces the cells only if their source hashes
   still match. The replacement remains a normal marimo cell and the downstream
   marimo dependencies reconnect to the Group's inferred output definitions.
+- Canvas undo/redo tracks layout moves and ordinary-cell source/structure
+  changes. It uses the same live marimo bridge for source restoration and
+  refuses edits whose source changed since the history entry was recorded. See
+  [Zeron canvas undo and redo](zeron-undo-redo.md) for transaction coverage and
+  current boundaries.
 - A breadcrumb above the canvas returns to the project or to an ancestor
   Group. Each scope uses its stable `scope_id` for its saved canvas layout.
   The active project root is kept separately from the currently opened Group

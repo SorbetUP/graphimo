@@ -653,6 +653,28 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
             for edge in after_connect["edges"]
         )
 
+        connected_source = edited_target["source"]
+        edited_source = "prediction = transform(data, fallback=1)"
+        history_edit_code = _bridge_code(
+            "edit", notebook_path, "", "", "", "", target["id"], connected_source, edited_source
+        )[0]
+        history_edit = json.loads(_execute(base, session, history_edit_code))
+        assert history_edit["ok"] is True and history_edit["source"] == edited_source
+        stale_history_code = _bridge_code(
+            "edit", notebook_path, "", "", "", "", target["id"], connected_source, "prediction = 0"
+        )[0]
+        stale_history = json.loads(_execute(base, session, stale_history_code))
+        assert stale_history["ok"] is False and stale_history["error"].startswith("unsafe_edit:")
+        missing_history_code = _bridge_code(
+            "edit", notebook_path, "", "", "", "", "missing-cell", "source", "prediction = 0"
+        )[0]
+        missing_history = json.loads(_execute(base, session, missing_history_code))
+        assert missing_history["ok"] is False and "no longer exists" in missing_history["error"]
+        undo_edit_code = _bridge_code(
+            "edit", notebook_path, "", "", "", "", target["id"], edited_source, connected_source
+        )[0]
+        assert json.loads(_execute(base, session, undo_edit_code))["ok"] is True
+
         run_code = _bridge_code("run", notebook_path, "", "", "", "", target["id"])[0]
         run_result = json.loads(_execute(base, session, run_code))
         assert run_result["ok"] is True and run_result["status"] == "queued"
@@ -762,6 +784,22 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True, "source_id": str(source_id), 
             time.sleep(0.2)
         assert final_grouped is not None and not final_grouped["errors"]
         assert "7" in final_grouped["output"]["preview"]
+
+        invalid_restore_code = _bridge_code(
+            "restore_cells", notebook_path, "", "", "", "", "", "history_restore_value = 40", "not valid ["
+        )[0]
+        invalid_restore = json.loads(_execute(base, session, invalid_restore_code))
+        assert invalid_restore["ok"] is False and invalid_restore["error"].startswith("invalid_records:")
+        after_invalid_restore = json.loads(_execute(base, session, inspect_code))
+        assert not any("history_restore_value" in cell["defs"] for cell in after_invalid_restore["cells"])
+
+        restore_code = _bridge_code(
+            "restore_cells", notebook_path, "", "", "", "", "", "history_restore_value = 40", "history_restore_next = history_restore_value + 2"
+        )[0]
+        restored = json.loads(_execute(base, session, restore_code))
+        assert restored["ok"] is True and len(restored["cell_ids"]) == 2
+        restored_snapshot = json.loads(_execute(base, session, inspect_code))
+        assert any("history_restore_next" in cell["defs"] for cell in restored_snapshot["cells"])
     finally:
         if websocket is not None:
             websocket.close()

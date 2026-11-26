@@ -83,6 +83,8 @@ ui = {
 				elseif mode == "add_component" and capture == 1 then result = { ok = true, components = components }
 				elseif mode == "add_component" then result = { ok = true, cell_id = "added-cell" }
 				elseif mode == "connect" then result = { ok = true, changed = true }
+				elseif mode == "edit" then result = { ok = true, changed = true, cell_id = cell_id, source = replacement_source }
+				elseif mode == "restore_cells" then result = { ok = true, cell_ids = { "restored-a", "restored-b" } }
 			else result = { ok = true, status = "queued" } end
 				return { data = "GRAPHIMO_RESULT:" .. json_encode(result) }
 			elseif value == "DONE_RESPONSE" then
@@ -232,6 +234,13 @@ elseif mode == "tool_adapter" then
 	result = Bridge.append_problem(logger, "test problem")
 elseif mode == "connect" then
 	result = Bridge.connect(zeron, "http://127.0.0.1:2718", "", "s_live", from_cell_id or "source-cell", variable or "data", to_cell_id or "target-cell", input_ref or "processed")
+	elseif mode == "edit" then
+		result = Bridge.edit(zeron, "http://127.0.0.1:2718", "", "s_live", cell_id or "target-cell", source_hash or "", replacement_source or "")
+	elseif mode == "restore_cells" then
+		result = Bridge.restore_cells(zeron, "http://127.0.0.1:2718", "", "s_live", {
+			{ source = source_hash or "restored_value = 1" },
+			{ source = replacement_source or "restored_next = restored_value + 1" },
+		})
 	elseif mode == "replace_group_selection" then
 		result = Bridge.replace_group_selection(zeron, "http://127.0.0.1:2718", "", "s_live", {
 			selected_ids = { from_cell_id or "selected-a", to_cell_id or "selected-b" },

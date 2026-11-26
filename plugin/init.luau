@@ -287,7 +287,10 @@ local Page = ui.component(function()
 	local output_counter = ui.use_state(1)
 	local notice = ui.use_state("")
 	local canvas = ui.ref()
+	local canvas_keyboard = ui.ref()
 	local drag = nil
+	local undo_stack, redo_stack = {}, {}
+	local history_busy = false
 
 	local function cells_now()
 		return snapshot:get().cells or {}
@@ -1062,11 +1065,206 @@ local Page = ui.component(function()
 		return ids
 	end
 
+	local function clone_positions(value)
+		local copy = {}
+		for id, position in value or {} do copy[id] = table.clone(position) end
+		return copy
+	end
+
+	local function default_cell_position(index)
+		return { x = 80 + ((index - 1) % 4) * 320, y = 80 + math.floor((index - 1) / 4) * 230 }
+	end
+
+	local function history_context()
+		local group_stack = group_scope_stack:peek()
+		local active_group = group_stack[#group_stack]
+		local scope = if active_metablock:peek() ~= "" then MetaBlockProjection.scope_layout_id(active_metablock:peek(), active_metablock_scope:peek()) elseif active_group then active_group.scope_id else "root"
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+		return table.concat({ path, session_id:peek(), scope }, "\n")
+	end
+
+	local function push_history(action)
+		action.context = history_context()
+		table.insert(undo_stack, action)
+		if #undo_stack > 50 then table.remove(undo_stack, 1) end
+		table.clear(redo_stack)
+	end
+
+	local function records_for_ids(ids, cells)
+		local records, by_id = {}, {}
+		for _, cell in cells or cells_now() do by_id[cell.id] = cell end
+		for _, id in ids do
+			local cell = by_id[id]
+			if cell and type(cell.source) == "string" then
+				local point = positions:peek()[id] or { x = 80, y = 80 }
+				table.insert(records, { id = id, source = cell.source, x = point.x or 80, y = point.y or 80 })
+			end
+		end
+		return records
+	end
+
+	local function delete_history_ids(ids, index, deleted, callback)
+		index = index or 1
+		deleted = deleted or {}
+		if index > #ids then callback(deleted); return end
+		local id = ids[index]
+		observe("Remove block for history", function()
+			return Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), id)
+		end, function()
+			table.insert(deleted, id)
+			delete_history_ids(ids, index + 1, deleted, callback)
+		end, function(err)
+			callback(deleted, err)
+		end)
+	end
+
+	local function restore_history_records(records, callback)
+		if #records == 0 then callback({}); return end
+		local source_records = {}
+		for _, record in records do table.insert(source_records, { source = record.source }) end
+		observe("Restore blocks for history", function()
+			return Bridge.restore_cells(zeron, url:peek(), token:peek(), session_id:peek(), source_records)
+		end, function(value)
+			if type(value) ~= "table" or type(value.cell_ids) ~= "table" or #value.cell_ids ~= #records then
+				callback({}, "marimo returned an incomplete history restore result")
+				return
+			end
+			local restored = {}
+			for index, record in records do
+				local id = value.cell_ids[index]
+				if type(id) ~= "string" or id == "" then callback({}, "marimo returned an invalid restored cell ID"); return end
+				table.insert(restored, { id = id, x = record.x or 80, y = record.y or 80 })
+			end
+			callback(restored)
+		end, function(err)
+			callback({}, err)
+		end)
+	end
+
+	local function move_history(source_stack, destination_stack, undoing)
+		if history_busy then return true end
+		local action = table.remove(source_stack)
+		if not action then
+			notice:set(if undoing then "Nothing to undo" else "Nothing to redo")
+			return true
+		end
+		if action.context ~= history_context() then
+			table.insert(source_stack, action)
+			notice:set("This history entry belongs to another notebook or scope")
+			return true
+		end
+		if action.kind == "layout" then
+			positions:set(clone_positions(if undoing then action.before else action.after))
+			save_positions()
+			table.insert(destination_stack, action)
+			notice:set(if undoing then "Undid block movement" else "Redid block movement")
+			return true
+		end
+		if action.kind == "edit" then
+			history_busy = true
+			local expected_source = if undoing then action.after else action.before
+			local replacement_source = if undoing then action.before else action.after
+			observe(if undoing then "Undo source edit" else "Redo source edit", function()
+				return Bridge.edit(zeron, url:peek(), token:peek(), session_id:peek(), action.cell_id, expected_source, replacement_source)
+			end, function()
+				history_busy = false
+				table.insert(destination_stack, action)
+				notice:set(if undoing then "Undid the connection change" else "Redid the connection change")
+				refresh_graph()
+			end, function(err)
+				history_busy = false
+				table.insert(source_stack, action)
+				notice:set("Could not update source history: " .. tostring(err))
+			end)
+			return true
+		end
+		history_busy = true
+		local target_records = if undoing then action.before_records else action.after_records
+		local previous_ids = action.current_ids or {}
+		delete_history_ids(previous_ids, 1, {}, function(deleted, delete_error)
+			if delete_error then
+				history_busy = false
+				table.insert(source_stack, action)
+				notice:set("Could not update block history: " .. tostring(delete_error))
+				return
+			end
+			local next_positions = clone_positions(positions:peek())
+			for _, id in deleted do next_positions[id] = nil end
+			positions:set(next_positions)
+		restore_history_records(target_records, function(restored, restore_error)
+				if restore_error then
+					-- Remove any partial target restoration before rebuilding the original side.
+					local partial_ids = {}
+					for _, item in restored do table.insert(partial_ids, item.id) end
+					delete_history_ids(partial_ids, 1, {}, function(removed_partial)
+						local partial_positions = clone_positions(positions:peek())
+						for _, id in removed_partial do partial_positions[id] = nil end
+						positions:set(partial_positions)
+						local rollback_records = if undoing then action.after_records else action.before_records
+						restore_history_records(rollback_records, function(rollback, rollback_error)
+							local rollback_positions = clone_positions(positions:peek())
+						for _, item in rollback do rollback_positions[item.id] = { x = item.x, y = item.y } end
+							positions:set(rollback_positions)
+							action.current_ids = {}
+							for _, item in rollback do table.insert(action.current_ids, item.id) end
+							history_busy = false
+							table.insert(source_stack, action)
+							notice:set("History restore failed: " .. tostring(restore_error) .. (if rollback_error then "; rollback failed: " .. tostring(rollback_error) else ""))
+							refresh_graph()
+						end)
+					end)
+					return
+				end
+				local ids, restored_positions = {}, clone_positions(positions:peek())
+				for _, item in restored do
+					table.insert(ids, item.id)
+					restored_positions[item.id] = { x = item.x, y = item.y }
+				end
+				positions:set(restored_positions)
+				action.current_ids = ids
+				history_busy = false
+				if #ids > 0 then
+					selected:set(ids[#ids]); local many = {}; for _, id in ids do many[id] = true end; selected_many:set(many)
+				else
+					selected:set(""); selected_many:set({})
+				end
+				save_positions()
+				table.insert(destination_stack, action)
+				notice:set(if undoing then "Undid the last Graphimo change" else "Redid the Graphimo change")
+				refresh_graph()
+			end)
+		end)
+		return true
+	end
+
+	local delete_selected
+	local function undo_canvas() return move_history(undo_stack, redo_stack, true) end
+	local function redo_canvas() return move_history(redo_stack, undo_stack, false) end
+
+	local function on_canvas_key(e)
+		local key = string.lower(tostring(e.key or ""))
+		local command = e.cmd == true or e.meta == true or e.ctrl == true
+		if command and key == "z" then
+			if e.shift then redo_canvas() else undo_canvas() end
+			return true
+		elseif command and key == "y" then
+			redo_canvas()
+			return true
+		elseif key == "delete" or key == "backspace" then
+			if #selected_ids() == 0 then return false end
+			delete_selected()
+			return true
+		end
+		return false
+	end
+
 	local function selected_set()
 		return selected_many:peek()
 	end
 
 	local function on_press(e)
+		local keyboard_target = canvas_keyboard:peek()
+		if keyboard_target then keyboard_target:focus() end
 		local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
 		local current_cells = snapshot:peek().cells or {}
 		local ps = positions:peek()
@@ -1090,7 +1288,7 @@ local Page = ui.component(function()
 					if origin then origins[moving_id] = { x = origin.x or 0, y = origin.y or 0 } end
 				end
 				if not origins[cell.id] then origins[cell.id] = { x = pos.x, y = pos.y } end
-				drag = { kind = "node", x = x, y = y, origins = origins }
+				drag = { kind = "node", x = x, y = y, origins = origins, before_positions = clone_positions(ps) }
 				return
 			end
 		end
@@ -1119,7 +1317,16 @@ local Page = ui.component(function()
 
 	local function on_release(e)
 		if not drag then return end
-		if drag.kind == "node" then save_positions()
+		if drag.kind == "node" then
+			local before = drag.before_positions or {}
+			local after = clone_positions(positions:peek())
+			local changed = false
+			for id, point in after do
+				local old = before[id]
+				if not old or old.x ~= point.x or old.y ~= point.y then changed = true; break end
+			end
+			if changed then push_history({ kind = "layout", before = before, after = after }) end
+			save_positions()
 		elseif drag.kind == "wire" then
 			local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
 			local connected = false
@@ -1137,7 +1344,10 @@ local Page = ui.component(function()
 						else
 							observe("Connect " .. drag.variable .. " to " .. ref, function()
 								return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
-							end, function()
+							end, function(value)
+								if type(cell.source) == "string" and type(value.source) == "string" and cell.source ~= value.source then
+									push_history({ kind = "edit", cell_id = cell.id, before = cell.source, after = value.source })
+								end
 								notice:set("Python source updated; marimo owns the new dependency")
 								refresh_graph()
 							end, function(err) notice:set("Connection refused: " .. tostring(err) .. " · Open code to edit it") end)
@@ -1195,10 +1405,17 @@ local Page = ui.component(function()
 					return Bridge.replace_group_selection(zeron, url:peek(), token:peek(), session_id:peek(), compiled)
 				end, function(replaced)
 					group_dialog:set(false)
+					local before_records = records_for_ids(ids, graph.cells or {})
 					local next_positions = table.clone(positions:peek())
 					for _, id in ids do next_positions[id] = nil end
 					next_positions[replaced.cell_id] = { x = left, y = top }
 					positions:set(next_positions)
+					push_history({
+						kind = "cells",
+						before_records = before_records,
+						after_records = { { source = replaced.source or compiled.parent_source, x = left, y = top } },
+						current_ids = { replaced.cell_id },
+					})
 					selected_many:set({ [replaced.cell_id] = true })
 					selected:set(replaced.cell_id)
 					local stack = group_scope_stack:peek()
@@ -1295,19 +1512,30 @@ local Page = ui.component(function()
 		log("Opened marimo editor for cell " .. cell.id)
 	end
 
-	local function delete_selected()
-		local cell = selected_cell()
-		if not cell then notice:set("Select a cell first"); return end
+	delete_selected = function()
+		local ids = selected_ids()
+		if #ids == 0 then notice:set("Select a cell first"); return end
 		if active_metablock:peek() ~= "" then
+			local cell = selected_cell()
+			if not cell then notice:set("Select a cell first"); return end
 			apply_metablock_intent({ type = "delete_element", element_id = cell.id })
 			selected:set("")
 			return
 		end
-		observe("Delete cell " .. cell.id, function()
-			return Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
-		end, function()
-			selected:set(""); refresh_graph()
-		end, function(err) notice:set("Could not delete cell: " .. tostring(err)) end)
+		local records, original_positions = records_for_ids(ids), clone_positions(positions:peek())
+		delete_history_ids(ids, 1, {}, function(deleted, err)
+			if #deleted > 0 then
+				local deleted_set, deleted_records = {}, {}
+				for _, id in deleted do deleted_set[id] = true end
+				for _, record in records do if deleted_set[record.id] then table.insert(deleted_records, record) end end
+				local next_positions = clone_positions(original_positions)
+				for _, id in deleted do next_positions[id] = nil end
+				positions:set(next_positions)
+				push_history({ kind = "cells", before_records = deleted_records, after_records = {}, current_ids = {} })
+				selected:set(""); selected_many:set({}); save_positions(); refresh_graph()
+			end
+			if err then notice:set("Could not delete every selected cell: " .. tostring(err)) end
+		end)
 	end
 
 	local function add_control(kind)
@@ -1322,14 +1550,32 @@ local Page = ui.component(function()
 		end, function(compiled)
 			observe("Insert " .. kind .. " control", function()
 				return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), compiled.control_source)
-			end, function()
+			end, function(control_cell)
+				local control_point = default_cell_position(#cells_now() + 1)
 				observe("Create reactive value for " .. compiled.label, function()
 					return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), compiled.value_source)
-				end, function()
+				end, function(value_cell)
+					if type(control_cell) == "table" and type(control_cell.cell_id) == "string" and type(value_cell) == "table" and type(value_cell.cell_id) == "string" then
+						local value_point = default_cell_position(#cells_now() + 2)
+						local next_positions = clone_positions(positions:peek())
+						next_positions[control_cell.cell_id] = control_point
+						next_positions[value_cell.cell_id] = value_point
+						positions:set(next_positions)
+						push_history({ kind = "cells", before_records = {}, after_records = {
+							{ source = compiled.control_source, x = control_point.x, y = control_point.y },
+							{ source = compiled.value_source, x = value_point.x, y = value_point.y },
+						}, current_ids = { control_cell.cell_id, value_cell.cell_id } })
+						save_positions()
+					end
 					notice:set(compiled.label .. " added; connect its value output " .. compiled.value_name)
 					refresh_graph()
 				end, function(value_error)
-					notice:set("Reactive value creation failed: " .. tostring(value_error) .. "; remove the control cell if it is no longer needed")
+					if type(control_cell) == "table" and type(control_cell.cell_id) == "string" then
+						push_history({ kind = "cells", before_records = {}, after_records = {
+							{ source = compiled.control_source, x = control_point.x, y = control_point.y },
+						}, current_ids = { control_cell.cell_id } })
+					end
+					notice:set("Reactive value creation failed: " .. tostring(value_error) .. "; the inserted control can be undone")
 				end)
 			end, function(err)
 				notice:set("Could not insert " .. compiled.label .. ": " .. tostring(err))
@@ -1361,7 +1607,15 @@ local Page = ui.component(function()
 		output_counter:set(next_number + 1)
 		observe("Add component " .. item.id .. "::" .. callable.name, function()
 			return Bridge.add_component(zeron, url:peek(), token:peek(), session_id:peek(), item.id, callable.name, out, bindings)
-		end, function()
+		end, function(value)
+			if type(value) == "table" and type(value.cell_id) == "string" and type(value.source) == "string" then
+				local point = default_cell_position(#cells_now() + 1)
+				local next_positions = clone_positions(positions:peek())
+				next_positions[value.cell_id] = point
+				positions:set(next_positions)
+				push_history({ kind = "cells", before_records = {}, after_records = { { source = value.source, x = point.x, y = point.y } }, current_ids = { value.cell_id } })
+				save_positions()
+			end
 			notice:set("Inserted ordinary Python into the marimo notebook")
 			refresh_graph()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
@@ -1534,6 +1788,8 @@ local Page = ui.component(function()
 			Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
 			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
+			Button { "Undo", tone = "secondary", size = "sm", disabled = function() return #undo_stack == 0 or history_busy end, on_click = undo_canvas },
+			Button { "Redo", tone = "secondary", size = "sm", disabled = function() return #redo_stack == 0 or history_busy end, on_click = redo_canvas },
 			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 		},
 		ui.row { grow = 1, min_h = 0, w_full = true, gap = "$space.3",
@@ -1554,7 +1810,11 @@ local Page = ui.component(function()
 				label = "Graphimo canvas actions",
 				absolute = true, left = 0, top = 0, right = 0, bottom = 0,
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
-				on_mount = function()
+				ref = canvas_keyboard,
+				focusable = true,
+				on_key = on_canvas_key,
+				on_mount = function(el)
+					el:focus()
 					ui.after(150, function()
 						if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
 						else notice:set("Open or create a notebook to begin") end

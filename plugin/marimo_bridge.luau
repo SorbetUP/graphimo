@@ -625,6 +625,38 @@ local function code_for(operation, args)
 			"    cell_id = ctx.create_cell(" .. ui.json.encode(args.source) .. ", hide_code=False)",
 			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'cell_id': str(cell_id), 'source': " .. ui.json.encode(args.source) .. "}))",
 		}, "\n")
+	elseif operation == "restore_cells" then
+		return table.concat({
+			"import json",
+			"import marimo._code_mode as cm",
+			"records = " .. ui.json.encode(args.records or {}),
+			"result = {'ok': False}",
+			"sources = []",
+			"if not isinstance(records, list) or len(records) > 128:",
+			"    result = {'ok': False, 'error': 'invalid_records: expected at most 128 cell records'}",
+			"else:",
+			"    total_size = 0",
+			"    try:",
+			"        for record in records:",
+			"            if not isinstance(record, dict) or not isinstance(record.get('source'), str): raise ValueError('each cell record must have source text')",
+			"            source = record['source']; size = len(source.encode('utf-8')); total_size += size",
+			"            if size > 1048576 or total_size > 4194304: raise ValueError('restored cell sources exceed the size limit')",
+			"            compile(source, '<graphimo-history-restore>', 'exec'); sources.append(source)",
+			"    except Exception as exc: result = {'ok': False, 'error': 'invalid_records: ' + str(exc)}",
+			"    else:",
+			"        async with cm.get_context() as ctx:",
+			"            created = []",
+			"            try:",
+			"                for source in sources: created.append(ctx.create_cell(source, hide_code=False))",
+			"                result = {'ok': True, 'cell_ids': [str(cell_id) for cell_id in created]}",
+			"            except Exception as exc:",
+			"                rollback_errors = []",
+			"                for cell_id in reversed(created):",
+			"                    try: ctx.delete_cell(cell_id)",
+			"                    except Exception as rollback_exc: rollback_errors.append(str(rollback_exc))",
+			"                result = {'ok': False, 'error': 'restore_failed: ' + str(exc), 'rollback_errors': rollback_errors}",
+			"print('GRAPHIMO_RESULT:' + json.dumps(result, default=str, separators=(',', ':'))) ",
+		}, "\n")
 	elseif operation == "replace_group_selection" then
 		return table.concat({
 			"import ast, hashlib, json",
@@ -685,6 +717,28 @@ local function code_for(operation, args)
 			"async with cm.get_context() as ctx:",
 			"    ctx.delete_cell(" .. ui.json.encode(args.cell_id) .. ")",
 			"print('GRAPHIMO_RESULT:' + json.dumps({'ok': True, 'deleted': True}))",
+		}, "\n")
+	elseif operation == "edit" then
+		return table.concat({
+			"import json",
+			"import marimo._code_mode as cm",
+			"cell_id = " .. ui.json.encode(args.cell_id),
+			"expected_source = " .. ui.json.encode(args.expected_source),
+			"replacement_source = " .. ui.json.encode(args.source),
+			"result = {'ok': False}",
+			"async with cm.get_context() as ctx:",
+			"    try: cell = ctx.cells[cell_id]",
+			"    except (KeyError, IndexError, TypeError): cell = None",
+			"    if cell is None: result = {'ok': False, 'error': 'unsafe_edit: history target cell no longer exists'}",
+			"    elif cell.code != expected_source: result = {'ok': False, 'error': 'unsafe_edit: source changed since this history entry was recorded'}",
+			"    elif not isinstance(replacement_source, str) or len(replacement_source.encode('utf-8')) > 1048576: result = {'ok': False, 'error': 'unsafe_edit: replacement source is invalid or exceeds 1 MiB'}",
+			"    else:",
+			"        try:",
+			"            compile(replacement_source, '<graphimo-history>', 'exec')",
+			"            ctx.edit_cell(cell.id, code=replacement_source)",
+			"            result = {'ok': True, 'changed': True, 'cell_id': str(cell.id), 'source': replacement_source}",
+			"        except Exception as exc: result = {'ok': False, 'error': 'unsafe_edit: ' + str(exc)}",
+			"print('GRAPHIMO_RESULT:' + json.dumps(result, default=str, separators=(',', ':'))) ",
 		}, "\n")
 	elseif operation == "connect" then
 		return table.concat({
@@ -869,6 +923,10 @@ function Bridge.add_cell(zeron, base, token, session_id, source)
 	return execute(zeron, base, token, session_id, code_for("add_cell", { source = source }), 60)
 end
 
+function Bridge.restore_cells(zeron, base, token, session_id, records)
+	return execute(zeron, base, token, session_id, code_for("restore_cells", { records = records }), 90)
+end
+
 function Bridge.replace_group_selection(zeron, base, token, session_id, compiled_group)
 	return execute(
 		zeron,
@@ -882,6 +940,14 @@ end
 
 function Bridge.delete(zeron, base, token, session_id, cell_id)
 	return execute(zeron, base, token, session_id, code_for("delete", { cell_id = cell_id }), 60)
+end
+
+function Bridge.edit(zeron, base, token, session_id, cell_id, expected_source, source)
+	return execute(zeron, base, token, session_id, code_for("edit", {
+		cell_id = cell_id,
+		expected_source = expected_source,
+		source = source,
+	}), 60)
 end
 
 function Bridge.connect(zeron, base, token, session_id, from_cell_id, variable, to_cell_id, input_ref)
