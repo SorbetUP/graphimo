@@ -646,6 +646,20 @@ class GroupLibrary:
             outputs=request.get("outputs"),
         )
 
+    def delete(self, group_id: str, *, expected_source_sha256: str) -> dict[str, Any]:
+        """Delete a Group only when its current source matches the caller's snapshot."""
+        if not isinstance(expected_source_sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", expected_source_sha256
+        ):
+            raise GroupError("expected_source_sha256 must be a SHA-256 hex digest")
+        current = self.get(group_id)
+        if current.source_sha256 != expected_source_sha256:
+            raise GroupError("Group source changed; inspect it before deleting")
+        if current.path.is_symlink() or current.path.resolve().parent != self.root.resolve():
+            raise GroupError("Group files must be regular files in the project groups folder")
+        current.path.unlink()
+        return {"deleted": True, "group_id": group_id, "path": current.relative_path}
+
 
 def run_group(
     group_path: str | Path,

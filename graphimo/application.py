@@ -57,6 +57,7 @@ class GraphimoApplication:
             "group.list": self._list_groups,
             "group.create": self._create_group,
             "group.create_from_selection": self._create_group_from_selection,
+            "group.delete": self._delete_group,
             "group.inspect": self._inspect_group,
             "group.set_contract": self._set_group_contract,
             "control.catalog": self._control_catalog,
@@ -141,6 +142,12 @@ class GraphimoApplication:
             module=self._required(args, "module"),
             cells=self._required(args, "cells"),
             selected_ids=self._required(args, "selected_ids"),
+        )
+
+    def _delete_group(self, args: dict[str, Any]) -> Any:
+        return self.groups.delete(
+            self._required(args, "group_id"),
+            expected_source_sha256=self._required(args, "expected_source_sha256"),
         )
 
     def _inspect_group(self, args: dict[str, Any]) -> Any:

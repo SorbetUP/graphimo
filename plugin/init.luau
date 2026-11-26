@@ -71,6 +71,18 @@ local function is_local_url(value)
 		or string.match(value or "", "^https?://%[::1%]([:/]|$)") ~= nil
 end
 
+local function error_message(value)
+	if type(value) ~= "table" then return tostring(value or "Graphimo operation failed") end
+	local detail = value.error
+	if type(detail) == "table" then return tostring(detail.message or detail.code or "Graphimo operation failed") end
+	return tostring(detail or value.message or "Graphimo operation failed")
+end
+
+local function is_group_selection_rejection(value)
+	local message = error_message(value)
+	return string.sub(message, 1, 12) == "unsafe_edit:" or string.sub(message, 1, 18) == "invalid_selection:"
+end
+
 zeron.tool({ name = "inspect", run = function(args)
 	local url, token, session = config_for(args or {})
 	return start_tool(function() return Bridge.inspect(zeron, url, token, session) end)
@@ -175,7 +187,17 @@ zeron.tool({ name = "graphimo_group_from_selection", run = function(args)
 		}):after(function(compiled)
 			if type(compiled) ~= "table" or compiled.ok == false then return compiled end
 			return Bridge.replace_group_selection(zeron, url, "", session, compiled):after(function(replaced)
-				if type(replaced) ~= "table" or replaced.ok == false then return replaced end
+				if type(replaced) ~= "table" or replaced.ok == false then
+					if not is_group_selection_rejection(replaced) then return replaced end
+					local ok, cleanup = pcall(function()
+						return Service.execute(zeron, path, "group.delete", {
+							group_id = compiled.group.group_id,
+							expected_source_sha256 = compiled.group.source_sha256,
+						})
+					end)
+					if not ok or cleanup == nil then return replaced end
+					return cleanup:after(function() return replaced end, function() return replaced end)
+				end
 				return { ok = true, group = compiled.group, replacement = replaced, inputs = compiled.inputs, outputs = compiled.outputs }
 			end)
 		end)
@@ -1192,7 +1214,20 @@ local Page = ui.component(function()
 						refresh_graph()
 					end)
 				end, function(err)
-					notice:set("Could not replace selected cells: " .. tostring(err))
+					if is_group_selection_rejection(err) then
+						observe("Remove unused Group definition", function()
+							return Service.execute(zeron, path, "group.delete", {
+								group_id = compiled.group.group_id,
+								expected_source_sha256 = compiled.group.source_sha256,
+							})
+						end, function()
+							notice:set("Selected cells changed before they could be grouped. The unused Group was removed; refresh and retry.")
+						end, function(cleanup_error)
+							notice:set("Selected cells changed; Graphimo could not remove the unused Group definition: " .. tostring(cleanup_error))
+						end)
+					else
+						notice:set("Could not replace selected cells: " .. tostring(err))
+					end
 				end)
 			end, function(err)
 				notice:set("Could not create Group Block: " .. tostring(err))

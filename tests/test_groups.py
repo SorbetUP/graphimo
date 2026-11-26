@@ -257,6 +257,39 @@ def test_group_contract_updates_preserve_workflow_cells(tmp_path: Path) -> None:
     assert run_group(updated.path, inputs={"value": 3, "factor": 5}).result == 15
 
 
+def test_group_delete_requires_the_current_source_hash(tmp_path: Path) -> None:
+    application = GraphimoApplication(GraphimoHostAPI("delete-group", tmp_path / "main.py"))
+    created = application.execute(
+        "group.create",
+        {
+            "request": {
+                "group_id": "temporary_group",
+                "module": "temporary_group",
+                "name": "Temporary Group",
+                "inputs": [],
+                "outputs": [],
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="source changed"):
+        application.execute(
+            "group.delete",
+            {"group_id": created["group_id"], "expected_source_sha256": "0" * 64},
+        )
+    assert Path(tmp_path / "groups" / "temporary_group.py").is_file()
+
+    deleted = application.execute(
+        "group.delete",
+        {
+            "group_id": created["group_id"],
+            "expected_source_sha256": created["source_sha256"],
+        },
+    )
+    assert deleted["deleted"] is True
+    assert not Path(tmp_path / "groups" / "temporary_group.py").exists()
+
+
 def test_application_creates_group_from_selection_and_preserves_crossing_ports(
     tmp_path: Path,
 ) -> None:

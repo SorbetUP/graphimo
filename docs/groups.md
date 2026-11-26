@@ -130,6 +130,7 @@ The host-independent application actions are:
 ```text
 group.list
 group.create
+group.delete
 group.inspect
 group.set_contract
 scope.enter
@@ -143,7 +144,9 @@ layout.set
 palette can list entries without executing workflow code. Invalid files are
 returned as per-file diagnostics. `group.set_contract` updates only the managed
 contract/input cell/callable sections and preserves the workflow cells. The
-group ID remains stable when the display name changes.
+group ID remains stable when the display name changes. `group.delete` requires
+the expected source SHA-256, so a stale cleanup request cannot remove a Group
+that was edited after inspection.
 
 `scope.enter` takes a `container_id` equal to a group ID and returns the active
 scope plus the breadcrumb path. Nested navigation uses the same Python dialect.
