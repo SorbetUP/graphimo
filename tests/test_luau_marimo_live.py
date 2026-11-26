@@ -1,4 +1,5 @@
 """Optional integration of the production Luau bridge with pinned marimo."""
+
 from __future__ import annotations
 
 import json
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "tests" / "luau_bridge_driver.luau"
 LUAU = shutil.which("luau")
 MARIMO_PYTHON = os.environ.get("GRAPHIMO_MARIMO_PYTHON")
+
 
 def _port() -> int:
     with socket.socket() as sock:
@@ -56,7 +58,7 @@ def _execute(base: str, session: str, code: str) -> str:
     start = joined.find(marker)
     if start < 0:
         raise AssertionError(f"marimo code-mode response had no Graphimo result: {joined!r}")
-    return joined[start + len(marker):].splitlines()[0]
+    return joined[start + len(marker) :].splitlines()[0]
 
 
 def _bridge_code(mode: str, *args: str) -> list[str]:
@@ -111,7 +113,9 @@ def test_managed_launcher_starts_local_marimo_without_a_user_selected_port(tmp_p
     )
     assert launched.returncode == 0, launched.stderr or launched.stdout
     marker = "GRAPHIMO_LAUNCH:"
-    payload = next(line[len(marker) :] for line in launched.stdout.splitlines() if line.startswith(marker))
+    payload = next(
+        line[len(marker) :] for line in launched.stdout.splitlines() if line.startswith(marker)
+    )
     result = json.loads(payload)
     assert result["started"] is True
     assert result["session_id"] == ""
@@ -161,13 +165,19 @@ def test_managed_launcher_starts_local_marimo_without_a_user_selected_port(tmp_p
 )
 def test_managed_launcher_bootstraps_pinned_marimo_when_python_has_no_marimo(tmp_path: Path):
     available = subprocess.run(
-        [sys.executable, "-c", "import importlib.util; print(bool(importlib.util.find_spec('marimo')))"] ,
+        [
+            sys.executable,
+            "-c",
+            "import importlib.util; print(bool(importlib.util.find_spec('marimo')))",
+        ],
         capture_output=True,
         check=True,
         text=True,
     ).stdout.strip()
     if available == "True":
-        pytest.skip("the test interpreter already has marimo; use a clean Python to verify bootstrap")
+        pytest.skip(
+            "the test interpreter already has marimo; use a clean Python to verify bootstrap"
+        )
 
     notebook = tmp_path / "bootstrap_notebook.py"
     notebook.write_text(
@@ -202,7 +212,9 @@ def test_managed_launcher_bootstraps_pinned_marimo_when_python_has_no_marimo(tmp
     )
     assert launched.returncode == 0, launched.stderr or launched.stdout
     marker = "GRAPHIMO_LAUNCH:"
-    payload = next(line[len(marker) :] for line in launched.stdout.splitlines() if line.startswith(marker))
+    payload = next(
+        line[len(marker) :] for line in launched.stdout.splitlines() if line.startswith(marker)
+    )
     result = json.loads(payload)
     assert result["started"] is True
     managed_python = tmp_path / ".local/share/graphimo/marimo-0.25.2/bin/python"
@@ -301,7 +313,9 @@ def test_sessions_accepts_marimo_object_and_common_wrappers(mode: str):
     )
     assert result.returncode == 0, result.stderr
     marker = "GRAPHIMO_SESSIONS:"
-    encoded = next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker))
+    encoded = next(
+        line[len(marker) :] for line in result.stdout.splitlines() if line.startswith(marker)
+    )
     sessions = json.loads(encoded)
     assert len(sessions) == 1
     assert sessions[0]["path"] == "/tmp/graphimo-live.py"
@@ -341,7 +355,9 @@ def test_sessions_error_includes_safe_http_diagnostics(mode: str, diagnostic: st
     )
     assert result.returncode == 0, result.stderr
     marker = "GRAPHIMO_SESSION_ERROR:"
-    message = next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker))
+    message = next(
+        line[len(marker) :] for line in result.stdout.splitlines() if line.startswith(marker)
+    )
     assert diagnostic in message
     assert "HTTP 200" in message
     assert "application/json" in message or "text/html" in message
@@ -360,7 +376,9 @@ def test_sessions_connection_failure_is_a_structured_result_not_a_callback_excep
     )
     assert result.returncode == 0, result.stderr
     marker = "GRAPHIMO_SESSION_ERROR:"
-    message = next(line[len(marker):] for line in result.stdout.splitlines() if line.startswith(marker))
+    message = next(
+        line[len(marker) :] for line in result.stdout.splitlines() if line.startswith(marker)
+    )
     assert "Could not read marimo /api/sessions: empty" in message
     assert "HTTP 000" in message
     assert "body 0 bytes" in message
@@ -417,7 +435,7 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
     notebook = tmp_path / "graphimo_live.py"
     notebook.write_text(
         "import marimo\n"
-        "__generated_with = \"0.25.2\"\n"
+        '__generated_with = "0.25.2"\n'
         "app = marimo.App()\n\n"
         "@app.cell\n"
         "def source():\n"
@@ -437,7 +455,7 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
         "    preview = 'Graphimo output preview'\n"
         "    preview\n"
         "    return (preview,)\n\n"
-        "if __name__ == \"__main__\":\n"
+        'if __name__ == "__main__":\n'
         "    app.run()\n",
         encoding="utf-8",
     )
@@ -542,12 +560,12 @@ def test_production_luau_bridge_against_live_marimo(tmp_path: Path):
                 time.sleep(0.2)
         assert session, f"marimo session did not start:\n{(tmp_path / 'marimo.log').read_text()}"
 
-        initialized = '''import json
+        initialized = """import json
 import marimo._code_mode as cm
 async with cm.get_context() as ctx:
     for cell in list(ctx.cells): ctx.run_cell(cell.id)
 print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
-'''
+"""
         assert json.loads(_execute(base, session, initialized))["ok"] is True
         notebook_path = str(notebook)
         inspect_code = _bridge_code("inspect", notebook_path)[0]
@@ -561,7 +579,9 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         assert snapshot is not None
         cells = snapshot["cells"]
         source = next(cell for cell in cells if "data = 3" in cell["source"])
-        target = next(cell for cell in cells if "prediction = transform(processed)" in cell["source"])
+        target = next(
+            cell for cell in cells if "prediction = transform(processed)" in cell["source"]
+        )
         display = next(cell for cell in cells if "Graphimo output preview" in cell["source"])
         assert "data" in source["defs"] and "transform" in source["defs"], source
         assert "processed" in target["refs"] and "transform" in target["refs"], target
@@ -571,18 +591,30 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
 
         component_code = _bridge_code("list_components", notebook_path)[0]
         component_result = json.loads(_execute(base, session, component_code))
-        normalize = next(item for item in component_result["components"] if item["id"] == "normalize.py")
+        normalize = next(
+            item for item in component_result["components"] if item["id"] == "normalize.py"
+        )
         assert [item["name"] for item in normalize["callables"]] == ["normalize"]
-        base_contracts = next(item for item in component_result["components"] if item["id"] == "base_contracts.py")
+        base_contracts = next(
+            item for item in component_result["components"] if item["id"] == "base_contracts.py"
+        )
         contract_callables = {item["name"]: item for item in base_contracts["callables"]}
         assert contract_callables["obtenir_infos"]["base_block"]["output_mode"] == "tuple"
-        assert [output["annotation"] for output in contract_callables["obtenir_infos"]["base_block"]["outputs"]] == ["float", "int", "int"]
+        assert [
+            output["annotation"]
+            for output in contract_callables["obtenir_infos"]["base_block"]["outputs"]
+        ] == ["float", "int", "int"]
         assert contract_callables["scalar"]["base_block"]["output_mode"] == "single"
         assert contract_callables["scalar_literal"]["base_block"]["output_mode"] == "single"
-        assert contract_callables["scalar_literal"]["base_block"]["outputs"][0]["annotation"] == "Literal[1, 2.0]"
+        assert (
+            contract_callables["scalar_literal"]["base_block"]["outputs"][0]["annotation"]
+            == "Literal[1, 2.0]"
+        )
         assert contract_callables["nonfinite_scalar"]["base_block"]["output_mode"] == "object"
         assert contract_callables["no_return"]["base_block"]["output_mode"] == "none"
-        metadata = next(item for item in component_result["components"] if item["id"] == "parameter_metadata.py")["callables"]
+        metadata = next(
+            item for item in component_result["components"] if item["id"] == "parameter_metadata.py"
+        )["callables"]
         metadata = {callable_item["name"]: callable_item for callable_item in metadata}
         values = metadata["inspect_values"]
         parameters = {parameter["name"]: parameter for parameter in values["parameters"]}
@@ -592,8 +624,13 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         assert parameters["none_value"]["default"] is None
         assert parameters["flag"]["default"] is True and parameters["flag"]["annotation"] == "bool"
         assert parameters["count"]["default"] == 7 and parameters["count"]["annotation"] == "int"
-        assert parameters["ratio"]["default"] == 1.25 and parameters["ratio"]["annotation"] == "float"
-        assert parameters["label"]["default"] == "sample" and parameters["label"]["annotation"] == "str"
+        assert (
+            parameters["ratio"]["default"] == 1.25 and parameters["ratio"]["annotation"] == "float"
+        )
+        assert (
+            parameters["label"]["default"] == "sample"
+            and parameters["label"]["annotation"] == "str"
+        )
         assert parameters["forward"]["annotation"] == "NotImported"
         assert parameters["absent"]["annotation"] == "None"
         assert parameters["mode"]["choices"] == ["small", "large"]
@@ -614,13 +651,17 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         mixed_parameter = mixed_literal["parameters"][0]
         assert mixed_parameter["choices"] == [True, None, 1, 1.5, "x"]
         assert mixed_parameter["annotation"] == "Literal[True, None, 1, 1.5, 'x']"
-        compile(f"def signature_probe{mixed_literal['signature']}:\n    pass\n", "<signature>", "exec")
+        compile(
+            f"def signature_probe{mixed_literal['signature']}:\n    pass\n", "<signature>", "exec"
+        )
         assert json.loads(json.dumps(component_result, allow_nan=False)) == component_result
 
         add_codes = _bridge_code("add_component", notebook_path)
         assert len(add_codes) == 2
         real_component_result = json.loads(_execute(base, session, add_codes[0]))
-        real_normalize = next(item for item in real_component_result["components"] if item["id"] == "normalize.py")
+        real_normalize = next(
+            item for item in real_component_result["components"] if item["id"] == "normalize.py"
+        )
         assert real_normalize["callables"][0]["parameters"][0]["positional"] is True
         real_hash = real_normalize["source_sha256"]
         assert len(real_hash) == 64 and all(char in "0123456789abcdef" for char in real_hash)
@@ -631,7 +672,9 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         shim_hash = "a" * 64
         assert f"# Graphimo source sha256: {shim_hash}\n" in added["source"]
         linked_snapshot = json.loads(_execute(base, session, inspect_code))
-        linked_cell = next(cell for cell in linked_snapshot["cells"] if cell["id"] == added["cell_id"])
+        linked_cell = next(
+            cell for cell in linked_snapshot["cells"] if cell["id"] == added["cell_id"]
+        )
         assert linked_cell["graphimo_component"] == {
             "component_id": "normalize.py",
             "callable": "normalize",
@@ -682,7 +725,9 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         run_deadline = time.monotonic() + 10
         while time.monotonic() < run_deadline:
             final_snapshot = json.loads(_execute(base, session, inspect_code))
-            final_target = next(cell for cell in final_snapshot["cells"] if cell["id"] == target["id"])
+            final_target = next(
+                cell for cell in final_snapshot["cells"] if cell["id"] == target["id"]
+            )
             if final_target["status"] not in {"stale", "queued", "running"}:
                 break
             time.sleep(0.2)
@@ -690,13 +735,15 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True}))
         assert isinstance(final_target["status"], str) and final_target["status"]
         assert not final_target["errors"]
 
-        prepared = next(cell for cell in final_snapshot["cells"] if "processed = data + 1" in cell["source"])
-        ambiguous_edit = f'''import json
+        prepared = next(
+            cell for cell in final_snapshot["cells"] if "processed = data + 1" in cell["source"]
+        )
+        ambiguous_edit = f"""import json
 import marimo._code_mode as cm
 async with cm.get_context() as ctx:
     ctx.edit_cell({target["id"]!r}, code="prediction = transform(data, fallback=1)")
 print("GRAPHIMO_RESULT:" + json.dumps({{"ok": True}}))
-'''
+"""
         assert json.loads(_execute(base, session, ambiguous_edit))["ok"] is True
         refusal_code = _bridge_code(
             "connect", notebook_path, prepared["id"], "processed", target["id"], "data"
@@ -708,14 +755,14 @@ print("GRAPHIMO_RESULT:" + json.dumps({{"ok": True}}))
         unchanged_target = next(cell for cell in unchanged["cells"] if cell["id"] == target["id"])
         assert unchanged_target["source"] == "prediction = transform(data, fallback=1)"
 
-        inserted = '''import json
+        inserted = """import json
 import marimo._code_mode as cm
 async with cm.get_context() as ctx:
     source_id = ctx.create_cell("number = 3", hide_code=False)
     middle_id = ctx.create_cell("doubled = number * 2", hide_code=False)
     sink_id = ctx.create_cell("report = doubled + 1\\nreport", hide_code=False)
 print("GRAPHIMO_RESULT:" + json.dumps({"ok": True, "source_id": str(source_id), "middle_id": str(middle_id), "sink_id": str(sink_id)}))
-'''
+"""
         inserted_ids = json.loads(_execute(base, session, inserted))
         grouping_snapshot = json.loads(_execute(base, session, inspect_code))
         from graphimo.application import GraphimoApplication
@@ -763,9 +810,14 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True, "source_id": str(source_id), 
         )[0]
         replaced = json.loads(_execute(base, session, replacement_code))
         assert replaced["ok"] is True
-        assert set(replaced["deleted_cell_ids"]) == {inserted_ids["source_id"], inserted_ids["middle_id"]}
+        assert set(replaced["deleted_cell_ids"]) == {
+            inserted_ids["source_id"],
+            inserted_ids["middle_id"],
+        }
         grouped_snapshot = json.loads(_execute(base, session, inspect_code))
-        assert all(cell["id"] not in replaced["deleted_cell_ids"] for cell in grouped_snapshot["cells"])
+        assert all(
+            cell["id"] not in replaced["deleted_cell_ids"] for cell in grouped_snapshot["cells"]
+        )
         assert any(
             edge["source_cell_id"] == replaced["cell_id"]
             and edge["target_cell_id"] == inserted_ids["sink_id"]
@@ -778,7 +830,9 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True, "source_id": str(source_id), 
         group_deadline = time.monotonic() + 10
         while time.monotonic() < group_deadline:
             grouped_snapshot = json.loads(_execute(base, session, inspect_code))
-            final_grouped = next(cell for cell in grouped_snapshot["cells"] if cell["id"] == inserted_ids["sink_id"])
+            final_grouped = next(
+                cell for cell in grouped_snapshot["cells"] if cell["id"] == inserted_ids["sink_id"]
+            )
             if final_grouped["status"] not in {"stale", "queued", "running"}:
                 break
             time.sleep(0.2)
@@ -786,15 +840,35 @@ print("GRAPHIMO_RESULT:" + json.dumps({"ok": True, "source_id": str(source_id), 
         assert "7" in final_grouped["output"]["preview"]
 
         invalid_restore_code = _bridge_code(
-            "restore_cells", notebook_path, "", "", "", "", "", "history_restore_value = 40", "not valid ["
+            "restore_cells",
+            notebook_path,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "history_restore_value = 40",
+            "not valid [",
         )[0]
         invalid_restore = json.loads(_execute(base, session, invalid_restore_code))
-        assert invalid_restore["ok"] is False and invalid_restore["error"].startswith("invalid_records:")
+        assert invalid_restore["ok"] is False and invalid_restore["error"].startswith(
+            "invalid_records:"
+        )
         after_invalid_restore = json.loads(_execute(base, session, inspect_code))
-        assert not any("history_restore_value" in cell["defs"] for cell in after_invalid_restore["cells"])
+        assert not any(
+            "history_restore_value" in cell["defs"] for cell in after_invalid_restore["cells"]
+        )
 
         restore_code = _bridge_code(
-            "restore_cells", notebook_path, "", "", "", "", "", "history_restore_value = 40", "history_restore_next = history_restore_value + 2"
+            "restore_cells",
+            notebook_path,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "history_restore_value = 40",
+            "history_restore_next = history_restore_value + 2",
         )[0]
         restored = json.loads(_execute(base, session, restore_code))
         assert restored["ok"] is True and len(restored["cell_ids"]) == 2

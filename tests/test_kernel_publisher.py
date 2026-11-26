@@ -342,7 +342,8 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 output_name="normalized",
                 bindings={"value": {"variable": "data"}},
             )
-            assert "normalize(" in component_cell["source"]
+            assert component_cell["runtime_symbol"] + "(" in component_cell["source"]
+            assert "# Graphimo component: normalize.py" in component_cell["source"]
             assert "value=data," in component_cell["source"]
             target_cell = project.add_component(
                 "normalize.py",
@@ -384,11 +385,31 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 cell for cell in snapshot["cells"] if cell["id"] == component_cell["cell_id"]
             )
             assert component_projection["graphimo_instance"]["node"] == "normalize"
+            assert component_projection["graphimo_instance"]["component_id"] == "normalize.py"
+            assert (
+                component_projection["graphimo_instance"]["runtime_symbol"]
+                == component_cell["runtime_symbol"]
+            )
             assert (
                 component_projection["graphimo_instance"]["result_var"]
                 == component_cell["result_var"]
             )
             assert component_projection["graphimo_instance"]["outputs"][0]["declared_type"] == "int"
+            assert component_projection["graphimo_component"]["component_id"] == "normalize.py"
+            assert component_projection["graphimo_component"]["callable"] == "normalize"
+            assert component_projection["graphimo_component"]["source_sha256"] is not None
+            value_input = next(
+                item
+                for item in component_projection["graphimo_instance"]["inputs"]
+                if item["name"] == "value"
+            )
+            assert value_input["binding"] == {"kind": "variable", "expression": "data"}
+            scale_input = next(
+                item
+                for item in component_projection["graphimo_instance"]["inputs"]
+                if item["name"] == "scale"
+            )
+            assert scale_input["binding"]["kind"] == "default"
             assert any(
                 edge["source_cell_id"] == data_cell["cell_id"]
                 and edge["target_cell_id"] == component_cell["cell_id"]
@@ -399,7 +420,7 @@ def test_real_marimo_kernel_owns_runtime_hooks_and_reconnects_without_blocking_t
                 data_cell["cell_id"], "data", target_cell["cell_id"], "value"
             )
             assert connected["changed"] is True
-            assert "normalize(" in connected["source"]
+            assert target_cell["runtime_symbol"] + "(" in connected["source"]
             assert "value=data," in connected["source"]
             connected_control = project.connect(
                 gain["value_cell_id"],

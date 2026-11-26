@@ -1,4 +1,5 @@
 """Contract tests for read-only Base Block card summaries."""
+
 from __future__ import annotations
 
 import shutil
@@ -24,7 +25,9 @@ def test_base_block_summary_preserves_order_and_formats_labels():
         text=True,
         timeout=10,
     )
-    assert result.returncode == 0, f"Base Block summary contract failed:\n{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"Base Block summary contract failed:\n{result.stdout}\n{result.stderr}"
+    )
     assert "BASE_BLOCK_SUMMARY_OK" in result.stdout
 
 
@@ -38,7 +41,9 @@ def test_base_block_summary_height_wraps_without_moving_ports():
         text=True,
         timeout=10,
     )
-    assert result.returncode == 0, f"Base Block card height contract failed:\n{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"Base Block card height contract failed:\n{result.stdout}\n{result.stderr}"
+    )
     assert "BASE_BLOCK_HEIGHT_OK" in result.stdout
 
 

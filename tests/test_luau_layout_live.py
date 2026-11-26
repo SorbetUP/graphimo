@@ -1,4 +1,5 @@
 """Run the production Luau layout scripts against real notebook-side JSON I/O."""
+
 from __future__ import annotations
 
 import json
@@ -33,7 +34,9 @@ def _script(output: str) -> str:
     return scripts[0]
 
 
-@pytest.mark.skipif(not LUAU, reason="install the Luau CLI to exercise the production layout module")
+@pytest.mark.skipif(
+    not LUAU, reason="install the Luau CLI to exercise the production layout module"
+)
 def test_production_layout_save_and_load_round_trip_uses_json_string_notebook_key(tmp_path: Path):
     notebook = tmp_path / "notebook.py"
     notebook.write_text("# ordinary marimo notebook\n", encoding="utf-8")
@@ -43,8 +46,16 @@ def test_production_layout_save_and_load_round_trip_uses_json_string_notebook_ke
     assert "GRAPHIMO_SAVE_DONE" in saved.stdout
 
     save_script = _script(saved.stdout)
-    notebook_arg = next(line.partition(":")[2] for line in saved.stdout.splitlines() if line.startswith("GRAPHIMO_NOTEBOOK:"))
-    cells_arg = next(line.partition(":")[2] for line in saved.stdout.splitlines() if line.startswith("GRAPHIMO_CELLS:"))
+    notebook_arg = next(
+        line.partition(":")[2]
+        for line in saved.stdout.splitlines()
+        if line.startswith("GRAPHIMO_NOTEBOOK:")
+    )
+    cells_arg = next(
+        line.partition(":")[2]
+        for line in saved.stdout.splitlines()
+        if line.startswith("GRAPHIMO_CELLS:")
+    )
     executed_save = subprocess.run(
         [sys.executable, "-c", save_script, notebook_arg, cells_arg],
         cwd=tmp_path,
