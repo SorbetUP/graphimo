@@ -272,6 +272,7 @@ local Page = ui.component(function()
 	local checkpoint_details = ui.use_state(nil)
 	local checkpoint_busy = ui.use_state(false)
 	local checkpoint_panel_open = ui.use_state(false)
+	local checkpoint_request_sequence = 0
 	local service_event_cursor = ui.use_state("0")
 	local service_polling = ui.use_state(false)
 	local visible_cell_ids = ui.use_state({})
@@ -595,6 +596,7 @@ local Page = ui.component(function()
 	end
 
 	local function open_metablock(metablock_id, scope)
+		checkpoint_request_sequence += 1
 		if active_metablock:peek() == "" then notebook_snapshot:set(snapshot:peek()) end
 		active_metablock:set(metablock_id)
 		active_metablock_scope:set(scope or "root")
@@ -613,6 +615,7 @@ local Page = ui.component(function()
 	end
 
 	local function leave_metablock()
+		checkpoint_request_sequence += 1
 		active_metablock:set("")
 		active_metablock_scope:set("root")
 		metablock_projection:set(nil)
@@ -745,6 +748,8 @@ local Page = ui.component(function()
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if metablock_id == "" or path == "" then return end
 		if artifact_id == "" or #artifact_id > 256 then notice:set("Enter a valid Graphimo Artifact ID"); return end
+		checkpoint_request_sequence += 1
+		local request_sequence = checkpoint_request_sequence
 		checkpoint_busy:set(true)
 		observe("Inspect PyTorch checkpoint", function()
 			return Service.execute(zeron, path, "metablock.invoke", {
@@ -753,10 +758,12 @@ local Page = ui.component(function()
 				args = { artifact_id = artifact_id },
 			})
 		end, function(value)
+			if checkpoint_request_sequence ~= request_sequence then return end
 			checkpoint_busy:set(false)
 			if active_metablock:peek() ~= metablock_id then return end
 			checkpoint_details:set(value)
 		end, function(err)
+			if checkpoint_request_sequence ~= request_sequence then return end
 			checkpoint_busy:set(false)
 			if active_metablock:peek() ~= metablock_id then return end
 			notice:set("Could not inspect checkpoint: " .. tostring(err))
@@ -770,6 +777,8 @@ local Page = ui.component(function()
 		local expected_revision = view and view.graph_revision
 		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (notebook_snapshot:peek().notebook.path or "")
 		if not details or not view or metablock_id == "" or path == "" then return end
+		checkpoint_request_sequence += 1
+		local request_sequence = checkpoint_request_sequence
 		local external_values = {}
 		for _, parameter in view.external_parameters or {} do external_values[parameter.id] = parameter.default end
 		checkpoint_busy:set(true)
@@ -780,6 +789,7 @@ local Page = ui.component(function()
 				args = { artifact_id = details.artifact_id, external_values = external_values },
 			})
 		end, function(value)
+			if checkpoint_request_sequence ~= request_sequence then return end
 			checkpoint_busy:set(false)
 			if active_metablock:peek() ~= metablock_id then return end
 			local updated = table.clone(details)
@@ -787,6 +797,7 @@ local Page = ui.component(function()
 			updated.migration_preview_revision = expected_revision
 			checkpoint_details:set(updated)
 		end, function(err)
+			if checkpoint_request_sequence ~= request_sequence then return end
 			checkpoint_busy:set(false)
 			if active_metablock:peek() ~= metablock_id then return end
 			notice:set("Could not preview checkpoint migration: " .. tostring(err))
