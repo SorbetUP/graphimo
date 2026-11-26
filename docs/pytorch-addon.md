@@ -54,8 +54,8 @@ changes affect the revision.
 ## Current milestone boundary
 
 P1 supplies the semantic schema. P2 adds the exact V1 element catalog,
-structured validation, symbolic tensor shapes and shape propagation without
-creating a model. `validate_model_graph(state, external_values)` reports
+structured validation, symbolic tensor shapes and shape propagation.
+`validate_model_graph(state, external_values)` reports
 structural, port, cycle, parameter and binding diagnostics. The normative error
 codes include `pytorch_unknown_element_kind`, `pytorch_unknown_port`,
 `pytorch_edge_invalid`, `pytorch_cycle_invalid`,
@@ -68,6 +68,19 @@ method, element, Group and edge identities are attached when known.
 `port_shapes` and `edge_shapes` map scoped IDs to `TensorSpec`, with validation
 and shape diagnostics included. It uses bounded exact symbolic matching,
 simple products/quotients, broadcast rules and concrete shape constraints. It
-does not construct a PyTorch model or execute user code. P3 is the compiler and
-readable generated source milestone. Until that compiler supports every kind
-in a state, unknown kinds must remain non-materializable.
+does not construct a PyTorch model or execute user code.
+
+P3 adds `compile_model(state, external_values)`. It validates and infers before
+generating trusted, deterministic Python source, compiles that source in a
+private addon namespace, and returns a factory, runtime-site bindings, shape
+results and materialization key. Compilation refuses graphs with error
+diagnostics. Generated source uses normal `torch`, `torch.nn` and
+`torch.nn.functional` APIs plus inspectable wrappers for functional operations;
+it contains no scheduler, Workbench or TorchLens code. MLP and repeated Group
+models are executable, and registration now materializes these semantic graphs
+as `PyTorchModelDefinition` values. Until the compiler supports every kind in a
+state, unknown kinds must remain non-materializable.
+
+P4 Workbench projection/editing, P5 runtime subscriptions, P6 checkpoint
+migration, P7 TorchLens workflows, P8 Llama templates and P9 integration
+hardening remain later milestones.

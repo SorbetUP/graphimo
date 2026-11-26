@@ -26,6 +26,7 @@ class FakeDialect:
         self.host = host
 
     def create_state(self, request: dict[str, Any], context: GraphimoHostAPI) -> dict[str, Any]:
+        assert context.current_metablock_id is not None
         return {"name": request.get("name", "Counter"), "value": 0}
 
     def catalog(self, state: Any, scope: str, context: GraphimoHostAPI) -> dict[str, Any]:

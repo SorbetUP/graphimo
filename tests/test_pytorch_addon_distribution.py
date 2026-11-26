@@ -95,7 +95,8 @@ exec(materialized["source"], scope, scope)
 definition = scope[materialized["result_name"]]
 model = definition.instantiate()
 assert isinstance(model(__import__("torch").ones(2, 4)), dict)
-assert model.__graphimo_pytorch_runtime__.graph_revision == revision
+assert model.__graphimo_pytorch_runtime__.graph_revision == definition.graph_revision
+assert definition.graph_revision in definition.generated_source
 print(json.dumps({"revision": revision, "parameters": definition.total_parameters}))
 """
     env = os.environ.copy()

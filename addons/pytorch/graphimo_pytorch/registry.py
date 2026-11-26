@@ -292,16 +292,19 @@ def validate_model_graph(
     diagnostics: list[Diagnostic] = []
     groups = _all_groups(state)
     declared_external = {parameter.id: parameter for parameter in state.external_parameters}
-    for parameter_id in supplied_values.keys() - declared_external.keys():
+    accepted_external_keys = declared_external.keys() | {
+        parameter.name for parameter in state.external_parameters
+    }
+    for parameter_id in supplied_values.keys() - accepted_external_keys:
         diagnostics.append(
             Diagnostic(
                 "pytorch_external_param_missing", f"unknown external parameter {parameter_id!r}"
             )
         )
     for parameter in state.external_parameters:
-        if parameter.id not in supplied_values:
+        if parameter.id not in supplied_values and parameter.name not in supplied_values:
             continue
-        actual = supplied_values[parameter.id]
+        actual = supplied_values.get(parameter.id, supplied_values.get(parameter.name))
         allowed = {"int": int, "float": (int, float), "bool": bool, "str": str}[parameter.type]
         if type(actual) not in (allowed if isinstance(allowed, tuple) else (allowed,)):
             diagnostics.append(
@@ -311,7 +314,9 @@ def validate_model_graph(
                 )
             )
     values = {
-        parameter.id: supplied_values.get(parameter.id, parameter.default)
+        parameter.id: supplied_values.get(
+            parameter.id, supplied_values.get(parameter.name, parameter.default)
+        )
         for parameter in state.external_parameters
     }
     group_visiting: set[str] = set()
@@ -566,6 +571,16 @@ def validate_model_graph(
                             group_id=graph.id,
                         )
                     )
+                if label == "input":
+                    for port_name in port_names:
+                        if not port_name.isidentifier() or keyword.iskeyword(port_name):
+                            diagnostics.append(
+                                Diagnostic(
+                                    "pytorch_module_name_invalid",
+                                    f"invalid generated Group input name {port_name!r}",
+                                    group_id=graph.id,
+                                )
+                            )
                 for port in ports:
                     endpoint = port.endpoint
                     if endpoint.element_id not in elements and endpoint.element_id not in instances:
@@ -686,6 +701,18 @@ def validate_model_graph(
             )
     supported_methods = {"forward", "loss", "predict"}
     for method in state.entrypoints:
+        for value in [
+            *(item.name for item in method.inputs),
+            *(item.name for item in method.outputs),
+        ]:
+            if not value.isidentifier() or keyword.iskeyword(value):
+                diagnostics.append(
+                    Diagnostic(
+                        "pytorch_module_name_invalid",
+                        f"invalid generated method port name {value!r}",
+                        method_name=method.name,
+                    )
+                )
         if len({item.name for item in method.inputs}) != len(method.inputs):
             diagnostics.append(
                 Diagnostic(

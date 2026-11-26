@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping
@@ -10,9 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from graphimo.metablocks import state_revision
-
-from .prototype import ModelSpec, build_model
+from .schema import PyTorchMetaBlockState, state_from_dict, graph_revision
 
 
 @dataclass(frozen=True)
@@ -47,11 +44,11 @@ class PyTorchModelDefinition:
     external_parameters: Mapping[str, Any]
     bindings: RuntimeBindingMap
     _factory: Callable[[], Any]
-    _resolved_parameters: Mapping[str, Any] = field(repr=False, compare=False)
+    _total_parameters: int = field(repr=False, compare=False)
 
     @property
     def total_parameters(self) -> int:
-        return _parameter_count(self._resolved_parameters)
+        return self._total_parameters
 
     @property
     def trainable_parameters(self) -> int:
@@ -79,7 +76,11 @@ class PyTorchModelDefinition:
 
 
 def materialize_definition(
-    *, state_path: str | Path, metablock_id: str, external_values: dict[str, Any] | None = None
+    *,
+    state_path: str | Path,
+    metablock_id: str,
+    revision: str | None = None,
+    external_values: dict[str, Any] | None = None,
 ) -> PyTorchModelDefinition:
     """Recreate a model definition inside the active marimo Python process."""
     path = Path(state_path)
@@ -89,65 +90,68 @@ def materialize_definition(
         or envelope.get("dialect_id") != "pytorch.model"
     ):
         raise ValueError("PyTorch MetaBlock state identity does not match the materialization cell")
-    state = envelope.get("state")
-    if not isinstance(state, dict) or not isinstance(state.get("model_spec"), dict):
-        raise ValueError("PyTorch MetaBlock state has no model specification")  # noqa: TRY004
-    values = {**state["model_spec"], **(external_values or {})}
-    spec = ModelSpec(
-        input_size=int(values["input_size"]),
-        hidden_size=int(values["hidden_size"]),
-        head_sizes={str(name): int(size) for name, size in values["head_sizes"].items()},
-    )
-    revision = state_revision(state)
-    materialization_payload = {
-        "revision": revision,
-        "external_parameters": external_values or {},
-        "addon_version": "0.1.0",
-    }
-    materialization_key = hashlib.sha256(
-        json.dumps(materialization_payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    bindings = RuntimeBindingMap(
-        (
-            RuntimeSite("backbone_linear", "backbone.0"),
-            RuntimeSite("backbone_activation", "backbone.1"),
-            *(RuntimeSite(f"head_{name}", f"heads.{name}") for name in sorted(spec.head_sizes)),
-        )
-    )
-    generated_source = _generated_source(spec)
+    raw_state = envelope.get("state")
+    state = state_from_dict(raw_state)
+    actual_revision = graph_revision(state)
+    if revision is not None and revision != actual_revision:
+        raise ValueError("PyTorch MetaBlock revision does not match the materialization cell")
+    from .compiler import compile_model
+
+    compiled = compile_model(state, external_values)
+    from .compiler import _resolved_values
+
+    by_id, resolved_by_name = _resolved_values(state, external_values)
+    total_parameters = _count_parameters(state, by_id)
     return PyTorchModelDefinition(
         metablock_id=metablock_id,
-        graph_revision=revision,
-        materialization_key=materialization_key,
-        model_name=state.get("name", "GraphimoModel"),
-        generated_source=generated_source,
-        external_parameters=external_values or {},
-        bindings=bindings,
-        _factory=lambda: build_model(spec),
-        _resolved_parameters={
-            "input_size": spec.input_size,
-            "hidden_size": spec.hidden_size,
-            "head_sizes": spec.head_sizes,
-        },
+        graph_revision=actual_revision,
+        materialization_key=compiled.materialization_key,
+        model_name=state.name,
+        generated_source=compiled.generated_source,
+        external_parameters=resolved_by_name,
+        bindings=compiled.bindings,
+        _factory=compiled.factory,
+        _total_parameters=total_parameters,
     )
 
 
-def _generated_source(spec: ModelSpec) -> str:
-    heads = repr(dict(sorted(spec.head_sizes.items())))
-    return (
-        "from graphimo_pytorch.prototype import ModelSpec, build_model\n\n"
-        f"model_spec = ModelSpec(input_size={spec.input_size}, hidden_size={spec.hidden_size}, "
-        f"head_sizes={heads})\n"
-        "model = build_model(model_spec)\n"
-    )
+def _count_parameters(state: PyTorchMetaBlockState, external_values: Mapping[str, Any]) -> int:
+    from .compiler import _resolved_params
 
+    groups = {item.id: item for item in state.groups}
 
-def _parameter_count(values: Mapping[str, Any]) -> int:
-    input_size = int(values["input_size"])
-    hidden_size = int(values["hidden_size"])
-    heads = values["head_sizes"]
-    return (
-        input_size * hidden_size
-        + hidden_size
-        + sum(hidden_size * int(size) + int(size) for size in heads.values())
-    )
+    def count_element(element) -> int:
+        params = _resolved_params(element, external_values)
+        if element.kind == "linear":
+            return int(params["in_features"]) * int(params["out_features"]) + (
+                int(params["out_features"]) if params.get("bias", True) else 0
+            )
+        if element.kind == "embedding":
+            return int(params["num_embeddings"]) * int(params["embedding_dim"])
+        if element.kind == "rms_norm":
+            normalized = params["normalized_shape"]
+            if isinstance(normalized, (tuple, list)):
+                import math
+
+                return math.prod(normalized)
+            return int(normalized)
+        return 0
+
+    def count_group(group_id: str, stack: tuple[str, ...] = ()) -> int:
+        if group_id in stack:
+            raise ValueError("recursive Group definitions cannot be materialized")
+        group = groups[group_id]
+        total = sum(count_element(element) for element in group.elements)
+        total += sum(
+            count_group(instance.group_id, stack + (group_id,)) * instance.repeat
+            for instance in group.group_instances
+        )
+        return total
+
+    total = 0
+    for method in state.entrypoints:
+        total += sum(count_element(element) for element in method.elements)
+        total += sum(
+            count_group(instance.group_id) * instance.repeat for instance in method.group_instances
+        )
+    return total

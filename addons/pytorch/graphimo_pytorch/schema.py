@@ -479,6 +479,12 @@ def canonical_state_json(state: PyTorchMetaBlockState) -> str:
     )
 
 
+def state_to_dict(state: PyTorchMetaBlockState) -> dict[str, Any]:
+    """Return the canonical JSON-compatible state mapping."""
+    _assert_json(_state_to_dict(state))
+    return _state_to_dict(state)
+
+
 def graph_revision(state: PyTorchMetaBlockState) -> str:
     return hashlib.sha256(canonical_state_json(state).encode("utf-8")).hexdigest()
 

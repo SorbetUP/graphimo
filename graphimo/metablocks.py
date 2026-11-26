@@ -319,7 +319,8 @@ class MetaBlockAddonManager:
             raise FileExistsError(f"MetaBlock '{metablock_id}' already exists")
         handler = self._load(dialect_id)
         registration = self._registrations[dialect_id]
-        state = handler.create_state(request, self.host)
+        scoped_host = self.host.for_metablock(metablock_id)
+        state = handler.create_state(request, scoped_host)
         record = _record_from_sidecar(
             {
                 "format": 1,
@@ -330,7 +331,7 @@ class MetaBlockAddonManager:
                 "state": state,
             }
         )
-        projection = handler.project(record.state, self.host.current_scope(), self.host)
+        projection = handler.project(record.state, self.host.current_scope(), scoped_host)
         self._write_record(record)
         return {
             "available": True,
