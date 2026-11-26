@@ -504,6 +504,7 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
     else:  # inspect
         common.extend(
             [
+                "    import base64 as _graphimo_base64",
                 "    graph = ctx.graph.cells",
                 "    namespace = ctx.globals",
                 "    from graphimo.preview import preview_value",
@@ -528,6 +529,8 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "            else: preview = f'<{type(raw).__name__} output>'; size = 0",
                 "            if str(mime).startswith('image/'): preview = f'Image output ({mime}, {size} bytes)'",
                 "            output = {'mimetype': str(mime), 'preview': preview[:500], 'truncated': len(preview) > 500, 'bytes': size}",
+                "            if str(mime).startswith('image/') and isinstance(raw, bytes) and len(raw) <= 262144:",
+                "                output['image_data_url'] = 'data:' + str(mime) + ';base64,' + _graphimo_base64.b64encode(raw).decode('ascii')",
                 "        errors = [{'kind': getattr(error, 'kind', 'error'), 'message': str(getattr(error, 'msg', error))[:2000]} for error in getattr(cell, 'errors', [])]",
                 "        cells.append({'id': str(cell.id), 'source': cell.code[:65536], 'source_truncated': len(cell.code) > 65536, 'defs': defs, 'refs': refs, 'outputs': outputs, 'output': output, 'errors': errors, 'status': str(getattr(getattr(cell, 'status', None), 'value', getattr(cell, 'status', None)) or 'unknown')})",
                 "        for name in refs:",

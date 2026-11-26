@@ -116,13 +116,33 @@ function Canvas.draw_grid(c, w, h, zoom, pan_x, pan_y, visible)
 	end
 end
 
+-- Port dots share Canvas.port geometry with edges and hit-testing, so the
+-- visible anchor can never diverge from the connection point.
+function Canvas.draw_ports(c, cells, zoom, pan_x, pan_y)
+	local function screen(x, y)
+		return pan_x + x * zoom, pan_y + y * zoom
+	end
+	for _, cell in cells do
+		for _, name in Canvas.input_ports(cell) do
+			local x, y = screen(cell.x or 0, Canvas.port(cell, name, false))
+			c:circle(x, y, 3.5 * zoom, "$text.secondary")
+		end
+		for _, key in Canvas.output_ports(cell) do
+			local x, y = screen((cell.x or 0) + Canvas.width, Canvas.port(cell, key, true))
+			c:circle(x, y, 3.5 * zoom, "$accent")
+		end
+	end
+end
+
 function Canvas.draw_edges(c, cells, edges, zoom, pan_x, pan_y, selected, pending)
 	local function screen(x, y)
 		return pan_x + x * zoom, pan_y + y * zoom
 	end
+	local index = {}
+	for _, cell in cells do index[cell.id] = cell end
 	for _, edge in edges do
-		local from = Canvas.node(cells, edge.source_cell_id)
-		local to = Canvas.node(cells, edge.target_cell_id)
+		local from = index[edge.source_cell_id]
+		local to = index[edge.target_cell_id]
 		if from and to then
 			local source_port = edge.source_variable or edge.variable
 			if type(edge.output_index) == "number" then source_port = tostring(edge.output_index) end
@@ -139,7 +159,7 @@ function Canvas.draw_edges(c, cells, edges, zoom, pan_x, pan_y, selected, pendin
 		end
 	end
 	if pending then
-		local from = Canvas.node(cells, pending.from_cell_id)
+		local from = index[pending.from_cell_id]
 		if from then
 			local x1, y1 = screen((from.x or 0) + Canvas.width, Canvas.port(from, pending.port or pending.variable, true))
 			local x2, y2 = screen(pending.x, pending.y)

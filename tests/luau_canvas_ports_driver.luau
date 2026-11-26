@@ -72,3 +72,18 @@ assert(drawn[2].y == Canvas.port(plain, "data", false), "target endpoint must us
 assert(drawn[3].y == Canvas.port(plain, "out", true), "plain source edge keeps its def port")
 assert(drawn[4].y == Canvas.port(instance_cell, "data", false) or drawn[4].y == Canvas.port(instance_cell, "value", false), "plain-to-instance edge lands on a formal input port")
 print("CANVAS_PORTS_OK")
+
+-- Port dots must share the exact Canvas.port geometry used by edges and
+-- hit-testing (single geometry source).
+local dots = {}
+local pc = { circle = function(_, x, y) table.insert(dots, { x = x, y = y }) end }
+Canvas.draw_ports(pc, cells, 2, 10, 20)
+-- instance cell at default position x=0,y=0 (cells table entries have y=10/0)
+local inst_dot = nil
+for _, dot in dots do
+	if dot.y == 20 + Canvas.port(instance_cell, "0", true) * 2 and dot.x == 10 + Canvas.width * 2 then
+		inst_dot = dot
+	end
+end
+assert(inst_dot ~= nil, "output port dot must sit at screen(Canvas.width, Canvas.port(...))")
+print("CANVAS_PORTS_GEOMETRY_OK")

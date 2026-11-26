@@ -318,6 +318,10 @@ local Page = ui.component(function()
 	local grid = ui.use_state(true)
 	local output_counter = ui.use_state(1)
 	local notice = ui.use_state("")
+	local inspector_open = ui.use_state(false)
+	local show_technical = ui.use_state(false)
+	local literal_target = ui.use_state("")
+	local literal_value = ui.use_state("")
 	local canvas = ui.ref()
 	local canvas_keyboard = ui.ref()
 	local drag = nil
@@ -326,6 +330,18 @@ local Page = ui.component(function()
 
 	local function cells_now()
 		return snapshot:get().cells or {}
+	end
+
+	-- Cell roles drive the canvas projection: technical cells stay reachable
+	-- in developer mode but do not clutter the main pipeline view.
+	local function cell_role(cell)
+		if type(cell) ~= "table" then return "ordinary_python" end
+		if type(cell.graphimo_instance) == "table" then return "node_instance" end
+		local source = type(cell.source) == "string" and cell.source or ""
+		if string.find(source, "# Graphimo node library:", 1, true) then return "library" end
+		if string.find(source, "# Graphimo control:", 1, true) then return "control" end
+		if string.find(source, "# Graphimo group:", 1, true) then return "group" end
+		return "ordinary_python"
 	end
 
 	local base_summaries = ui.computed(function()
@@ -410,6 +426,15 @@ local Page = ui.component(function()
 		return positioned
 	end
 
+	local function visible_positioned_cells()
+		local visible = visible_cell_ids:peek()
+		local positioned = {}
+		for _, cell in positioned_cells() do
+			if visible[cell.id] then table.insert(positioned, cell) end
+		end
+		return positioned
+	end
+
 	local refresh_graph
 	local refresh_metablock
 	local function refresh_sessions()
@@ -450,7 +475,9 @@ local Page = ui.component(function()
 			notebook_snapshot:set(value)
 			snapshot:set(value)
 			local ids = {}
-			for _, cell in value.cells or {} do table.insert(ids, cell.id) end
+			for _, cell in value.cells or {} do
+				if show_technical:peek() or cell_role(cell) ~= "library" then table.insert(ids, cell.id) end
+			end
 			visible_cell_ids:set(ids)
 			if value.notebook.session_id then session_id:set(value.notebook.session_id) end
 			local path = value.notebook.path or ""
@@ -1318,9 +1345,16 @@ local Page = ui.component(function()
 				Text { function() local value = cell(); return if value and value.name then value.name else "Cell " .. string.sub(id, 1, 7) end, style = "label", grow = 1 },
 				Text { function()
 					local value = cell()
+					local role = cell_role(value)
+					if role == "ordinary_python" or role == "node_instance" then return "" end
+					return role
+				end, style = "caption", tone = "secondary" },
+				Text { function()
+					local value = cell()
 					local dependency = value and value.graphimo_dependency_state
 					if dependency and dependency.state == "disabled" then return "disabled" end
 					if dependency and dependency.state == "blocked" then return "stale / blocked" end
+					if dependency and dependency.state == "component_unavailable" then return "component unavailable" end
 					return value and value.status or "unknown"
 				end, style = "caption", tone = function()
 					local value = cell()
@@ -1890,13 +1924,19 @@ local Page = ui.component(function()
 		if session_id:peek() == "" or active_metablock:peek() ~= "" then return {} end
 		local hit = block_at(at)
 		if hit and not selected_many:peek()[hit.id] then select_cell(hit.id, false) end
-		if #selected_ids() < 2 then return {} end
-		return {
-			{ label = "Create Group Block…", on_select = function()
+		local ids = selected_ids()
+		local items = {}
+		local single = if #ids == 1 then Canvas.node(snapshot:peek().cells or {}, ids[1]) else nil
+		if single and type(single.graphimo_instance) == "table" then
+			table.insert(items, { label = "Inspect node…", on_select = function() inspector_open:set(true) end })
+		end
+		if #ids >= 2 then
+			table.insert(items, { label = "Create Group Block…", on_select = function()
 				group_name:set("New group")
 				group_dialog:set(true)
-			end },
-		}
+			end })
+		end
+		return items
 	end
 
 	local function run_selected()
@@ -1929,6 +1969,143 @@ local Page = ui.component(function()
 		zeron.open_url(url:peek())
 		notice:set("Opened the marimo editor for cell " .. cell.id)
 		log("Opened marimo editor for cell " .. cell.id)
+	end
+
+	local function inspector_instance()
+		local cell = selected_cell()
+		if cell and type(cell.graphimo_instance) == "table" then return cell, cell.graphimo_instance end
+		return nil, nil
+	end
+
+	local function inspector_project_path()
+		return project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+	end
+
+	local function inspector_set_literal()
+		local _cell, instance = inspector_instance()
+		local name = literal_target:peek()
+		local raw = literal_value:peek()
+		if not instance or name == "" or raw == "" then
+			notice:set("Choose an input and enter a JSON literal first")
+			return
+		end
+		local value = raw
+		local ok, decoded = pcall(ui.json.decode, raw)
+		if ok then value = decoded end
+		observe("Set literal on " .. name, function()
+			return Service.execute(zeron, inspector_project_path(), "notebook.set_literal", {
+				instance_id = instance.instance_id, input_name = name, value = value,
+			})
+		end, function()
+			notice:set("Literal set on input " .. name)
+			refresh_graph()
+		end, function(err)
+			notice:set("Literal refused: " .. tostring(err))
+		end)
+	end
+
+	local function inspector_disconnect_input()
+		local cell, instance = inspector_instance()
+		local name = literal_target:peek()
+		if not cell or not instance or name == "" then
+			notice:set("Choose an input first")
+			return
+		end
+		observe("Disconnect input " .. name, function()
+			return Service.execute(zeron, inspector_project_path(), "notebook.disconnect", {
+				cell_id = cell.id, input_name = name,
+			})
+		end, function()
+			notice:set("Input " .. name .. " disconnected (default applies if any)")
+			refresh_graph()
+		end, function(err)
+			notice:set("Disconnect refused: " .. tostring(err))
+		end)
+	end
+
+	local function inspector_toggle_disabled()
+		local cell, instance = inspector_instance()
+		if not cell or not instance then return end
+		local action = instance.disabled and "notebook.enable_instance" or "notebook.disable_instance"
+		observe(action, function()
+			return Service.execute(zeron, inspector_project_path(), action, { cell_id = cell.id })
+		end, function()
+			notice:set(if instance.disabled then "Instance re-enabled" else "Instance disabled; dependents become stale/blocked")
+			refresh_graph()
+		end, function(err)
+			notice:set("Instance toggle refused: " .. tostring(err))
+		end)
+	end
+
+	local inspector_inputs = ui.computed(function()
+		local _cell, instance = inspector_instance()
+		return instance and instance.inputs or {}
+	end)
+	local inspector_outputs = ui.computed(function()
+		local _cell, instance = inspector_instance()
+		return instance and instance.outputs or {}
+	end)
+
+	local function inspector_panel()
+		return ui.column { w_full = true, max_h = 340, overflow = "auto", gap = "$space.2", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+			ui.row { w_full = true, items = "center", gap = "$space.2",
+				Text { function()
+					local _cell, instance = inspector_instance()
+					return if instance then tostring(instance.node) .. "  ·  " .. tostring(instance.component_id or "legacy instance") else "Select a Graphimo node to inspect it"
+				end, style = "label", grow = 1 },
+				Text { function() local _cell, instance = inspector_instance(); return instance and tostring(instance.state or "") or "" end, style = "caption", tone = "secondary" },
+				Button { "Close", tone = "secondary", size = "sm", on_click = function() inspector_open:set(false) end },
+			},
+			ui.show(function() return select(2, inspector_instance()) ~= nil end, ui.column { w_full = true, gap = "$space.2",
+				Text { "Inputs", style = "label" },
+				ui.each(inspector_inputs, function(input)
+					if type(input) ~= "table" then return Text { "" } end
+					local binding = type(input.binding) == "table" and input.binding or {}
+					local kind = tostring(binding.kind or "?")
+					local detail = "unbound"
+					if kind == "variable" or kind == "output_reference" or kind == "expression" then
+						detail = tostring(binding.expression or "")
+					elseif kind == "literal" then
+						detail = "literal " .. tostring(binding.expression or "")
+					elseif kind == "default" then
+						detail = "default " .. tostring(binding.default)
+					end
+					local name_text = tostring(input.name or "?")
+					if type(input.annotation) == "string" and input.annotation ~= "" then
+						name_text = name_text .. " (" .. input.annotation .. ")"
+					end
+					return ui.row { w_full = true, items = "center", gap = "$space.1",
+						Text { name_text .. " · " .. kind .. " · " .. detail, style = "caption", grow = 1, wrap = true },
+						Button { "Edit", tone = "secondary", size = "sm", on_click = function() literal_target:set(tostring(input.name or "")); literal_value:set("") end },
+					}
+				end),
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					Text { function() return "Input: " .. (literal_target:peek() ~= "" and literal_target:peek() or "(choose Edit)") end, style = "caption", tone = "secondary" },
+					TextField { value = literal_value, label = "Literal (JSON)", placeholder = "0.5", w_full = true, grow = 1 },
+					Button { "Set literal", size = "sm", on_click = inspector_set_literal },
+					Button { "Disconnect", tone = "secondary", size = "sm", on_click = inspector_disconnect_input },
+				},
+				Text { "Outputs", style = "label" },
+				ui.each(inspector_outputs, function(output)
+					if type(output) ~= "table" then return Text { "" } end
+					local state = "not computed"
+					if output.available then state = "available" elseif output.stale then state = "stale" end
+					local preview = ""
+					if type(output.runtime_preview) == "table" then preview = tostring(output.runtime_preview.preview or "") end
+					local label = tostring(output.index or 0) .. " · " .. tostring(output.name or "output") .. " · " .. tostring(output.declared_type or "?") .. " · " .. state
+					if preview ~= "" then label = label .. " · " .. preview end
+					return Text { label, style = "caption", tone = "secondary", wrap = true }
+				end),
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					Button { "Run", size = "sm", on_click = run_selected },
+					Button { function()
+						local _cell, instance = inspector_instance()
+						if instance and instance.disabled then return "Enable" end
+						return "Disable"
+					end, tone = "secondary", size = "sm", on_click = inspector_toggle_disabled },
+				},
+			}),
+		}
 	end
 
 	delete_selected = function()
@@ -2417,6 +2594,8 @@ local Page = ui.component(function()
 			Button { "−", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { "+", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
+			Button { function() return if inspector_open:get() then "Inspector −" else "Inspector +" end, tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function() inspector_open:set(not inspector_open:peek()) end },
+			Button { function() return if show_technical:get() then "Technical −" else "Technical +" end, tone = "secondary", size = "sm", on_click = function() show_technical:set(not show_technical:peek()); refresh_graph() end },
 			Button { function() return if logs_open:get() then "Terminal −" else "Terminal +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
 		},
 		ui.show(function() return #group_scope_stack:get() > 0 and active_metablock:get() == "" end, ui.row {
@@ -2453,7 +2632,8 @@ local Page = ui.component(function()
 				Canvas.draw_grid(c, w, h, zoom:get(), pan_x:get(), pan_y:get(), grid:get())
 			end, pointer_events = "none" },
 			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c)
-				Canvas.draw_edges(c, positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
+				Canvas.draw_edges(c, visible_positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
+				Canvas.draw_ports(c, visible_positioned_cells(), zoom:get(), pan_x:get(), pan_y:get())
 			end, pointer_events = "none" },
 			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
 				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
@@ -2482,6 +2662,7 @@ local Page = ui.component(function()
 			},
 			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
+			ui.show(function() return inspector_open:get() end, inspector_panel()),
 			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
