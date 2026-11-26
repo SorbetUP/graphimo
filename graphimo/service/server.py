@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,15 @@ from .protocol import (
     parse_json_object,
 )
 from .sessions import ProjectSession, ProjectSessionManager
+
+_ACTION_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+
+
+def _action_error_code(exc: BaseException) -> str:
+    code = getattr(exc, "code", None)
+    return (
+        code if isinstance(code, str) and _ACTION_ERROR_CODE.fullmatch(code) else "invalid_action"
+    )
 
 
 def default_manifest_path() -> Path:
@@ -194,7 +204,7 @@ class GraphimoService:
         except KeyError as exc:
             self._write_error(handler, 404, "project_not_found", str(exc))
         except (ValueError, TypeError, FileNotFoundError) as exc:
-            self._write_error(handler, 422, "invalid_action", str(exc))
+            self._write_error(handler, 422, _action_error_code(exc), str(exc))
         except Exception:
             self._write_error(handler, 500, "internal_error", "Graphimo service action failed")
 
@@ -240,7 +250,7 @@ class GraphimoService:
             try:
                 return session.execute(action, args)
             except (ValueError, TypeError, FileNotFoundError) as exc:
-                raise ServiceProtocolError("invalid_action", str(exc), status=422) from exc
+                raise ServiceProtocolError(_action_error_code(exc), str(exc), status=422) from exc
         if path == "/v1/batch":
             session = self._project(request)
             return execute_batch(

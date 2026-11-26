@@ -285,6 +285,17 @@ def test_service_pytorch_metablock_project_apply_materialize_and_events(tmp_path
     client = GraphimoClient(service.url, service.token)
     project = client.open_project(project_path)
     try:
+        with pytest.raises(GraphimoServiceError) as import_error:
+            project.execute(
+                "metablock.create",
+                {
+                    "dialect_id": "pytorch.model",
+                    "metablock_id": "unsupported_source",
+                    "request": {"semantic_state_json": "class Model(torch.nn.Module): pass"},
+                },
+            )
+        assert import_error.value.code == "pytorch_import_unsupported"
+
         batch = project.batch(
             [
                 {

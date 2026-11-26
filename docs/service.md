@@ -89,6 +89,11 @@ Errors use a stable code and readable message:
 {"ok": false, "error": {"code": "invalid_action", "message": "..."}}
 ```
 
+When an application or addon error carries a lowercase stable code such as
+`pytorch_import_unsupported`, the HTTP service preserves it if it matches the
+bounded `^[a-z][a-z0-9_]{0,127}$` form. Errors without a valid domain code use
+`invalid_action`.
+
 The versioned routes are:
 
 | Route | Purpose |
