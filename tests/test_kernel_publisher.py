@@ -71,15 +71,18 @@ def _kernel_execute(url: str, session: str, code: str) -> str:
     )
     with urlopen(request, timeout=30) as response:
         output = []
+        diagnostics = []
         event = None
         for line in response.read().decode().splitlines():
             if line.startswith("event:"):
                 event = line.partition(":")[2].strip()
             elif line.startswith("data:") and event == "stdout":
                 output.append(json.loads(line.partition(":")[2].strip()).get("data", ""))
+            elif line.startswith("data:") and event in {"stderr", "error"}:
+                diagnostics.append(json.loads(line.partition(":")[2].strip()).get("data", ""))
     text = "".join(output)
     marker = "GRAPHIMO_RESULT:"
-    assert marker in text, text
+    assert marker in text, f"stdout: {text}\nstderr/errors: {' '.join(diagnostics)}"
     return text.split(marker, 1)[1].splitlines()[0]
 
 
