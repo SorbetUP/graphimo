@@ -84,6 +84,7 @@ def lint_paths() -> list[str]:
         "tests/test_core_vertical_slice.py",
         "tests/test_groups.py",
         "tests/test_service.py",
+        "tests/test_luau_plugin_adapter.py",
         "tests/test_artifact_api.py",
         "tests/test_base_block_contract.py",
         "tests/test_core_without_torch.py",

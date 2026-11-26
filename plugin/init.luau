@@ -5,6 +5,7 @@ local Layout = require("./layout")
 local Canvas = require("./canvas")
 local BaseBlock = require("./base_block")
 local Library = require("./component_library")
+local MetaBlockProjection = require("./metablock_projection")
 local Text = require("@ds/text")
 local Button = require("@ds/button")
 local Glass = require("@ds/glass")
@@ -110,8 +111,14 @@ local Page = ui.component(function()
 	local session_id = ui.use_state(saved.session_id or "")
 	local sessions = ui.use_state({})
 	local snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
+	local notebook_snapshot = ui.use_state({ notebook = {}, cells = {}, edges = {} })
 	local groups = ui.use_state({})
 	local metablocks = ui.use_state({})
+	local active_metablock = ui.use_state("")
+	local active_metablock_scope = ui.use_state("root")
+	local metablock_projection = ui.use_state(nil)
+	local service_event_cursor = ui.use_state("0")
+	local service_polling = ui.use_state(false)
 	local visible_cell_ids = ui.use_state({})
 	local log_entries = ui.use_state(saved_logs:peek() or {})
 	local problem_entries = ui.use_state(saved_problems:peek() or {})
@@ -222,6 +229,7 @@ local Page = ui.component(function()
 	end
 
 	local refresh_graph
+	local refresh_metablock
 	local function refresh_sessions()
 		if url:peek() == "" then
 			notice:set("Open or create a notebook to begin")
@@ -248,9 +256,15 @@ local Page = ui.component(function()
 	end
 
 	refresh_graph = function()
+		if active_metablock:peek() ~= "" and refresh_metablock then
+			refresh_metablock()
+			return
+		end
 		observe("Inspect marimo graph", function()
 			return Bridge.inspect(zeron, url:peek(), token:peek(), session_id:peek())
 		end, function(value)
+			value.cells = MetaBlockProjection.annotate_parent_cells(value.cells)
+			notebook_snapshot:set(value)
 			snapshot:set(value)
 			local ids = {}
 			for _, cell in value.cells or {} do table.insert(ids, cell.id) end
@@ -319,10 +333,16 @@ local Page = ui.component(function()
 	local function save_positions()
 		local path = snapshot:peek().notebook.path
 		if not path or path == "" or not is_local_url(url:peek()) then return end
-		local scope_id = "root"
+		local scope_id = if active_metablock:peek() == "" then "root" else MetaBlockProjection.scope_layout_id(active_metablock:peek(), active_metablock_scope:peek())
 		observe("Save canvas layout", function()
 			return Service.execute(zeron, path, "layout.set", { scope_id = scope_id, layout = positions:peek() })
 		end, function() log("Canvas layout saved through Graphimo Core") end, function(err)
+			if active_metablock:peek() ~= "" then
+				local message = "MetaBlock layout save failed: " .. tostring(err)
+				log(message, "error")
+				notice:set(message)
+				return
+			end
 			Layout.save(zeron, path, positions:peek(), function(ok, layout_error)
 				if ok then log("Canvas layout saved through the legacy compatibility path") else
 					local message = "Layout save failed: " .. tostring(layout_error or err)
@@ -330,6 +350,142 @@ local Page = ui.component(function()
 					notice:set(message)
 				end
 			end)
+		end)
+	end
+
+	refresh_metablock = function()
+		local metablock_id = active_metablock:peek()
+		local scope = active_metablock_scope:peek()
+		local path = notebook_snapshot:peek().notebook.path or active_notebook:peek().path or ""
+		if metablock_id == "" or path == "" then return end
+		local layout_scope = MetaBlockProjection.scope_layout_id(metablock_id, scope)
+		observe("Inspect PyTorch MetaBlock", function()
+			return Service.batch(zeron, path, {
+				{ id = "projection", action = "metablock.project", args = { metablock_id = metablock_id, scope = scope } },
+				{ id = "layout", action = "layout.get", args = { scope_id = layout_scope } },
+			})
+		end, function(batch)
+			local results = {}
+			for _, item in batch.operations or {} do
+				if item.status == "ok" then results[item.id] = item.result end
+			end
+			local projected, projection = MetaBlockProjection.to_canvas(
+				metablock_id,
+				scope,
+				path,
+				results.projection
+			)
+			metablock_projection:set(projection)
+			local saved_layout = (results.layout or {}).layout or {}
+			local merged, ids = {}, {}
+			for index, cell in projected.cells do
+				ids[cell.id] = true
+				local saved_cell = saved_layout[cell.id] or {}
+				merged[cell.id] = {
+					x = saved_cell.x or (80 + ((index - 1) % 4) * 320),
+					y = saved_cell.y or (80 + math.floor((index - 1) / 4) * 230),
+					collapsed = saved_cell.collapsed or false,
+				}
+			end
+			local visible = {}
+			for _, cell in projected.cells do table.insert(visible, cell.id) end
+			positions:set(merged)
+			visible_cell_ids:set(visible)
+			if selected:peek() ~= "" and not ids[selected:peek()] then selected:set("") end
+			snapshot:set(projected)
+			notice:set(
+				if projection
+					then "Editing " .. tostring(projection.name or metablock_id) .. " · " .. scope
+					else "MetaBlock addon unavailable; persisted model state is preserved"
+			)
+		end, function(err)
+			notice:set("Could not inspect MetaBlock: " .. tostring(err))
+		end)
+	end
+
+	local function open_metablock(metablock_id, scope)
+		if active_metablock:peek() == "" then notebook_snapshot:set(snapshot:peek()) end
+		active_metablock:set(metablock_id)
+		active_metablock_scope:set(scope or "root")
+		selected:set("")
+		refresh_metablock()
+	end
+
+	local function leave_metablock()
+		active_metablock:set("")
+		active_metablock_scope:set("root")
+		metablock_projection:set(nil)
+		selected:set("")
+		snapshot:set(notebook_snapshot:peek())
+		refresh_graph()
+	end
+
+	local function apply_metablock_intent(intent)
+		local metablock_id = active_metablock:peek()
+		local path = notebook_snapshot:peek().notebook.path or ""
+		if metablock_id == "" or path == "" then return end
+		intent.scope = active_metablock_scope:peek()
+		observe("Update PyTorch MetaBlock", function()
+			return Service.execute(zeron, path, "metablock.apply", { metablock_id = metablock_id, intent = intent })
+		end, function()
+			refresh_metablock()
+		end, function(err)
+			notice:set("MetaBlock update failed: " .. tostring(err))
+		end)
+	end
+
+	local function create_metablock()
+		local path = snapshot:peek().notebook.path or ""
+		if path == "" then notice:set("Open a local notebook before creating a MetaBlock"); return end
+		output_counter:set(output_counter:peek() + 1)
+		local metablock_id = "model_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek())
+		observe("Create PyTorch MetaBlock", function()
+			return Service.execute(zeron, path, "metablock.create", {
+				dialect_id = "pytorch.model",
+				metablock_id = metablock_id,
+				request = { name = "PyTorch Model" },
+			})
+		end, function(created)
+			local next = table.clone(metablocks:peek())
+			table.insert(next, {
+				metablock_id = created.metablock_id,
+				dialect_id = created.dialect_id,
+				addon_version = created.addon_version,
+			})
+			metablocks:set(next)
+			open_metablock(created.metablock_id, "root")
+		end, function(err)
+			notice:set("Could not create PyTorch MetaBlock: " .. tostring(err))
+		end)
+	end
+
+	local function materialize_metablock()
+		local metablock_id = active_metablock:peek()
+		local path = notebook_snapshot:peek().notebook.path or ""
+		if metablock_id == "" or path == "" or session_id:peek() == "" then
+			notice:set("Open a live local marimo notebook before inserting a MetaBlock definition")
+			return
+		end
+		observe("Build PyTorch MetaBlock definition", function()
+			return Service.execute(zeron, path, "metablock.materialize", {
+				metablock_id = metablock_id,
+				bindings = {},
+			})
+		end, function(definition)
+			if type(definition.source) ~= "string" or definition.source == "" then
+				notice:set("Graphimo returned no generated PyTorch definition")
+				return
+			end
+			observe("Insert PyTorch definition into marimo", function()
+				return Bridge.add_cell(zeron, url:peek(), token:peek(), session_id:peek(), definition.source)
+			end, function()
+				log("Inserted generated PyTorch definition for " .. metablock_id)
+				leave_metablock()
+			end, function(err)
+				notice:set("Could not insert the generated definition: " .. tostring(err))
+			end)
+		end, function(err)
+			notice:set("Could not materialize PyTorch MetaBlock: " .. tostring(err))
 		end)
 	end
 
@@ -381,6 +537,10 @@ local Page = ui.component(function()
 	end
 
 	local function start_notebook(path)
+		active_metablock:set("")
+		active_metablock_scope:set("root")
+		metablock_projection:set(nil)
+		service_event_cursor:set("0")
 		notice:set("Starting marimo for " .. path .. "…")
 		log("Opening notebook " .. path)
 		observe("Start marimo", function()
@@ -452,6 +612,63 @@ local Page = ui.component(function()
 			problem_log_text:set("Could not read problem log: " .. tostring(err))
 			read_process_log()
 		end)
+	end
+
+	local function read_service_events()
+		local path = snapshot:peek().notebook.path or active_notebook:peek().path or ""
+		if path == "" then notice:set("Open a local project to inspect Graphimo events"); return end
+		observe("Read Graphimo Core events", function()
+			return Service.events(zeron, path, service_event_cursor:peek(), 128, 0)
+		end, function(result)
+			service_event_cursor:set(result.cursor or service_event_cursor:peek())
+			for _, event in result.events or {} do
+				log("Core event " .. tostring(event.sequence) .. " · " .. tostring(event.kind or "event") .. " · " .. tostring(event.action or event.code or event.metablock_id or ""))
+			end
+			if (result.dropped or 0) > 0 then
+				log("Core event history dropped " .. tostring(result.dropped) .. " old event(s)", "warn")
+			end
+		end, function(err)
+			notice:set("Could not read Graphimo Core events: " .. tostring(err))
+		end)
+	end
+
+	local function append_service_events(result)
+		service_event_cursor:set(result.cursor or service_event_cursor:peek())
+		for _, event in result.events or {} do
+			log("Core event " .. tostring(event.sequence) .. " · " .. tostring(event.kind or "event") .. " · " .. tostring(event.action or event.code or event.metablock_id or ""))
+		end
+		if (result.dropped or 0) > 0 then
+			log("Core event history dropped " .. tostring(result.dropped) .. " old event(s)", "warn")
+		end
+	end
+
+	local function poll_service_events()
+		if not service_polling:peek() then return end
+		local path = snapshot:peek().notebook.path or active_notebook:peek().path or ""
+		if path == "" then return end
+		local ok, request = pcall(function()
+			return Service.events(zeron, path, service_event_cursor:peek(), 128, 750)
+		end)
+		if not ok or request == nil then
+			ui.after(1500, poll_service_events)
+			return
+		end
+		request:after(function(result)
+			if type(result) == "table" and result.ok ~= false then append_service_events(result) end
+			if service_polling:peek() then ui.after(100, poll_service_events) end
+		end, function(err)
+			if service_polling:peek() then
+				log("Graphimo event polling failed: " .. tostring(err), "warn")
+				ui.after(1500, poll_service_events)
+			end
+		end)
+	end
+
+	local function toggle_logs()
+		local next_value = not logs_open:peek()
+		logs_open:set(next_value)
+		service_polling:set(next_value)
+		if next_value then poll_service_events() end
 	end
 
 	local function export_logs()
@@ -607,12 +824,20 @@ local Page = ui.component(function()
 				for _, ref in cell.refs or {} do
 					if cell.id ~= drag.cell_id and Canvas.near(x, y, pos.x, pos.y + Canvas.port(cell, ref, false), 14 / zoom:peek()) then
 						connected = true
-						observe("Connect " .. drag.variable .. " to " .. ref, function()
-							return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
-						end, function()
-							notice:set("Python source updated; marimo owns the new dependency")
-							refresh_graph()
-						end, function(err) notice:set("Connection refused: " .. tostring(err) .. " · Open code to edit it") end)
+						if active_metablock:peek() ~= "" then
+							apply_metablock_intent({
+								type = "connect",
+								source = { element_id = drag.cell_id, port = drag.variable },
+								target = { element_id = cell.id, port = ref },
+							})
+						else
+							observe("Connect " .. drag.variable .. " to " .. ref, function()
+								return Bridge.connect(zeron, url:peek(), token:peek(), session_id:peek(), drag.cell_id, drag.variable, cell.id, ref)
+							end, function()
+								notice:set("Python source updated; marimo owns the new dependency")
+								refresh_graph()
+							end, function(err) notice:set("Connection refused: " .. tostring(err) .. " · Open code to edit it") end)
+						end
 						break
 					end
 				end
@@ -628,6 +853,10 @@ local Page = ui.component(function()
 	end
 
 	local function run_selected()
+		if active_metablock:peek() ~= "" then
+			notice:set("Select a notebook cell to run; MetaBlock execution materializes through the application API")
+			return
+		end
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
 		notice:set("Sending run request to marimo…")
@@ -643,6 +872,10 @@ local Page = ui.component(function()
 	end
 
 	local function open_selected()
+		if active_metablock:peek() ~= "" then
+			notice:set("Select a notebook cell to open in marimo")
+			return
+		end
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
 		zeron.open_url(url:peek())
@@ -653,6 +886,11 @@ local Page = ui.component(function()
 	local function delete_selected()
 		local cell = selected_cell()
 		if not cell then notice:set("Select a cell first"); return end
+		if active_metablock:peek() ~= "" then
+			apply_metablock_intent({ type = "delete_element", element_id = cell.id })
+			selected:set("")
+			return
+		end
 		observe("Delete cell " .. cell.id, function()
 			return Bridge.delete(zeron, url:peek(), token:peek(), session_id:peek(), cell.id)
 		end, function()
@@ -689,41 +927,117 @@ local Page = ui.component(function()
 	end
 
 	local function component_library_panel()
-		local groups = ui.computed(function()
+		local component_groups = ui.computed(function()
 			return Library.project(components:get(), library_query:get())
 		end)
+		local model_methods = ui.computed(function()
+			local view = metablock_projection:get()
+			return view and view.method_tabs or {}
+		end)
+		local model_groups = ui.computed(function()
+			local view = metablock_projection:get()
+			return view and view.groups or {}
+		end)
+		local model_palette = ui.computed(function()
+			local view = metablock_projection:get()
+			return view and view.palette or {}
+		end)
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
-			Text { "Components", style = "heading" },
-			SearchField { value = library_query, placeholder = "Search components", name = "Search components", size = "sm", quiet = true, w_full = true },
-			ui.show(function() return #groups:get() == 0 end, Text { function()
-				return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"
-			end, style = "caption", tone = "secondary", wrap = true }),
-			ui.each(groups, function(group)
-				return ui.column { w_full = true, gap = "$space.1",
-					Text { group.category, style = "caption", tone = "secondary" },
-					ui.each(group.components, function(item)
-						return ui.column { w_full = true, gap = "$space.1",
-							Button {
-								function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
-								tone = "secondary", size = "sm", w_full = true,
-								on_click = function()
-									component_id:set(item.id)
-									callable_name:set(item.callables and item.callables[1] and item.callables[1].name or "")
-									expanded_component:set(if expanded_component:peek() == item.id then "" else item.id)
-								end,
-							},
-							ui.show(function() return expanded_component:get() == item.id end, ui.column { w_full = true, gap = "$space.1",
-								ui.each(item.callables or {}, function(callable)
-									return ui.row { w_full = true, items = "center", gap = "$space.1",
-										Text { (callable.name or "") .. (callable.signature or ""), style = "caption", tone = "secondary", grow = 1, wrap = true },
-										Button { "Add", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" end, on_click = function() add_selected_component(item, callable) end },
-									}
-								end),
-							}),
-						}
+			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
+				Text { "MetaBlocks", style = "heading" },
+				Button {
+					"Create PyTorch MetaBlock",
+					tone = "secondary", size = "sm", w_full = true,
+					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+					on_click = create_metablock,
+				},
+				ui.show(function() return #metablocks:get() == 0 end, Text { "No saved MetaBlocks", style = "caption", tone = "secondary" }),
+				ui.each(metablocks, function(item)
+					return Button {
+						(item.dialect_id or "MetaBlock") .. " · " .. item.metablock_id,
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function() open_metablock(item.metablock_id, "root") end,
+					}
+				end),
+				ui.show(function() return #groups:get() > 0 end, ui.column { w_full = true, gap = "$space.1",
+					Text { "Reusable Groups", style = "heading" },
+					ui.each(groups, function(group)
+						return Text { group.name or group.group_id, style = "caption", tone = "secondary", wrap = true }
 					end),
-				}
-			end),
+				}),
+				Text { "Components", style = "heading" },
+				SearchField { value = library_query, placeholder = "Search components", name = "Search components", size = "sm", quiet = true, w_full = true },
+				ui.show(function() return #component_groups:get() == 0 end, Text { function()
+					return if #components:get() == 0 then "No components found in this project's components/ folder" else "No components match this search"
+				end, style = "caption", tone = "secondary", wrap = true }),
+				ui.each(component_groups, function(group)
+					return ui.column { w_full = true, gap = "$space.1",
+						Text { group.category, style = "caption", tone = "secondary" },
+						ui.each(group.components, function(item)
+							return ui.column { w_full = true, gap = "$space.1",
+								Button {
+									function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
+									tone = "secondary", size = "sm", w_full = true,
+									on_click = function()
+										component_id:set(item.id)
+										callable_name:set(item.callables and item.callables[1] and item.callables[1].name or "")
+										expanded_component:set(if expanded_component:peek() == item.id then "" else item.id)
+									end,
+								},
+								ui.show(function() return expanded_component:get() == item.id end, ui.column { w_full = true, gap = "$space.1",
+									ui.each(item.callables or {}, function(callable)
+										return ui.row { w_full = true, items = "center", gap = "$space.1",
+											Text { (callable.name or "") .. (callable.signature or ""), style = "caption", tone = "secondary", grow = 1, wrap = true },
+						Button { "Add", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end, on_click = function() add_selected_component(item, callable) end },
+										}
+									end),
+								}),
+							}
+						end),
+					}
+				end),
+			}),
+			ui.show(function() return active_metablock:get() ~= "" end, ui.column { w_full = true, gap = "$space.2",
+				Button { "← Project canvas", tone = "secondary", size = "sm", w_full = true, on_click = leave_metablock },
+				Text { function()
+					local view = metablock_projection:get()
+					return if view then tostring(view.name or "PyTorch MetaBlock") .. " · " .. active_metablock_scope:get() else "MetaBlock"
+				end, style = "heading", wrap = true },
+				Button {
+					"Insert generated definition",
+					tone = "primary", size = "sm", w_full = true,
+					disabled = function() return session_id:get() == "" or (not is_local_url(url:get())) end,
+					on_click = materialize_metablock,
+				},
+				ui.each(model_methods, function(method)
+					return Button {
+						method.name, tone = if active_metablock_scope:get() == method.name then "primary" else "secondary",
+						size = "sm", w_full = true,
+						on_click = function() active_metablock_scope:set(method.name); selected:set(""); refresh_metablock() end,
+					}
+				end),
+				ui.each(model_groups, function(group)
+					return Button {
+						"Group · " .. group.name,
+						tone = if active_metablock_scope:get() == "group:" .. group.id then "primary" else "secondary",
+						size = "sm", w_full = true,
+						on_click = function() active_metablock_scope:set("group:" .. group.id); selected:set(""); refresh_metablock() end,
+					}
+				end),
+				Text { "Components", style = "heading" },
+				ui.each(model_palette, function(item)
+					return Button {
+						item.kind, tone = "secondary", size = "sm", w_full = true,
+						on_click = function()
+							output_counter:set(output_counter:peek() + 1)
+							apply_metablock_intent({
+								type = "add_element", kind = item.kind,
+								id = item.kind .. "_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek()),
+							})
+						end,
+					}
+				end),
+			}),
 		}
 	end
 
@@ -743,11 +1057,11 @@ local Page = ui.component(function()
 			Button { "−", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { "+", tone = "secondary", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
 			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
-			Button { function() return if logs_open:get() then "Terminal −" else "Terminal +" end, tone = "secondary", size = "sm", on_click = function() logs_open:set(not logs_open:peek()) end },
+			Button { function() return if logs_open:get() then "Terminal −" else "Terminal +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
 		},
 		ui.row { w_full = true, gap = "$space.2", items = "center",
-			Button { "Run", size = "sm", disabled = function() return selected:get() == "" end, on_click = run_selected },
-			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = open_selected },
+			Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
+			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
 			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
 			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
 		},
@@ -783,6 +1097,7 @@ local Page = ui.component(function()
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
 				Button { "Read marimo log", tone = "secondary", size = "sm", on_click = refresh_marimo_log },
+				Button { "Read Graphimo events", tone = "secondary", size = "sm", on_click = read_service_events },
 				Button { "Export logs", tone = "secondary", size = "sm", on_click = export_logs },
 			},
 			Text { function()

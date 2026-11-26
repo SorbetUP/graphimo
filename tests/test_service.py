@@ -232,3 +232,49 @@ def test_stdio_adapter_invokes_the_same_application_api(tmp_path: Path) -> None:
         assert response["result"]["scope"]["kind"] == "project"
     finally:
         service.close()
+
+
+@pytest.mark.full
+def test_service_pytorch_metablock_project_apply_materialize_and_events(tmp_path: Path) -> None:
+    pytest.importorskip("graphimo_pytorch")
+    project_path = tmp_path / "research.py"
+    project_path.write_text("# service PyTorch integration fixture\n", encoding="utf-8")
+    service = GraphimoService(manifest_path=tmp_path / "service.json").start()
+    client = GraphimoClient(service.url, service.token)
+    project = client.open_project(project_path)
+    try:
+        created = project.execute(
+            "metablock.create",
+            {
+                "dialect_id": "pytorch.model",
+                "metablock_id": "model_service",
+                "request": {"name": "Service Model"},
+            },
+        )
+        assert created["projection"]["dialect_id"] == "pytorch.model"
+        applied = project.execute(
+            "metablock.apply",
+            {
+                "metablock_id": "model_service",
+                "intent": {
+                    "type": "add_element",
+                    "scope": "forward",
+                    "kind": "relu",
+                    "id": "relu_service",
+                },
+            },
+        )
+        assert any(item["id"] == "relu_service" for item in applied["projection"]["elements"])
+        materialized = project.execute(
+            "metablock.materialize",
+            {"metablock_id": "model_service", "bindings": {}},
+        )
+        assert "materialize_definition" in materialized["source"]
+        assert materialized["result_name"] == "g_pytorch_model_service"
+        events = project.events(cursor="0", limit=128, wait_ms=0)
+        assert any(
+            event["kind"] == "metablock.materialization.requested" for event in events["events"]
+        )
+    finally:
+        project.close()
+        service.close()

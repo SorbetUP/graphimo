@@ -126,6 +126,8 @@ The authenticated local service exposes the same application actions to
 renderers and automation. Use `graphimo.client.GraphimoClient` for project
 sessions, batches and cursor-based events; see the [service guide](docs/service.md).
 It does not add a graph scheduler or replace marimo execution.
+The current Zeron adapter migration is documented in
+[the Zeron service adapter guide](docs/zeron-service-adapter.md).
 
 ## Development
 

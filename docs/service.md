@@ -132,5 +132,6 @@ journal.
 
 The service does not expose arbitrary shell execution. It exposes only
 `GraphimoApplication.execute` actions, batch execution of those actions and
-the bounded project event stream. The service does not replace the separate
-marimo session bridge for ordinary notebook execution.
+the bounded project event stream. The Zeron integration details and the
+marimo/runtime boundary are described in the
+[Zeron service adapter guide](zeron-service-adapter.md).
