@@ -308,3 +308,217 @@ def test_live_kernel_projects_formal_ports_collisions_and_refresh(live_kernel) -
     assert all(not cell["errors"] for cell in snapshot["cells"]), [
         {"id": cell["id"], "errors": cell["errors"]} for cell in snapshot["cells"] if cell["errors"]
     ]
+
+
+def test_live_kernel_edge_projection_mutation_guards_and_migration(live_kernel) -> None:
+    project = live_kernel
+    root = Path(project.path).resolve().parent
+
+    data_cell = project.execute("notebook.add_cell", {"source": "data = 21"})
+    assert project.run(data_cell["cell_id"])["status"] == "queued"
+    _wait_for_output(project, data_cell["cell_id"], "data")
+
+    for path, source in (("split.py", SPLIT_SOURCE), ("norm.py", NORMALIZE_SOURCE)):
+        assert project.execute("component.write", {"path": path, "source": source})["valid"] is True
+
+    split_cell = project.add_component(
+        "split.py", "split", output_name="parts", bindings={"value": {"variable": "data"}}
+    )
+    assert project.run(split_cell["cell_id"])["status"] == "queued"
+    _wait_for_output(project, split_cell["cell_id"], split_cell["result_var"])
+
+    sink = project.add_component("norm.py", "normalize", output_name="scaled", bindings={})
+
+    # P0.4: a literal can be assigned to an input that was never bound.
+    literal = project.set_literal(sink["instance_id"], "value", 10)
+    assert "value=__import__('json').loads('10')," in literal["source"]
+    assert project.run(sink["cell_id"])["status"] == "queued"
+    sink_output, _ = _wait_for_output(project, sink["cell_id"], sink["result_var"])
+    assert sink_output["preview"] == "20"  # 10 * default scale 2
+
+    # P0.1/P0.2: several bindings may consume the same source variable, and a
+    # plain marimo cell still resolves the formal input port of the target.
+    first = project.connect(
+        split_cell["cell_id"], split_cell["result_var"], sink["cell_id"], "value", output_index=0
+    )
+    assert f"value={split_cell['result_var']}[0]," in first["source"]
+    second = project.connect(
+        split_cell["cell_id"], split_cell["result_var"], sink["cell_id"], "scale", output_index=2
+    )
+    assert f"scale={split_cell['result_var']}[2]," in second["source"]
+    plain = project.add_component("norm.py", "normalize", output_name="plain_sink", bindings={})
+    project.connect(data_cell["cell_id"], "data", plain["cell_id"], "value")
+
+    snapshot = project.inspect_notebook()
+    edges = [
+        edge
+        for edge in snapshot["edges"]
+        if edge["source_cell_id"] == split_cell["cell_id"]
+        and edge["target_cell_id"] == sink["cell_id"]
+    ]
+    assert len(edges) == 2, edges
+    assert {(edge.get("input_ref"), edge.get("output_index")) for edge in edges} == {
+        ("value", 0),
+        ("scale", 2),
+    }
+    plain_edge = next(
+        edge
+        for edge in snapshot["edges"]
+        if edge["source_cell_id"] == data_cell["cell_id"]
+        and edge["target_cell_id"] == plain["cell_id"]
+    )
+    assert plain_edge.get("input_ref") == "value"
+    assert "output_index" not in plain_edge
+
+    assert project.run(sink["cell_id"])["status"] == "queued"
+    sink_output, _ = _wait_for_output(project, sink["cell_id"], sink["result_var"])
+    # split(21) = (21, 22, 42): value=21, scale=42 -> 882
+    assert sink_output["preview"] == "882"
+
+    # P0.7: fresh results are available; nothing stale is ever "available".
+    snapshot = project.inspect_notebook()
+    sink_view = next(cell for cell in snapshot["cells"] if cell["id"] == sink["cell_id"])[
+        "graphimo_instance"
+    ]
+    assert sink_view["state"] == "ok"
+    assert sink_view["outputs"][0]["available"] is True
+    assert sink_view["outputs"][0]["stale"] is False
+
+    # P0.3: disabling the source keeps the port identity on the stale edges.
+    project.disable_instance(split_cell["cell_id"])
+    snapshot = project.inspect_notebook()
+    split_view = next(cell for cell in snapshot["cells"] if cell["id"] == split_cell["cell_id"])[
+        "graphimo_instance"
+    ]
+    assert split_view["disabled"] is True
+    assert split_view["state"] == "disabled"
+    assert split_view["outputs"][0]["available"] is False
+    stale_edges = [
+        edge
+        for edge in snapshot["edges"]
+        if edge["source_cell_id"] == split_cell["cell_id"]
+        and edge["target_cell_id"] == sink["cell_id"]
+    ]
+    assert len(stale_edges) == 2
+    assert all(edge.get("status") == "stale" for edge in stale_edges)
+    assert {(edge.get("input_ref"), edge.get("output_index")) for edge in stale_edges} == {
+        ("value", 0),
+        ("scale", 2),
+    }
+    sink_view = next(cell for cell in snapshot["cells"] if cell["id"] == sink["cell_id"])[
+        "graphimo_instance"
+    ]
+    assert sink_view["state"] == "blocked"
+    assert sink_view["outputs"][0]["available"] is False
+
+    # P0.9: connecting back would create a cycle and must be refused without
+    # changing the target source.
+    project.enable_instance(split_cell["cell_id"])
+    before = next(
+        cell for cell in project.inspect_notebook()["cells"] if cell["id"] == split_cell["cell_id"]
+    )["source"]
+    with pytest.raises(GraphimoServiceError, match="cycle_detected"):
+        project.connect(
+            sink["cell_id"], sink["result_var"], split_cell["cell_id"], "value", output_index=0
+        )
+    after = next(
+        cell for cell in project.inspect_notebook()["cells"] if cell["id"] == split_cell["cell_id"]
+    )["source"]
+    assert after == before
+
+    # P1.1: formal ports come from the static contract even before any run.
+    assert (
+        project.execute(
+            "component.write",
+            {"path": "fresh.py", "source": SPLIT_SOURCE.replace("split", "fresh")},
+        )["valid"]
+        is True
+    )
+    built = project.execute(
+        "component.instance_source",
+        {
+            "path": "fresh.py",
+            "callable": "fresh",
+            "output_name": "fresh_out",
+            "bindings": {"value": {"variable": "data"}},
+        },
+    )
+    unrun_cell = project.execute("notebook.add_cell", {"source": built["source"]})
+    snapshot = project.inspect_notebook()
+    unrun = next(cell for cell in snapshot["cells"] if cell["id"] == unrun_cell["cell_id"])
+    assert unrun["graphimo_instance"]["inputs"][0]["name"] == "value"
+    assert [output["index"] for output in unrun["graphimo_instance"]["outputs"]] == [0, 1, 2]
+    assert unrun["graphimo_instance"]["state"] == "idle"
+
+    # P0.5: a pre-69658b4 notebook (plain symbol, no component marker) is
+    # migrated explicitly by the refresh and keeps running afterwards.
+    legacy_source = NORMALIZE_SOURCE.replace("def normalize", "def legacy_norm")
+    assert (
+        project.execute("component.write", {"path": "legacy.py", "source": legacy_source})["valid"]
+        is True
+    )
+    legacy_library = "\n".join(
+        [
+            "# Graphimo node library: legacy.py:legacy_norm",
+            "import sys as _graphimo_sys",
+            f"_graphimo_root = {str(root)!r}",
+            "if _graphimo_root not in _graphimo_sys.path:",
+            "    _graphimo_sys.path.insert(0, _graphimo_root)",
+            "import importlib as _graphimo_importlib",
+            "_graphimo_module = _graphimo_importlib.reload(_graphimo_importlib.import_module('components.legacy'))",
+            "legacy_norm = _graphimo_module.legacy_norm",
+            "",
+        ]
+    )
+    legacy_instance = (
+        "# Graphimo node: legacy_norm\n"
+        "# Graphimo instance: 1e9a0001\n"
+        "g_legacy_norm_1e9a0001 = legacy_norm(\n"
+        "    value=data,\n"
+        ")"
+    )
+    lib_cell = project.execute("notebook.add_cell", {"source": legacy_library})
+    inst_cell = project.execute("notebook.add_cell", {"source": legacy_instance})
+    assert project.run(lib_cell["cell_id"])["status"] == "queued"
+    assert project.run(inst_cell["cell_id"])["status"] == "queued"
+    legacy_output, _ = _wait_for_output(project, inst_cell["cell_id"], "g_legacy_norm_1e9a0001")
+    assert legacy_output["preview"] == "42"  # 21 * 2
+
+    refresh = project.execute("component.refresh_instances", {})
+    assert refresh["ok"] is True
+    assert lib_cell["cell_id"] in refresh["changed_cells"]
+    assert inst_cell["cell_id"] in refresh["migrated_instances"]
+    assert refresh["conflicts"] == []
+    snapshot = project.inspect_notebook()
+    migrated = next(cell for cell in snapshot["cells"] if cell["id"] == inst_cell["cell_id"])
+    assert migrated["graphimo_instance"]["component_id"] == "legacy.py"
+    assert migrated["graphimo_component"]["callable"] == "legacy_norm"
+    assert "# Graphimo component: legacy.py" in migrated["source"]
+    assert migrated["graphimo_instance"]["runtime_symbol"] in migrated["source"]
+    assert project.run(inst_cell["cell_id"])["status"] == "queued"
+    legacy_output, _ = _wait_for_output(project, inst_cell["cell_id"], "g_legacy_norm_1e9a0001")
+    assert legacy_output["preview"] == "42"
+
+    # P0.6: a deleted component is explicitly unavailable; its instances are
+    # blocked, keep their source, and run refuses with component_unavailable.
+    assert (
+        project.execute("component.write", {"path": "doomed.py", "source": NORMALIZE_SOURCE})[
+            "valid"
+        ]
+        is True
+    )
+    doomed = project.add_component(
+        "doomed.py", "normalize", output_name="doomed_out", bindings={"value": {"literal": 5}}
+    )
+    assert project.run(doomed["cell_id"])["status"] == "queued"
+    _wait_for_output(project, doomed["cell_id"], doomed["result_var"])
+    assert project.execute("component.delete", {"path": "doomed.py"})["deleted"] is True
+    project.execute("component.refresh_instances", {})
+    snapshot = project.inspect_notebook()
+    doomed_view = next(cell for cell in snapshot["cells"] if cell["id"] == doomed["cell_id"])
+    assert doomed_view["graphimo_instance"]["state"] == "component_unavailable"
+    assert doomed_view["graphimo_component"]["available"] is False
+    assert "# Graphimo component: doomed.py" in doomed_view["source"]
+    with pytest.raises(GraphimoServiceError, match="no longer exists") as unavailable:
+        project.run(doomed["cell_id"])
+    assert getattr(unavailable.value, "code", None) == "component_unavailable"

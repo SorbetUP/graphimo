@@ -17,9 +17,14 @@ from typing import Any
 _INSTANCE_ID = re.compile(r"^[0-9a-f]{8}$")
 _COMPONENT_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py$")
 _LITERAL_CALL = re.compile(r"^__import__\('json'\)\.loads\(.*\)$", re.DOTALL)
-_MAX_EXPRESSION_CHARS = 10_000
+MAX_LITERAL_JSON_BYTES = 16 * 1024
+_MAX_EXPRESSION_CHARS = 20_000
 _DISABLED_BEGIN = "# graphimo:disabled-begin"
 _DISABLED_END = "# graphimo:disabled-end"
+
+
+class ComponentUnavailableError(ValueError):
+    """The component file behind an instance is missing or unreadable."""
 
 
 @dataclass(frozen=True)
@@ -80,14 +85,15 @@ def _validate_component_path(component_path: str) -> None:
 
 
 def runtime_symbol(component_path: str, node_name: str) -> str:
-    """Return the collision-free marimo global bound to one component callable.
+    """Return the marimo global bound to one component callable.
 
     Two components may export functions with the same name, so the runtime
-    symbol is derived from the stable component path rather than its content.
+    symbol is derived from the stable component path (128 bits of its SHA-256)
+    rather than from the file content; callers must still detect collisions.
     """
     _validate_component_path(component_path)
     _validate_node_name(node_name)
-    digest = hashlib.sha256(component_path.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(component_path.encode("utf-8")).hexdigest()[:32]
     return f"__graphimo_c_{digest}_{node_name}"
 
 
@@ -98,42 +104,78 @@ def call_target(node_name: str, component_path: str | None) -> str:
     return runtime_symbol(component_path, node_name)
 
 
-def binding_kind(expression: str) -> str:
-    """Classify a binding expression as a JSON literal or a variable reference."""
-    if isinstance(expression, str) and _LITERAL_CALL.match(expression.strip()):
+def binding_kind(expression: str, result_vars: Any = None) -> str:
+    """Classify a binding expression from its AST.
+
+    Returns one of ``literal``, ``variable``, ``output_reference`` (a subscript
+    of another node's result variable) or ``expression``.
+    """
+    text = expression.strip() if isinstance(expression, str) else ""
+    if not text:
+        return "expression"
+    if _LITERAL_CALL.match(text):
         return "literal"
-    return "variable"
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return "expression"
+    node = tree.body
+    if isinstance(node, ast.Constant):
+        return "literal"
+    if isinstance(node, ast.Name):
+        return "variable"
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and result_vars is not None
+        and node.value.id in result_vars
+    ):
+        return "output_reference"
+    return "expression"
 
 
 def load_node_function(
     instance: InstanceSpec, *, project_root: str | Path, namespace: Mapping[str, Any] | None = None
 ) -> Any:
-    """Resolve the live callable for an instance inside the marimo kernel.
+    """Resolve the callable for an instance inside the marimo kernel.
 
-    The library cell owns the runtime symbol; the component module is reloaded
-    from disk so inspection always sees the current file. Kernel runtime
-    objects never cross this boundary.
+    For component-owned instances the disk is the source of truth: a missing
+    or unloadable component file raises :class:`ComponentUnavailableError`
+    instead of silently reusing a stale in-memory callable. The kernel
+    namespace is only consulted for legacy instances without a component path.
+    Kernel runtime objects never cross this boundary.
     """
-    symbol = call_target(instance.node_name, instance.component_path)
-    if namespace is not None:
-        function = namespace.get(symbol)
-        if function is not None:
-            return function
     if instance.component_path is not None:
         path = PurePosixPath(instance.component_path)
         if path.is_absolute() or ".." in path.parts or path.suffix != ".py":
             raise ValueError("invalid Graphimo component path")
         root = Path(project_root)
+        component_file = root / "components" / Path(*path.parts)
+        if not component_file.is_file():
+            raise ComponentUnavailableError(
+                f"component '{instance.component_path}' no longer exists on disk"
+            )
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
         module_path = path.parent if path.name == "__init__.py" else path.with_suffix("")
         module_name = ".".join(["components", *module_path.parts])
-        module = importlib.reload(importlib.import_module(module_name))
+        try:
+            module = importlib.reload(importlib.import_module(module_name))
+        except Exception as exc:
+            raise ComponentUnavailableError(
+                f"component '{instance.component_path}' cannot be loaded: {exc}"
+            ) from exc
         function = getattr(module, instance.node_name, None)
+        if function is None:
+            raise ComponentUnavailableError(
+                f"component '{instance.component_path}' no longer exports '{instance.node_name}'"
+            )
+        return function
+    symbol = call_target(instance.node_name, None)
+    if namespace is not None:
+        function = namespace.get(symbol) or namespace.get(instance.node_name)
         if function is not None:
             return function
-    if namespace is not None:
-        return namespace.get(instance.node_name)
     return None
 
 
@@ -288,6 +330,26 @@ def reconnect_instance_source(source: str, *, input_name: str, expression: str) 
             updated[binding.input_name] = binding.expression
     if not found:
         raise ValueError(f"instance has no input named {input_name!r}")
+    regenerated, _ = build_instance_source(
+        spec.node_name, updated, instance_id=spec.instance_id, component_path=spec.component_path
+    )
+    return regenerated
+
+
+def set_instance_binding(source: str, *, input_name: str, expression: str) -> str:
+    """Add or replace exactly one binding on a canonical Graphimo instance."""
+    spec = parse_instance_source(source)
+    if spec is None:
+        raise ValueError("source is not a canonical Graphimo node instance")
+    if (
+        not isinstance(input_name, str)
+        or not input_name.isidentifier()
+        or keyword.iskeyword(input_name)
+    ):
+        raise ValueError("input_name must be a valid Python identifier")
+    _validate_expression(expression)
+    updated = {binding.input_name: binding.expression for binding in spec.bindings}
+    updated[input_name] = expression.strip()
     regenerated, _ = build_instance_source(
         spec.node_name, updated, instance_id=spec.instance_id, component_path=spec.component_path
     )

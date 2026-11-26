@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from .instance import parse_disabled_instance_source
+from .instance import parse_disabled_instance_source, parse_instance_source
 
 
 def annotate_blocked_dependencies(
@@ -13,6 +13,7 @@ def annotate_blocked_dependencies(
 ) -> dict[str, list[str]]:
     """Annotate stale edges and transitive blockers without editing cell source."""
     disabled: dict[str, str] = {}
+    unavailable: dict[str, str] = {}
     cell_ids = {item.get("id") for item in cells if isinstance(item, dict)}
     for cell in cells:
         if not isinstance(cell, dict):
@@ -32,13 +33,17 @@ def annotate_blocked_dependencies(
                 "outputs": [],
                 "disabled": True,
             }
+        elif cell.get("graphimo_component_unavailable") is True and isinstance(cell_id, str):
+            active = parse_instance_source(source)
+            if active is not None:
+                unavailable[cell_id] = active.result_var
 
     known = {
         (edge.get("source_cell_id"), edge.get("target_cell_id"), edge.get("variable"))
         for edge in edges
         if isinstance(edge, dict)
     }
-    for source_id, result_var in disabled.items():
+    for source_id, result_var in {**disabled, **unavailable}.items():
         for cell in cells:
             if not isinstance(cell, dict) or cell.get("id") == source_id:
                 continue
@@ -56,6 +61,7 @@ def annotate_blocked_dependencies(
                 )
                 known.add(key)
 
+    blockers = {**disabled, **unavailable}
     blocked_by: dict[str, set[str]] = {}
     changed = True
     while changed:
@@ -68,7 +74,7 @@ def annotate_blocked_dependencies(
             if target_id not in cell_ids:
                 continue
             roots = set()
-            if source_id in disabled:
+            if source_id in blockers:
                 roots.add(source_id)
             roots.update(blocked_by.get(source_id, set()))
             additions = roots - blocked_by.get(target_id, set())
@@ -84,6 +90,11 @@ def annotate_blocked_dependencies(
                 "state": "disabled",
                 "blocked_by": [cell_id],
             }
+        elif cell_id in unavailable:
+            cell["graphimo_dependency_state"] = {
+                "state": "component_unavailable",
+                "blocked_by": [cell_id],
+            }
         elif blocked_by.get(cell_id):
             cell["graphimo_dependency_state"] = {
                 "state": "blocked",
@@ -92,7 +103,7 @@ def annotate_blocked_dependencies(
             }
     for edge in edges:
         if isinstance(edge, dict) and (
-            edge.get("source_cell_id") in disabled or edge.get("source_cell_id") in blocked_by
+            edge.get("source_cell_id") in blockers or edge.get("source_cell_id") in blocked_by
         ):
             edge["status"] = "stale"
     return {cell_id: sorted(roots) for cell_id, roots in blocked_by.items()}

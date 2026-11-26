@@ -17,7 +17,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .instance import build_instance_source, runtime_symbol
+from .instance import (
+    MAX_LITERAL_JSON_BYTES,
+    build_instance_source,
+    runtime_symbol,
+)
 
 MAX_COMPONENT_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_VALIDATION_OUTPUT_BYTES = 64 * 1024
@@ -145,9 +149,14 @@ class ComponentLibrary:
                 expressions[name] = variable
             else:
                 literal = json.dumps(value["literal"], ensure_ascii=False, allow_nan=False)
-                if len(literal.encode("utf-8")) > 16 * 1024:
-                    raise ComponentError(f"input {name!r} literal exceeds 16 KiB")
-                expressions[name] = f"__import__('json').loads({literal!r})"
+                if len(literal.encode("utf-8")) > MAX_LITERAL_JSON_BYTES:
+                    raise ComponentError(
+                        f"input {name!r} literal exceeds {MAX_LITERAL_JSON_BYTES} bytes of JSON"
+                    )
+                expression = f"__import__('json').loads({literal!r})"
+                if len(expression.encode("utf-8")) > 20_000:
+                    raise ComponentError(f"input {name!r} binding expression exceeds 20000 chars")
+                expressions[name] = expression
 
         positional_only_indexes = [
             index for index, item in enumerate(inputs) if item.get("positional_only")
@@ -228,19 +237,70 @@ class ComponentLibrary:
         }
 
     def library_updates(self, *, limit: int = 512) -> dict[str, str]:
-        """Map every current library marker to its canonical source for refresh."""
+        """Map every current valid library marker to its canonical source.
+
+        Invalid or unavailable component definitions are never refreshed
+        automatically; their instances keep their source and are projected as
+        ``component_unavailable`` instead of silently running stale code.
+        """
         updates: dict[str, str] = {}
+        symbols: dict[str, str] = {}
         for item in self.list().get("items", []):
+            if item.get("state") != "valid":
+                continue
             path = str(item["path"])
             digest = _component_digest(self._target(path), Path(path))
+            broken = {
+                callable_item.get("name")
+                for callable_item in item.get("callables", [])
+                if callable_item.get("diagnostic")
+            }
             for callable_name in item.get("nodes", []):
-                if not isinstance(callable_name, str):
+                if not isinstance(callable_name, str) or callable_name in broken:
                     continue
                 marker, source = self._library_source(path, callable_name, digest)
+                symbol = runtime_symbol(path, callable_name)
+                owner = symbols.get(symbol)
+                if owner is not None and owner != f"{path}:{callable_name}":
+                    raise ComponentError(
+                        f"runtime symbol collision between '{owner}' and '{path}:{callable_name}'"
+                    )
+                symbols[symbol] = f"{path}:{callable_name}"
                 updates[marker] = source
         if len(updates) > limit:
             raise ComponentError(f"component library exceeds the {limit}-entry refresh limit")
         return updates
+
+    def canonical_library_source(
+        self, path: str, callable_name: str, digest: str | None = None
+    ) -> str:
+        """Return the canonical library cell source, for CAS checks in the kernel."""
+        if digest is None:
+            digest = _component_digest(self._target(path), Path(path))
+        return self._library_source(path, callable_name, digest)[1]
+
+    def static_node_contract(self, path: str, callable_name: str) -> dict[str, Any] | None:
+        """Read one node's static contract from disk without importing it."""
+        target = self._target(path)
+        if not target.is_file():
+            return None
+        try:
+            source = target.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=path)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            return None
+        aliases, modules = _node_import_aliases(tree)
+        for item in tree.body:
+            if (
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name == callable_name
+                and any(
+                    _is_node_decorator(decorator, aliases, modules)
+                    for decorator in item.decorator_list
+                )
+            ):
+                return _static_node_contract(source, item)
+        return None
 
     def _library_source(self, path: str, callable_name: str, digest: str) -> tuple[str, str]:
         """Build the canonical library cell binding one namespaced runtime symbol."""
@@ -299,23 +359,47 @@ class ComponentLibrary:
                     )
                 ]
                 if nodes:
-                    raw = source.encode("utf-8")
                     callable_items = [
                         _static_callable(source, item)
                         for item in tree.body
                         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and item.name in nodes
                     ]
+                    policy_error = _validate_component_module(tree)
+                    broken = [item for item in callable_items if item.get("diagnostic")]
+                    item_diagnostics: list[dict[str, str]] = []
+                    if policy_error:
+                        item_diagnostics = [
+                            {
+                                "code": "component_top_level_execution",
+                                "severity": "error",
+                                "message": f"{relative.as_posix()}: {policy_error}",
+                            }
+                        ]
+                    elif broken:
+                        item_diagnostics = [
+                            {
+                                "code": "component_node_contract_invalid",
+                                "severity": "error",
+                                "message": f"{relative.as_posix()}: "
+                                + ", ".join(
+                                    f"{item['name']}: {item['diagnostic']}" for item in broken
+                                ),
+                            }
+                        ]
+                    digest = _component_digest(target, relative)
                     items.append(
                         {
                             "path": relative.as_posix(),
                             "id": relative.as_posix(),
                             "category": list(relative.parts[:-1]),
                             "kind": "file",
+                            "state": "valid" if not item_diagnostics else "invalid",
                             "nodes": nodes,
                             "callables": callable_items,
-                            "sha256": hashlib.sha256(raw).hexdigest(),
-                            "source_sha256": hashlib.sha256(raw).hexdigest(),
+                            "diagnostics": item_diagnostics,
+                            "sha256": digest,
+                            "source_sha256": digest,
                         }
                     )
             except (OSError, UnicodeDecodeError, SyntaxError) as exc:
@@ -374,9 +458,6 @@ class ComponentLibrary:
             tree = ast.parse(source, filename=relative_path)
         except SyntaxError as exc:
             return _invalid(f"Python syntax error at line {exc.lineno}: {exc.msg}")
-        policy_error = _validate_component_module(tree)
-        if policy_error:
-            return _invalid(policy_error, code="component_top_level_execution")
 
         ruff = shutil.which("ruff")
         if ruff:
@@ -385,6 +466,17 @@ class ComponentLibrary:
                 if result["returncode"] != 0:
                     message = result["output"].strip() or f"{Path(command[1]).name} failed"
                     return _invalid(message, code="component_ruff_failed")
+            # ruff format may have rewritten the file: re-read and reparse so the
+            # returned contract always matches the source that will be stored.
+            try:
+                source = candidate.read_text(encoding="utf-8")
+                tree = ast.parse(source, filename=relative_path)
+            except UnicodeDecodeError:
+                return _invalid("component source must be UTF-8 after formatting")
+            except SyntaxError as exc:
+                return _invalid(
+                    f"Python syntax error after formatting at line {exc.lineno}: {exc.msg}"
+                )
         else:
             diagnostics.append(
                 {
@@ -393,6 +485,10 @@ class ComponentLibrary:
                     "message": "ruff was not found; formatting and lint checks were skipped",
                 }
             )
+
+        policy_error = _validate_component_module(tree)
+        if policy_error:
+            return _invalid(policy_error, code="component_top_level_execution")
 
         aliases, modules = _node_import_aliases(tree)
         nodes = [
@@ -469,6 +565,37 @@ def _invalid(
         "nodes": nodes or [],
         "diagnostics": [{"code": code, "severity": "error", "message": message[:2000]}],
     }
+
+
+class _YieldFinder(ast.NodeVisitor):
+    """Detect yield/yield-from in a node body, ignoring nested scopes."""
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def visit_Yield(self, node: ast.Yield) -> None:
+        self.found = True
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+        self.found = True
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _contains_yield(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    finder = _YieldFinder()
+    for statement in function.body:
+        finder.visit(statement)
+    return finder.found
 
 
 def _node_import_aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -588,6 +715,10 @@ def _validate_component_module(tree: ast.Module) -> str | None:
                 for decorator in item.decorator_list
             ):
                 return f"function '{item.name}' uses an executable decorator; only bare @node is allowed"
+            if is_node and isinstance(item, ast.AsyncFunctionDef):
+                return f"async function '{item.name}' cannot be a Graphimo node; async @node is not supported"
+            if is_node and _contains_yield(item):
+                return f"generator function '{item.name}' cannot be a Graphimo node; yield is not supported"
             if item.args.vararg or item.args.kwarg:
                 return (
                     f"function '{item.name}' cannot use *args or **kwargs as a Graphimo component"

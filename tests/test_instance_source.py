@@ -18,6 +18,7 @@ from graphimo import (
     reconnect_instance_source,
     result_variable,
     runtime_symbol,
+    set_instance_binding,
 )
 
 
@@ -164,8 +165,31 @@ def test_component_instances_carry_a_namespaced_runtime_symbol() -> None:
     assert runtime_symbol("images/normalize.py", "normalize") == symbol
     assert binding_kind("__import__('json').loads('2')") == "literal"
     assert binding_kind("data") == "variable"
-    assert binding_kind("g_source_4f2a7c91[1]") == "variable"
+    assert binding_kind("10") == "literal"
+    assert binding_kind("g_source_4f2a7c91[1]") == "expression"
+    assert binding_kind("g_source_4f2a7c91[1]", {"g_source_4f2a7c91"}) == "output_reference"
+    assert binding_kind("x + y") == "expression"
+    assert binding_kind("dataset[0]") == "expression"
 
     with pytest.raises(ValueError, match="component_path"):
         build_instance_source("normalize", {}, component_path="../escape.py")
     assert parse_instance_source(source.replace(symbol, "normalize")) is None
+
+
+def test_set_instance_binding_adds_or_replaces_one_binding() -> None:
+    source, _ = build_instance_source(
+        "multiply", {"x": "data"}, instance_id="abcd1234", component_path="math/ops.py"
+    )
+    added = set_instance_binding(source, input_name="factor", expression="5")
+    parsed = parse_instance_source(added)
+    assert parsed is not None
+    assert parsed.component_path == "math/ops.py"
+    assert parsed.bindings == (Binding("x", "data"), Binding("factor", "5"))
+    replaced = set_instance_binding(added, input_name="x", expression="other[2]")
+    parsed = parse_instance_source(replaced)
+    assert parsed is not None
+    assert parsed.bindings == (Binding("x", "other[2]"), Binding("factor", "5"))
+    with pytest.raises(ValueError, match="input_name"):
+        set_instance_binding(added, input_name="bad-name", expression="1")
+    with pytest.raises(ValueError, match="canonical"):
+        set_instance_binding("result = multiply()", input_name="x", expression="1")

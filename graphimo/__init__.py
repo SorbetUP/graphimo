@@ -4,6 +4,7 @@ from . import artifacts
 from .application import GraphimoApplication
 from .instance import (
     Binding,
+    ComponentUnavailableError,
     InstanceSpec,
     binding_kind,
     build_instance_source,
@@ -19,6 +20,7 @@ from .instance import (
     reconnect_instance_source,
     result_variable,
     runtime_symbol,
+    set_instance_binding,
 )
 from .groups import (
     GroupContract,
@@ -43,6 +45,7 @@ from .scopes import GraphEdge, GraphElement, GraphScope, GraphScopeError, GroupB
 __all__ = [
     "AddonUnavailableError",
     "Binding",
+    "ComponentUnavailableError",
     "binding_kind",
     "call_target",
     "GraphEdge",
@@ -81,5 +84,6 @@ __all__ = [
     "result_variable",
     "run_group",
     "runtime_symbol",
+    "set_instance_binding",
     "update_group_contract",
 ]

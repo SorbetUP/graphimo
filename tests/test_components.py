@@ -438,3 +438,107 @@ def test_component_list_discovers_aliased_node_without_importing_module(tmp_path
 
     assert [item["id"] for item in listed] == ["aliased.py"]
     assert listed[0]["callables"][0]["name"] == "normalize"
+
+
+def test_component_write_rejects_async_nodes_and_generators(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+
+    async_result = library.write(
+        "async_node.py",
+        "from graphimo import node\n\n@node\nasync def fetch(value: int) -> int:\n    return value\n",
+    )
+    assert async_result["valid"] is False
+    assert "async" in async_result["diagnostics"][0]["message"]
+
+    generator_result = library.write(
+        "gen_node.py",
+        "from graphimo import node\n\n@node\ndef batches(value: int):\n    for i in range(value):\n        yield i\n",
+    )
+    assert generator_result["valid"] is False
+    assert "yield" in generator_result["diagnostics"][0]["message"]
+
+
+def test_component_list_marks_invalid_state_and_skips_it_in_refresh(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("good.py", NODE_SOURCE)
+    # A hand-written file that would never pass component.write validation.
+    library.root.mkdir(parents=True, exist_ok=True)
+    (library.root / "handmade.py").write_text(
+        "from graphimo import node\n\nprint('side effect')\n\n@node\ndef broken(value: int) -> int:\n    return value\n",
+        encoding="utf-8",
+    )
+
+    items = {item["path"]: item for item in library.list()["items"]}
+    assert items["good.py"]["state"] == "valid"
+    assert items["handmade.py"]["state"] == "invalid"
+    assert items["handmade.py"]["diagnostics"][0]["code"] == "component_top_level_execution"
+
+    updates = library.library_updates()
+    assert "# Graphimo node library: good.py:normalize" in updates
+    assert not any("handmade.py" in marker for marker in updates)
+
+
+def test_component_list_uses_package_digest_for_init_files(tmp_path: Path) -> None:
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("pkg/__init__.py", NODE_SOURCE)
+    (library.root / "pkg" / "extra.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    item = library.list()["items"][0]
+    assert item["path"] == "pkg/__init__.py"
+    # The digest covers every file of the package, not just __init__.py.
+    from graphimo.components import _component_digest
+
+    assert item["sha256"] == _component_digest(
+        library.root / "pkg" / "__init__.py", Path("pkg/__init__.py")
+    )
+    assert item["source_sha256"] == item["sha256"]
+
+
+def test_literal_limits_are_consistent_at_the_boundary(tmp_path: Path) -> None:
+    from graphimo.instance import MAX_LITERAL_JSON_BYTES
+
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("normalize.py", NODE_SOURCE)
+
+    ok_size = MAX_LITERAL_JSON_BYTES - 3  # room for the two JSON quotes
+    big = "x" * ok_size
+    result = library.instance_source(
+        "normalize.py", "normalize", "out", {"value": {"literal": big}}
+    )
+    assert result["canonical_instance"] is True
+
+    too_big = "x" * (MAX_LITERAL_JSON_BYTES + 1)
+    with pytest.raises(ComponentError, match="literal exceeds"):
+        library.instance_source("normalize.py", "normalize", "out", {"value": {"literal": too_big}})
+
+
+def test_runtime_symbol_uses_128_bits_and_detects_collisions(tmp_path: Path) -> None:
+    from graphimo import runtime_symbol
+
+    symbol = runtime_symbol("images/normalize.py", "normalize")
+    digest_part = symbol.removeprefix("__graphimo_c_").removesuffix("_normalize")
+    assert len(digest_part) == 32
+    assert len(symbol) > 40
+
+    project = tmp_path / "notebook.py"
+    project.write_text("# marimo project\n", encoding="utf-8")
+    library = ComponentLibrary(project)
+    library.write("a.py", NODE_SOURCE)
+    library.write("b.py", NODE_SOURCE)
+    updates = library.library_updates()
+    symbols = [
+        line
+        for source in updates.values()
+        for line in source.splitlines()
+        if line.startswith("__graphimo_c_")
+    ]
+    assert len(symbols) == 2
+    assert symbols[0] != symbols[1]
