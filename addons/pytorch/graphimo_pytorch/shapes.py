@@ -156,6 +156,13 @@ def _infer_element(
         return (TensorSpec(shape, params.get("dtype", "float32"), params.get("semantic")),)
     if kind == "output":
         _expect_count(inputs, ("input",))
+        if element.metadata.get("method_call") == "forward":
+            return (
+                TensorSpec(
+                    tuple(dim(value) for value in element.metadata.get("output_shape", ())),
+                    element.metadata.get("dtype", "float32"),
+                ),
+            )
         return inputs["input"][:1]
     if kind == "group_instance":
         return ()
@@ -422,6 +429,7 @@ def infer_model_shapes(
             return {}, {}
         produced: dict[tuple[str, str], TensorSpec] = {}
         per_node: dict[str, dict[str, tuple[TensorSpec, ...]]] = {}
+        failed_nodes: set[str] = set()
         method_inputs = {
             item.name: TensorSpec(
                 tuple(_dim(part, shape_values) for part in item.shape), item.dtype, item.semantic
@@ -431,6 +439,13 @@ def infer_model_shapes(
         for node in order:
             if node in element_map:
                 element = element_map[node]
+                if any(
+                    edge.source.element_id in failed_nodes
+                    for edge in graph.edges
+                    if edge.target.element_id == node
+                ):
+                    failed_nodes.add(node)
+                    continue
                 inputs: dict[str, list[TensorSpec]] = {}
                 for edge in graph.edges:
                     if edge.target.element_id != node:
@@ -465,6 +480,7 @@ def infer_model_shapes(
                         produced[(node, port)] = spec
                         port_shapes[f"{scope}/{node}/{port}"] = spec
                 except (ValueError, KeyError, TypeError, ZeroDivisionError) as exc:
+                    failed_nodes.add(node)
                     diagnostics.append(
                         Diagnostic(
                             (
@@ -496,13 +512,14 @@ def infer_model_shapes(
                         f"{scope}/{instance.name}/repeat-{repeat_index + 1}",
                         provided,
                     )
+                    output_by_name = {
+                        port.name: group_outputs.get((port.endpoint.element_id, port.endpoint.port))
+                        for port in definition.outputs
+                    }
+                    if any(value is None for value in output_by_name.values()):
+                        failed_nodes.add(node)
+                        break
                     if repeat_index + 1 < instance.repeat:
-                        output_by_name = {
-                            port.name: group_outputs.get(
-                                (port.endpoint.element_id, port.endpoint.port)
-                            )
-                            for port in definition.outputs
-                        }
                         if len(definition.inputs) == len(definition.outputs) == 1:
                             output_by_name[definition.inputs[0].name] = next(
                                 iter(output_by_name.values())
@@ -537,6 +554,7 @@ def infer_model_shapes(
                         method_name=method.name,
                     )
                 )
+    diagnostics = _dedupe_repeated_shape_diagnostics(diagnostics)
     diagnostics = [
         item
         if item.metablock_id is not None
@@ -544,3 +562,18 @@ def infer_model_shapes(
         for item in diagnostics
     ]
     return ShapeInferenceResult(port_shapes, edge_shapes, tuple(diagnostics), validation)
+
+
+def _dedupe_repeated_shape_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
+    """Collapse identical errors from repeated instances of one visual Group."""
+    unique: list[Diagnostic] = []
+    seen: set[tuple[Any, ...]] = set()
+    repeat_marker = re.compile(r"/repeat-\d+")
+    for item in diagnostics:
+        owner = repeat_marker.sub("/repeat-*", item.method_name or "")
+        key = (item.code, item.message, item.severity, owner, item.element_id, item.edge_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique

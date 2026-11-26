@@ -20,6 +20,7 @@ let currentMetaBlocks = [];
 let activeRuntimeId = null;
 let runtimeEventCursor = "0";
 let runtimeEvents = [];
+let metricHistories = new Map();
 let activeSubscriptions = new Map();
 let runtimeRepetitionIndex = 0;
 let checkpointDetails = null;
@@ -69,11 +70,19 @@ function renderMetaBlocks() {
 
 async function createModel() {
   const id = crypto.randomUUID().replaceAll("-", "");
-  const name = `PyTorch Model ${currentMetaBlocks.length + 1}`;
+  const template = $("#model-template").value;
+  const names = {
+    multihead_mlp: `PyTorch Model ${currentMetaBlocks.length + 1}`,
+    self_attention: "SelfAttention",
+    llama_decoder_layer: "LlamaDecoderLayer",
+    llama_causal_lm: "LlamaForCausalLM",
+    llama_causal_lm_small: "LlamaForCausalLM Small Fixture",
+  };
+  const name = names[template] || "PyTorch Model";
   const created = await api("metablock.create", {
     dialect_id: "pytorch.model",
     metablock_id: id,
-    request: { name },
+    request: { name, template },
   });
   await refreshProject();
   await openMetaBlock(id, created.projection);
@@ -85,6 +94,7 @@ async function openMetaBlock(id, initialProjection = null) {
     activeRuntimeId = null;
     runtimeEventCursor = "0";
     runtimeEvents = [];
+    metricHistories = new Map();
     checkpointDetails = null;
     torchLensResult = null;
   }
@@ -361,7 +371,32 @@ function renderRuntimeOverview(root) {
   const metrics = runtimeEvents.filter((item) => item.runtime_instance_id === runtime.runtime_instance_id && item.kind === "metric.scalar");
   const latestMetric = metrics.at(-1);
   if (latestMetric) root.append(textRow(`Metric ${latestMetric.payload.name}`, latestMetric.payload.value));
+  renderMetricHistory(root, runtime.runtime_instance_id);
   renderCheckpointInspector(root);
+}
+
+function renderMetricHistory(root, runtimeId) {
+  const entries = [...metricHistories.entries()].filter(([key]) => key.startsWith(`${runtimeId}:`));
+  for (const [key, points] of entries.slice(-4)) {
+    if (points.length < 2) continue;
+    const name = key.slice(runtimeId.length + 1);
+    const width = 240; const height = 42; const padding = 3;
+    const values = points.map((item) => item.value);
+    const low = Math.min(...values); const high = Math.max(...values);
+    const span = high - low || 1;
+    const coordinates = values.map((value, index) => {
+      const x = padding + index * (width - padding * 2) / Math.max(1, values.length - 1);
+      const y = height - padding - (value - low) * (height - padding * 2) / span;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+    const container = document.createElement("div"); container.className = "metric-history";
+    const title = document.createElement("div"); title.className = "muted"; title.textContent = `${name} · ${points.length} samples`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `${name} history`);
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("points", coordinates); line.setAttribute("fill", "none"); line.setAttribute("stroke", "var(--accent)"); line.setAttribute("stroke-width", "2");
+    svg.append(line); container.append(title, svg); root.append(container);
+  }
 }
 
 function runtimeSelector(items) {
@@ -687,8 +722,17 @@ async function pollRuntimeEvents() {
     await refreshRuntimeSelector();
     const response = await api("metablock.events", { metablock_id: metablockId, cursor: runtimeEventCursor, limit: 128 });
     runtimeEventCursor = response.cursor || runtimeEventCursor;
-    runtimeEvents.push(...(response.events || []));
-    runtimeEvents = runtimeEvents.slice(-256);
+    const received = response.events || [];
+    for (const item of received) {
+      if (item.kind !== "metric.scalar" || typeof item.payload?.name !== "string" || typeof item.payload?.value !== "number") continue;
+      const key = `${item.runtime_instance_id}:${item.payload.name}`;
+      const points = metricHistories.get(key) || [];
+      points.push({ step: item.step, value: item.payload.value });
+      if (points.length > 5000) metricHistories.set(key, points.filter((_point, index) => index % 2 === 0).slice(-2500));
+      else metricHistories.set(key, points);
+    }
+    runtimeEvents.push(...received);
+    runtimeEvents = runtimeEvents.slice(-5000);
     renderInspector();
   } catch (error) {
     showError(error);

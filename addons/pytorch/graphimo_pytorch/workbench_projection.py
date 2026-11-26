@@ -60,6 +60,7 @@ def project_model(
                 "id": element.id,
                 "kind": element.kind,
                 "name": element.name,
+                "metadata": element.metadata,
                 "params": element.params,
                 "inputs": [
                     {"name": port.name, "required": port.required, "variadic": port.variadic}
@@ -86,15 +87,24 @@ def project_model(
             }
         )
     group_definitions = {item.id: item for item in state.groups}
+    resolved_values = {
+        item.name: values.get(item.id, values.get(item.name, item.default))
+        for item in state.external_parameters
+    }
     for instance in graph.group_instances:
         definition = group_definitions.get(instance.group_id)
+        repeat = (
+            int(resolved_values.get("n_layers", instance.repeat))
+            if state.metadata.get("template") == "llama_causal_lm" and instance.name == "layers"
+            else instance.repeat
+        )
         elements.append(
             {
                 "id": instance.id,
                 "kind": "group_instance",
                 "name": instance.name,
                 "group_id": instance.group_id,
-                "repeat": instance.repeat,
+                "repeat": repeat,
                 "params": instance.params,
                 "inputs": [
                     {"name": item.name, "required": True, "variadic": False}
@@ -113,7 +123,7 @@ def project_model(
                         "maximum": None,
                         "choices": None,
                         "structural": True,
-                        "value": instance.repeat,
+                        "value": repeat,
                         "binding": None,
                     }
                 ],

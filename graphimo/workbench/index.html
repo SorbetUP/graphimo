@@ -11,6 +11,14 @@
       <div class="brand"><span class="brand-mark">G</span><span>Graphimo</span><span class="muted">Workbench</span></div>
       <div id="project-label" class="project-label">Loading project…</div>
       <div class="top-actions">
+        <label class="template-choice" for="model-template">Template</label>
+        <select id="model-template" aria-label="PyTorch model template">
+          <option value="multihead_mlp">Multihead MLP</option>
+          <option value="self_attention">Self Attention</option>
+          <option value="llama_decoder_layer">Llama Decoder Layer</option>
+          <option value="llama_causal_lm">Llama Causal LM · full</option>
+          <option value="llama_causal_lm_small">Llama Causal LM · runnable fixture</option>
+        </select>
         <button id="new-model">New PyTorch MetaBlock</button>
         <button id="generate-cell" disabled>Generate marimo cell</button>
       </div>

@@ -25,6 +25,8 @@ button.danger { color: var(--bad); }
 .muted { color: var(--muted); font-size: 12px; }
 .project-label { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
 .top-actions { display: flex; gap: 8px; }
+.template-choice { align-self: center; color: var(--muted); font-size: 12px; }
+.top-actions select { max-width: 220px; border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; background: var(--panel); }
 .shell { display: grid; grid-template-columns: 230px minmax(420px, 1fr) 300px; height: calc(100vh - 56px); min-height: 480px; }
 .panel { background: var(--panel); min-width: 0; overflow: auto; padding: 12px; }
 .left-panel { border-right: 1px solid var(--border); }
@@ -58,6 +60,8 @@ h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08e
 .source-heading { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
 .source { min-height: 170px; max-height: 34vh; overflow: auto; margin: 7px 0 0; padding: 10px; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; white-space: pre; color: #b7d2ff; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .connection-hint { padding: 8px; margin: 6px 0; border-radius: 5px; background: #23304b; color: var(--accent); font-size: 12px; }
+.metric-history { margin: 9px 0; padding: 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-soft); }
+.metric-history svg { width: 100%; height: 42px; display: block; }
 @media (max-width: 980px) {
   .shell { grid-template-columns: 190px minmax(0, 1fr); grid-template-rows: minmax(380px, 1.35fr) minmax(220px, .8fr); }
   .left-panel { grid-column: 1; grid-row: 1; }

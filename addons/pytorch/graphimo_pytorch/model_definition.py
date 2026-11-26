@@ -141,6 +141,10 @@ def _count_parameters(state: PyTorchMetaBlockState, external_values: Mapping[str
     from .compiler import _resolved_params
 
     groups = {item.id: item for item in state.groups}
+    if state.metadata.get("template") == "llama_causal_lm":
+        layer_count = external_values.get("n_layers")
+        if type(layer_count) is not int or layer_count < 1:
+            raise ValueError("Llama n_layers must be a positive integer")
 
     def count_element(element) -> int:
         params = _resolved_params(element, external_values)
@@ -171,9 +175,16 @@ def _count_parameters(state: PyTorchMetaBlockState, external_values: Mapping[str
         return total
 
     total = 0
+    llama_model = state.metadata.get("template") == "llama_causal_lm"
     for method in state.entrypoints:
         total += sum(count_element(element) for element in method.elements)
         total += sum(
-            count_group(instance.group_id) * instance.repeat for instance in method.group_instances
+            count_group(instance.group_id)
+            * (
+                int(external_values.get("n_layers", instance.repeat))
+                if llama_model and instance.name == "layers"
+                else instance.repeat
+            )
+            for instance in method.group_instances
         )
     return total

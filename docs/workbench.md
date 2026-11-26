@@ -23,6 +23,9 @@ bind addresses.
 ## Current surface
 
 - Create and open persisted PyTorch MetaBlocks.
+- Choose a Multihead MLP, Self Attention Group, Llama Decoder Layer, full-size
+  Llama Causal LM editing fixture, or runnable reduced Llama fixture when
+  creating a MetaBlock.
 - Browse the addon-provided contextual palette and insert registered element
   kinds through `metablock.apply`.
 - Select and move canvas cards, pan and zoom, and persist positions by model
@@ -32,8 +35,9 @@ bind addresses.
 - Inspect ports and inferred shapes, validation diagnostics, and readable
   generated Python.
 - Request the generated marimo materialization source.
-- Inspect process-local PyTorch runtime instances, subscribe to bounded
-  activation/gradient telemetry, and view recent scalar metrics.
+- Inspect process-local PyTorch runtime instances, select a repeated decoder
+  layer through its runtime binding, subscribe to bounded activation/gradient
+  telemetry, and view scalar metric histories.
 - Inspect a Graphimo checkpoint artifact, view its provenance, and preview
   exact-name/exact-shape migration when the graph revision differs.
 - Run a selected-site TorchLens deep inspection using explicit JSON sample

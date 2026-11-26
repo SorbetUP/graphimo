@@ -237,5 +237,56 @@ batch.
 
 If TorchLens is missing or broken, the action returns a clear diagnostic.
 Compiled or wrapped models are not silently substituted; V1 deep inspection
-requires an eager, copyable model. P8 Llama templates and P9 integration
-hardening remain later milestones.
+requires an eager, copyable model.
+
+## P8 attention and Llama templates
+
+`graphimo_pytorch.templates` exposes `LlamaConfig`,
+`build_self_attention_group`, `build_llama_decoder_group`,
+`build_llama_state` and `create_template_state`. The Workbench template picker
+creates a reusable Self Attention Group, a standalone decoder Group, the
+normative full-size `LlamaForCausalLM` editing fixture, or a runnable reduced
+fixture (`vocab=128`, `d=32`, `heads=4`, `ff=64`, `layers=2`, `sequence=8`).
+Creating or projecting the full template compiles its class definition and
+static shapes without constructing or allocating the model's weights.
+
+The Llama semantic state has one `LlamaDecoderLayer` Group definition and one
+repeated Group instance. Compilation specializes the addon's generated Python
+module layout for this template, preserving reference module names and runtime
+paths such as `layers.17.q_proj`. The canvas still contains one logical Group;
+the Workbench selects a repetition through the binding map. External dimensions
+are structural parameters, so changing `d_model`, `n_heads`, `ff_size` or
+`n_layers` revises generated shapes/source; divisibility errors are reported
+before model construction. The `predict` graph records a method-call semantic
+annotation on its forward-result node and generates `@torch.no_grad()` plus
+`self.forward(input_ids)`.
+
+The addon also exports `train_pytorch_model`, a normal function decorated with
+Graphimo Core's `@node` marker. It does not own graph scheduling or start a
+second execution engine:
+
+```python
+from graphimo_pytorch import train_pytorch_model
+
+model, summary, checkpoint = train_pytorch_model(
+    model_def,
+    token_batches,
+    epochs=1,
+    lr=3e-4,
+    persist_checkpoint=False,
+)
+```
+
+The helper instantiates the definition, uses AdamW, emits `train/loss`, and can
+optionally emit gradient norm and rate-limited CUDA resource metrics. A
+checkpoint ArtifactStore write occurs only when `persist_checkpoint=True`; the
+returned value is an `ArtifactRef` or `None`. `batches` accepts a re-iterable,
+a per-epoch provider, token batches, mappings with `input_ids`, or
+input/target pairs for a supplied `loss_fn`. It is a convenience component for
+ordinary Python/marimo execution; user code can continue to own the loop.
+
+The Workbench template selector includes full and reduced Llama scenarios.
+Runtime scalar metrics retain up to 5000 points per runtime/metric with
+decimation and draw a bounded history sparkline in the inspector. The full
+template remains a code-generation and editing fixture; tests and interactive
+training use the reduced fixture.

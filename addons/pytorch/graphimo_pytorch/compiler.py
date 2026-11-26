@@ -218,25 +218,37 @@ def _module_expression(element: ElementRecord, by_id: Mapping[str, JsonScalar]) 
         return "nn.SiLU()"
     if kind == "softmax":
         return f"nn.Softmax(dim={params.get('dim', -1)})"
-    expressions = {
-        "reshape": f"ReshapeOp({_parameter_literal(params['target_shape'])})",
-        "transpose": f"TransposeOp({params['dim0']}, {params['dim1']})",
-        "flatten": f"nn.Flatten(start_dim={params['start_dim']}, end_dim={params['end_dim']})",
-        "unflatten": f"nn.Unflatten({params['dim']}, {_parameter_literal(params['sizes'])})",
-        "split_heads": f"SplitHeadsOp({params['n_heads']})",
-        "merge_heads": "MergeHeadsOp()",
-        "add": "AddOp()",
-        "multiply": "MultiplyOp()",
-        "scale": f"ScaleOp({params['factor']!r})",
-        "matmul": "MatMulOp()",
-        "rope": f"RoPEOp({params['base']!r})",
-        "causal_mask": "CausalMaskOp()",
-        "concatenate": f"ConcatenateOp({params['dim']})",
-        "cross_entropy": f"CrossEntropyOp({_quote(params['mode'])})",
-    }
-    if kind not in expressions:
-        raise ValueError(f"cannot compile unsupported element kind {kind!r}")
-    return expressions[kind]
+    if kind == "reshape":
+        return f"ReshapeOp({_parameter_literal(params['target_shape'])})"
+    if kind == "transpose":
+        return f"TransposeOp({params['dim0']}, {params['dim1']})"
+    if kind == "flatten":
+        return f"nn.Flatten(start_dim={params['start_dim']}, end_dim={params['end_dim']})"
+    if kind == "unflatten":
+        return f"nn.Unflatten({params['dim']}, {_parameter_literal(params['sizes'])})"
+    if kind == "split_heads":
+        return f"SplitHeadsOp({params['n_heads']})"
+    if kind == "merge_heads":
+        return "MergeHeadsOp()"
+    if kind == "add":
+        return "AddOp()"
+    if kind == "multiply":
+        return "MultiplyOp()"
+    if kind == "scale":
+        if element.name == "q_scale" and "d_model" in by_id and "n_heads" in by_id:
+            return f"ScaleOp(({by_id['d_model']} / {by_id['n_heads']}) ** -0.5)"
+        return f"ScaleOp({params['factor']!r})"
+    if kind == "matmul":
+        return "MatMulOp()"
+    if kind == "rope":
+        return f"RoPEOp({params['base']!r})"
+    if kind == "causal_mask":
+        return "CausalMaskOp()"
+    if kind == "concatenate":
+        return f"ConcatenateOp({params['dim']})"
+    if kind == "cross_entropy":
+        return f"CrossEntropyOp({_quote(params['mode'])})"
+    raise ValueError(f"cannot compile unsupported element kind {kind!r}")
 
 
 def _topological_nodes(
@@ -287,6 +299,9 @@ def _emit_graph(
     group_path: tuple[GroupRuntimeIndex, ...] = (),
     base_indent: int = 8,
     register_sites: bool = True,
+    llama_group: bool = False,
+    llama_model: bool = False,
+    direct_return: bool = False,
 ) -> list[str]:
     indent = " " * base_indent
     order, elements, instances = _topological_nodes(graph)
@@ -317,16 +332,27 @@ def _emit_graph(
                 else "output"
             )
             output_var = _node_variable(identity, output_port, element.name)
+            module_key = f"{prefix}__{element.name}" if prefix else element.name
             if element.kind == "input":
                 name = element.params.get("name", element.name)
-                if name not in input_names:
+                method_call = element.metadata.get("method_call")
+                if method_call == "forward":
+                    call_args = element.metadata.get("arguments", [])
+                    if not isinstance(call_args, list) or any(item not in input_names for item in call_args):
+                        raise ValueError("forward method-call metadata must reference method inputs")
+                    lines.append(
+                        f"{indent}{output_var} = self.forward({', '.join(_identifier(item, 'input') for item in call_args)})"
+                    )
+                elif name not in input_names:
                     raise ValueError(
                         f"input element {element.id!r} has no matching method input {name!r}"
                     )
-                module_key = f"{prefix}__{element.name}" if prefix else element.name
-                lines.append(
-                    f"{indent}{output_var} = self.layers[{_quote(module_key)}]({_identifier(name, 'input')})"
-                )
+                elif not (llama_group or llama_model):
+                    lines.append(
+                        f"{indent}{output_var} = self.layers[{_quote(module_key)}]({_identifier(name, 'input')})"
+                    )
+                elif not method_call:
+                    lines.append(f"{indent}{output_var} = {_identifier(name, 'input')}")
             else:
                 ports = port_names
                 args = []
@@ -338,17 +364,40 @@ def _emit_graph(
                         args.extend(expressions)
                     elif expressions:
                         args.append(expressions[0])
-                module_key = f"{prefix}__{element.name}" if prefix else element.name
-                lines.append(
-                    f"{indent}{output_var} = self.layers[{_quote(module_key)}]({', '.join(args)})"
+                access = (
+                    f"self.{_identifier(element.name)}"
+                    if llama_group
+                    else _llama_element_access(element, module_key)
+                    if llama_model
+                    else None
                 )
+                if element.metadata.get("method_call") == "forward":
+                    call_args = element.metadata.get("arguments", [])
+                    if not isinstance(call_args, list) or any(item not in input_names for item in call_args):
+                        raise ValueError("forward method-call metadata must reference method inputs")
+                    lines.append(
+                        f"{indent}{output_var} = self.forward({', '.join(_identifier(item, 'input') for item in call_args)})"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}{output_var} = {(access or f'self.layers[{_quote(module_key)}]')}({', '.join(args)})"
+                    )
             values[(identity, output_port)] = output_var
-            module_path = f"layers.{module_key}"
-            if register_sites:
+            module_path = (
+                f"{prefix}.{element.name}"
+                if llama_group and prefix
+                else element.name
+                if llama_model and element.name in {"embed_tokens", "norm", "lm_head"}
+                else f"operations.{module_key}"
+                if llama_model
+                else f"layers.{module_key}"
+            )
+            if register_sites and not element.metadata.get("method_call") and not (llama_group and element.kind == "input"):
                 bindings.append(RuntimeSite(element.id, module_path, group_path, True))
         else:
             instance = instances[identity]
             definition = groups[instance.group_id]
+            repeat_count = _effective_group_repeat(instance, by_id, llama_model)
             args = []
             for port in definition.inputs:
                 edge = next(
@@ -372,24 +421,23 @@ def _emit_graph(
             for port in definition.outputs:
                 variable = _node_variable(identity, port.name, f"{instance.name}_{port.name}")
                 outputs.append(variable)
-            if instance.repeat == 1:
+            llama_repeated = llama_model and instance.name == "layers"
+            if repeat_count == 1:
                 result_var = _node_variable(identity, "result", f"{instance.name}_result")
-                lines.append(
-                    f"{indent}{result_var} = self.groups[{_quote(group_key)}]({', '.join(args)})"
-                )
+                call = "self.layers" if llama_repeated else f"self.groups[{_quote(group_key)}]"
+                lines.append(f"{indent}{result_var} = {call}({', '.join(args)})")
                 unpack = ", ".join(outputs)
                 if len(outputs) == 1:
                     unpack += ","
                 lines.append(f"{indent}{unpack} = {result_var}")
             else:
                 current_args = args
-                for index in range(instance.repeat):
+                for index in range(repeat_count):
                     result_var = _node_variable(
                         identity, f"repeat_{index}", f"{instance.name}_repeat_{index}"
                     )
-                    lines.append(
-                        f"{indent}{result_var} = self.groups[{_quote(group_key)}][{index}]({', '.join(current_args)})"
-                    )
+                    call = "self.layers" if llama_repeated else f"self.groups[{_quote(group_key)}]"
+                    lines.append(f"{indent}{result_var} = {call}[{index}]({', '.join(current_args)})")
                     current_args = [f"{result_var}[0]"] if len(definition.outputs) == 1 else []
                     if len(definition.outputs) > 1:
                         current_args = [
@@ -401,22 +449,26 @@ def _emit_graph(
                     expression = current_args[index] if len(current_args) > 1 else current_args[0]
                     lines.append(f"{indent}{variable} = {expression}")
                     values[(identity, port.name)] = variable
-            if instance.repeat == 1:
+            if repeat_count == 1:
                 for port, variable in zip(definition.outputs, outputs, strict=True):
                     values[(identity, port.name)] = variable
             if register_sites:
-                for index in range(instance.repeat):
+                for index in range(repeat_count):
                     root_path = (
-                        f"groups.{group_key}.{index}"
-                        if instance.repeat > 1
+                        f"layers.{index}"
+                        if llama_model and instance.name == "layers"
+                        else f"groups.{group_key}.{index}"
+                        if repeat_count > 1
                         else f"groups.{group_key}"
                     )
+                    direct_group = definition.name == "LlamaDecoderLayer"
                     _add_runtime_sites(
                         definition,
                         root_path,
                         group_path + (GroupRuntimeIndex(instance.id, index),),
                         groups,
                         bindings,
+                        llama_group=direct_group,
                     )
     if isinstance(graph, GroupDefinition):
         expressions = [
@@ -435,8 +487,25 @@ def _emit_graph(
             f"{_quote(port.name)}: {expr}"
             for port, expr in zip(graph.outputs, expressions, strict=True)
         )
-        lines.append(f"{indent}return {{{dict_items}}}")
+        if direct_return and len(expressions) == 1:
+            lines.append(f"{indent}return {expressions[0]}")
+        else:
+            lines.append(f"{indent}return {{{dict_items}}}")
     return lines
+
+
+def _llama_element_access(element: ElementRecord, module_key: str) -> str | None:
+    if element.name in {"embed_tokens", "norm", "lm_head"}:
+        return f"self.{element.name}"
+    return f"self.operations[{_quote(module_key)}]"
+
+
+def _effective_group_repeat(
+    instance: GroupInstance, by_id: Mapping[str, JsonScalar], llama_model: bool
+) -> int:
+    if llama_model and instance.name == "layers":
+        return int(by_id.get("n_layers", instance.repeat))
+    return instance.repeat
 
 
 def _add_runtime_sites(
@@ -445,12 +514,17 @@ def _add_runtime_sites(
     group_path: tuple[GroupRuntimeIndex, ...],
     groups: Mapping[str, GroupDefinition],
     bindings: list[RuntimeSite],
+    llama_group: bool = False,
 ) -> None:
     for element in definition.elements:
+        if llama_group and element.kind == "input":
+            continue
         bindings.append(
             RuntimeSite(
                 element.id,
-                f"{root_path}.layers.{element.name}",
+                f"{root_path}.{element.name}"
+                if llama_group
+                else f"{root_path}.layers.{element.name}",
                 group_path,
                 True,
             )
@@ -467,6 +541,7 @@ def _add_runtime_sites(
                 group_path + (GroupRuntimeIndex(instance.id, index),),
                 groups,
                 bindings,
+                llama_group=False,
             )
 
 
@@ -476,6 +551,7 @@ def _emit_group_class(
     by_id: Mapping[str, JsonScalar],
     bindings: list[RuntimeSite],
     emitted: set[str],
+    llama_template: bool = False,
 ) -> list[str]:
     if group.id in emitted:
         return []
@@ -483,23 +559,24 @@ def _emit_group_class(
     for instance in group.group_instances:
         nested = groups.get(instance.group_id)
         if nested:
-            lines.extend(_emit_group_class(nested, groups, by_id, bindings, emitted))
+            lines.extend(_emit_group_class(nested, groups, by_id, bindings, emitted, llama_template))
     emitted.add(group.id)
     class_name = _class_name(group.name, "Group")
     args = ", ".join(_identifier(port.name, "input") for port in group.inputs)
-    lines.extend(
-        [
-            f"class {class_name}(nn.Module):",
-            "    def __init__(self):",
-            "        super().__init__()",
-            "        self.layers = nn.ModuleDict()",
-            "        self.groups = nn.ModuleDict()",
-        ]
-    )
+    direct = llama_template and group.name == "LlamaDecoderLayer"
+    lines.extend([f"class {class_name}(nn.Module):", "    def __init__(self):", "        super().__init__()"])
+    if not direct:
+        lines.extend(["        self.layers = nn.ModuleDict()", "        self.groups = nn.ModuleDict()"])
     for element in group.elements:
-        lines.append(
-            f"        self.layers[{_quote(element.name)}] = {_module_expression(element, by_id)}"
-        )
+        if element.kind == "input" and direct:
+            continue
+        if direct:
+            lines.append(f"        self.{_identifier(element.name)} = {_module_expression(element, by_id)}")
+            params = _resolved_params(element, by_id)
+            if element.kind in {"embedding", "linear"} and params.get("init_std") is not None:
+                lines.append(f"        nn.init.normal_(self.{_identifier(element.name)}.weight, mean=0.0, std={params['init_std']!r})")
+        else:
+            lines.append(f"        self.layers[{_quote(element.name)}] = {_module_expression(element, by_id)}")
     for instance in group.group_instances:
         nested = groups[instance.group_id]
         nested_name = _class_name(nested.name, "Group")
@@ -520,6 +597,7 @@ def _emit_group_class(
             bindings=bindings,
             base_indent=8,
             register_sites=False,
+            llama_group=direct,
         )
     )
     lines.append("")
@@ -547,42 +625,58 @@ def _generate_source(
         "",
     ]
     emitted: set[str] = set()
+    llama_template = state.metadata.get("template") in {"llama_causal_lm", "llama_decoder_layer"}
     for group in state.groups:
-        lines.extend(_emit_group_class(group, groups, by_id, bindings, emitted))
-    model_class = _class_name(state.name, "GraphimoModel")
+        lines.extend(_emit_group_class(group, groups, by_id, bindings, emitted, llama_template))
+    model_class = str(state.metadata.get("generated_class_name") or _class_name(state.name, "GraphimoModel"))
+    llama_model = state.metadata.get("template") == "llama_causal_lm"
     lines.extend(
         [
             f"class {model_class}(nn.Module):",
             "    def __init__(self):",
             "        super().__init__()",
-            "        self.layers = nn.ModuleDict()",
-            "        self.groups = nn.ModuleDict()",
         ]
     )
+    if llama_model:
+        lines.append("        self.operations = nn.ModuleDict()")
+    else:
+        lines.extend(["        self.layers = nn.ModuleDict()", "        self.groups = nn.ModuleDict()"])
     for method in state.entrypoints:
         prefix = method.name
         for element in method.elements:
             key = f"{prefix}__{element.name}"
             expression = _module_expression(element, by_id)
-            lines.append(f"        self.layers[{_quote(key)}] = {expression}")
+            if llama_model and element.name in {"embed_tokens", "norm", "lm_head"}:
+                module_target = f"self.{element.name}"
+            elif llama_model:
+                module_target = f"self.operations[{_quote(key)}]"
+            else:
+                module_target = f"self.layers[{_quote(key)}]"
+            lines.append(f"        {module_target} = {expression}")
             params = _resolved_params(element, by_id)
             if element.kind in {"embedding", "linear"} and params.get("init_std") is not None:
                 lines.append(
-                    f"        nn.init.normal_(self.layers[{_quote(key)}].weight, mean=0.0, std={params['init_std']!r})"
+                    f"        nn.init.normal_({module_target}.weight, mean=0.0, std={params['init_std']!r})"
                 )
         for instance in method.group_instances:
             definition = groups[instance.group_id]
             group_class = _class_name(definition.name, "Group")
+            repeat_count = _effective_group_repeat(instance, by_id, llama_model)
             expression = (
                 f"{group_class}()"
-                if instance.repeat == 1
-                else f"nn.ModuleList([{group_class}() for _ in range({instance.repeat})])"
+                if repeat_count == 1
+                else f"nn.ModuleList([{group_class}() for _ in range({repeat_count})])"
             )
             group_key = f"{method.name}__{instance.name}"
-            lines.append(f"        self.groups[{_quote(group_key)}] = {expression}")
+            if llama_model and instance.name == "layers":
+                lines.append(f"        self.layers = {expression}")
+            elif not llama_model:
+                lines.append(f"        self.groups[{_quote(group_key)}] = {expression}")
     lines.append("")
     for method in state.entrypoints:
         args = ", ".join(_identifier(item.name, "input") for item in method.inputs)
+        if method.name in state.metadata.get("no_grad_methods", []):
+            lines.append("    @torch.no_grad()")
         lines.append(f"    def {method.name}(self{', ' + args if args else ''}):")
         lines.extend(
             _emit_graph(
@@ -594,6 +688,8 @@ def _generate_source(
                 groups=groups,
                 bindings=bindings,
                 base_indent=8,
+                llama_model=llama_model,
+                direct_return=state.metadata.get("method_returns", {}).get(method.name) == "direct",
             )
         )
         lines.append("")
@@ -609,6 +705,15 @@ def compile_model(
 ) -> CompileResult:
     """Validate, infer, generate and instantiate only addon-owned source."""
     by_id, by_name = _resolved_values(state, external_values)
+    if state.metadata.get("template") == "llama_causal_lm":
+        layer_count = by_id.get("n_layers")
+        if type(layer_count) is not int or layer_count < 1:
+            diagnostic = Diagnostic(
+                "pytorch_param_invalid",
+                "Llama n_layers must be a positive integer",
+                metablock_id=state.metablock_id,
+            )
+            raise PyTorchCompilationError((diagnostic,))
     shape_result = infer_model_shapes(state, by_id)
     errors = tuple(item for item in shape_result.diagnostics if item.severity == "error")
     if errors:
@@ -632,7 +737,10 @@ def compile_model(
             namespace,
             namespace,
         )
-        model_class = namespace[_class_name(state.name, "GraphimoModel")]
+        model_class_name = str(
+            state.metadata.get("generated_class_name") or _class_name(state.name, "GraphimoModel")
+        )
+        model_class = namespace[model_class_name]
         import torch
 
         del torch

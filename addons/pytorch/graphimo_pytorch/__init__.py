@@ -47,6 +47,14 @@ from .torchlens_adapter import (
     inspect_with_torchlens,
     save_inspection_artifact,
 )
+from .templates import (
+    LlamaConfig,
+    build_llama_decoder_group,
+    build_llama_state,
+    build_self_attention_group,
+    create_template_state,
+)
+from .training import train_pytorch_model
 
 __all__ = [
     "ELEMENT_REGISTRY",
@@ -72,6 +80,7 @@ __all__ = [
     "TorchLensRequest",
     "TorchLensResult",
     "PyTorchCompilationError",
+    "LlamaConfig",
     "ShapeInferenceResult",
     "TensorSpec",
     "ValidationReport",
@@ -92,5 +101,10 @@ __all__ = [
     "summarize_tensor",
     "summarize_tree",
     "save_checkpoint",
+    "build_llama_decoder_group",
+    "build_llama_state",
+    "build_self_attention_group",
+    "create_template_state",
+    "train_pytorch_model",
     "validate_model_graph",
 ]

@@ -28,6 +28,7 @@ from .schema import (
     state_to_dict,
 )
 from .workbench_projection import project_model
+from .templates import create_template_state
 
 
 def _head_parameter_id(name: str) -> str:
@@ -38,6 +39,14 @@ def _create_state(request: dict[str, Any], context: GraphimoHostAPI) -> dict[str
     metablock_id = context.current_metablock_id
     if not metablock_id:
         raise ValueError("PyTorch MetaBlock creation requires a scoped MetaBlock ID")
+    template = request.get("template", "multihead_mlp")
+    if template != "multihead_mlp":
+        state = create_template_state(
+            metablock_id,
+            name=request.get("name") or _template_name(template),
+            template=template,
+        )
+        return state_to_dict(state)
     default_spec = {"input_size": 4, "hidden_size": 8, "head_sizes": {"output": 1}}
     validated = ModelSpec(**request.get("model_spec", default_spec))
     external = [
@@ -131,6 +140,15 @@ def _create_state(request: dict[str, Any], context: GraphimoHostAPI) -> dict[str
         metadata={"template": "multihead_mlp"},
     )
     return state_to_dict(state)
+
+
+def _template_name(template: str) -> str:
+    return {
+        "self_attention": "SelfAttention",
+        "llama_decoder_layer": "LlamaDecoderLayer",
+        "llama_causal_lm": "LlamaForCausalLM",
+        "llama_causal_lm_small": "LlamaForCausalLM (small fixture)",
+    }.get(template, "PyTorch Model")
 
 
 class PyTorchModelDialect:
