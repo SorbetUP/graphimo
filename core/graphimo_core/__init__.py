@@ -1,8 +1,10 @@
-"""Experimental Graphimo core prototype.
+"""Experimental Graphimo core prototype — LEGACY, not a production path.
 
-This package is intentionally separate from the Zeron/marimo adapter. It is a
-small architecture spike for persistent graphs, artifacts, runs and generic
-Python node execution; it is not yet the runtime used by the Zeron plugin.
+DEPRECATED: the canonical runtime is the ``graphimo`` package (application,
+service, marimo kernel bridge) plus the Zeron plugin's ``service_bridge.luau``.
+This package is kept only because historical tests (``tests/test_core_vertical_slice.py``)
+and ``addons/pytorch/graphimo_pytorch/vertical_demo.py`` exercise it. Do not add
+new code here; see ``docs/production-architecture.md``.
 """
 
 from .artifacts import ArtifactRef, LocalArtifactStore

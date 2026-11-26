@@ -1,3 +1,9 @@
+"""LEGACY vertical demo over the experimental graphimo_core prototype.
+
+Kept for ``tests/test_core_vertical_slice.py``; the production PyTorch path is
+the MetaBlock dialect + ``graphimo.service``. See ``docs/production-architecture.md``.
+"""
+
 from __future__ import annotations
 
 import hashlib

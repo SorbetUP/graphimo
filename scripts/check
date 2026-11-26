@@ -98,6 +98,7 @@ def lint_paths() -> list[str]:
         "tests/test_live_pytorch_restore.py",
         "tests/test_live_capture_output.py",
         "tests/test_artifact_catalogue.py",
+        "tests/test_verifier.py",
         "tests/test_node_contract.py",
         "addons/pytorch/tests/test_torchlens.py",
         "tests/test_metablock_host.py",

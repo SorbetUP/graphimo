@@ -208,3 +208,120 @@ def test_verifier_asserts_cursor_spooled_addon_events() -> None:
         "sequence": 13,
         "cursor": "13",
     }
+
+
+def test_scenario_seed_is_injectable_and_step_data_is_deep_copied() -> None:
+    class RecordingProject:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        def execute(self, action: str, args: dict[str, Any] | None = None) -> Any:
+            self.calls.append((action, args or {}))
+            return {"ok": True}
+
+    project = RecordingProject()
+    scenario = VerifierScenario("seeded", 4242, invariants=())
+    args = {"source": "value = 1", "seed": {"$seed": True}}
+    scenario.add("notebook.add_cell", args, step_id="add")
+    args["source"] = "mutated-after-add"
+    args["seed"] = "mutated"
+
+    journal = scenario.replay(VerifiedProject(project))
+
+    # The recorded scenario was deep-copied at add() time.
+    assert scenario.to_dict()["steps"][0]["args"]["source"] == "value = 1"
+    # $seed resolves to the durable scenario seed at replay time.
+    assert project.calls == [("notebook.add_cell", {"source": "value = 1", "seed": 4242})]
+    assert journal["operations"][0]["resolved_args"]["seed"] == 4242
+
+
+def test_compare_journals_normalizes_runtime_ids_and_detects_differences() -> None:
+    from graphimo.verifier import compare_journals
+
+    base = {
+        "seed": 7,
+        "completed": True,
+        "operations": [
+            {
+                "id": "add",
+                "action": "notebook.add_cell",
+                "status": "ok",
+                "started_at": "2026-01-01T00:00:00.000+00:00",
+                "result": {"cell_id": "e" * 64, "artifact": "b" * 64},
+            }
+        ],
+    }
+    same = json.loads(json.dumps(base))
+    same["operations"][0]["started_at"] = "2026-01-02T00:00:00.000+00:00"
+    same["operations"][0]["result"] = {"cell_id": "f" * 64, "artifact": "d" * 64}
+
+    assert compare_journals(base, same)["match"] is True
+
+    drifted = json.loads(json.dumps(base))
+    drifted["operations"][0]["status"] = "error"
+    comparison = compare_journals(base, drifted)
+    assert comparison["match"] is False
+    assert any("status" in item for item in comparison["differences"])
+
+
+def test_expected_error_step_verifies_notebook_state_is_preserved() -> None:
+    from graphimo.client import GraphimoServiceError
+
+    class FakeNotebook:
+        def __init__(self, cells: list[dict[str, Any]], fail_on: str) -> None:
+            self._cells = cells
+            self._fail_on = fail_on
+            self.calls = 0
+
+        def inspect_notebook(self) -> dict[str, Any]:
+            return {"cells": [dict(cell) for cell in self._cells], "edges": []}
+
+        def execute(self, action: str, args: dict[str, Any] | None = None) -> Any:
+            self.calls += 1
+            if action == self._fail_on:
+                raise GraphimoServiceError("unsafe_edit", "rejected")
+            return {"ok": True}
+
+    cells = [{"id": "cell-a", "source": "x = 1", "defs": ["x"], "refs": []}]
+    scenario = VerifierScenario("guarded", 3, invariants=())
+    scenario.add(
+        "notebook.delete", {"cell_id": "cell-a"}, step_id="bad", expect_error="unsafe_edit"
+    )
+    project = FakeNotebook(cells, fail_on="notebook.delete")
+    journal = scenario.replay(VerifiedProject(project))
+    assert journal["operations"][0]["status"] == "expected_error"
+    assert journal["operations"][0]["state_preserved"] is True
+
+    class DriftingNotebook(FakeNotebook):
+        def execute(self, action: str, args: dict[str, Any] | None = None) -> Any:
+            try:
+                return super().execute(action, args)
+            finally:
+                if action == self._fail_on:
+                    self._cells.append(
+                        {"id": "ghost", "source": "y = 2", "defs": ["y"], "refs": []}
+                    )
+
+    drifting = DriftingNotebook([dict(cell) for cell in cells], fail_on="notebook.delete")
+    with pytest.raises(ScenarioRunError, match="notebook changed"):
+        scenario.replay(VerifiedProject(drifting))
+
+
+def test_fuzz_replay_replays_seeded_scenario_on_fresh_copies(tmp_path) -> None:
+    from graphimo.verifier import GraphimoVerifier
+
+    notebook = tmp_path / "fuzz-project.py"
+    notebook.write_text("# fuzz fixture\n", encoding="utf-8")
+    service = GraphimoService(manifest_path=tmp_path / "state" / "service.json").start()
+    try:
+        with GraphimoVerifier(GraphimoClient(service.url, service.token)) as verifier:
+            scenario = VerifierScenario("fuzz", 99, invariants=())
+            scenario.add("scope.current", {}, step_id="scope")
+            report = verifier.fuzz_replay(
+                scenario, notebook, rounds=2, journal_dir=tmp_path / "fuzz"
+            )
+            assert report["deterministic"] is True
+            assert len(report["comparisons"]) == 1
+            assert report["comparisons"][0]["match"] is True
+    finally:
+        service.close()

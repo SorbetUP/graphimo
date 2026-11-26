@@ -1,6 +1,7 @@
--- The only marimo transport/private-API boundary in Graphimo.
--- Inspection and cell edits run through marimo-pair's documented local
--- /api/kernel/execute endpoint. marimo remains the runtime and graph owner.
+-- LEGACY host bridge: direct marimo HTTP/WS calls kept for log reading, session
+-- listing and telemetry. All semantic Graphimo actions go through
+-- service_bridge.luau -> graphimo.service; do not add new semantics here.
+-- marimo remains the runtime and graph owner.
 local Bridge = {}
 
 local function failure(message, code)

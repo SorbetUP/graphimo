@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import time
 from typing import Any, Iterator
 
 from .client import GraphimoClient, GraphimoProject
+from .refs import RefResolutionError, resolve_references
 
 
 class VerificationError(AssertionError):
@@ -75,11 +78,13 @@ class VerifierScenario:
         step = {
             "id": identifier,
             "action": action,
-            "args": actual_args,
+            # Deep-copy so later caller-side mutation cannot silently change
+            # the recorded scenario (the journal must reflect what ran).
+            "args": deepcopy(actual_args),
             "invariants": list(
                 self.invariants if invariants is None else _validate_invariants(invariants)
             ),
-            "assertions": assertions or [],
+            "assertions": deepcopy(assertions) if assertions is not None else [],
         }
         if expect_error is not None:
             step["expect_error"] = expect_error
@@ -93,7 +98,7 @@ class VerifierScenario:
             "name": self.name,
             "seed": self.seed,
             "invariants": list(self.invariants),
-            "steps": [dict(step) for step in self.steps],
+            "steps": deepcopy(self.steps),
         }
 
     def save(self, path: str | Path) -> Path:
@@ -163,8 +168,13 @@ class VerifierScenario:
                 "started_at": _timestamp(),
             }
             try:
-                resolved_args = _resolve_scenario_refs(step["args"], results)
+                resolved_args = _resolve_scenario_refs(step["args"], results, seed=self.seed)
                 event["resolved_args"] = resolved_args
+                # A failed mutation must leave the notebook untouched: snapshot
+                # the cell identities and sources before an expected failure.
+                before_failure = None
+                if step.get("expect_error"):
+                    before_failure = _cell_fingerprint(project)
                 try:
                     result = project.execute(step["action"], resolved_args)
                 except Exception as exc:
@@ -187,6 +197,15 @@ class VerifierScenario:
                         }
                     )
                     result = None
+                    if before_failure is not None:
+                        after_failure = _cell_fingerprint(project)
+                        event["state_preserved"] = after_failure == before_failure
+                        if after_failure != before_failure:
+                            raise ScenarioRunError(
+                                f"scenario seed={self.seed}: expected error at step "
+                                f"{step['id']} but the notebook changed anyway",
+                                journal,
+                            )
                 else:
                     if step.get("expect_error"):
                         event.update(
@@ -207,7 +226,9 @@ class VerifierScenario:
                 checks = [self._run_invariant(project, name) for name in step["invariants"]]
                 event["invariants"] = checks
                 event["assertions"] = [
-                    self._run_assertion(project, _resolve_scenario_refs(assertion, results))
+                    self._run_assertion(
+                        project, _resolve_scenario_refs(assertion, results, seed=self.seed)
+                    )
                     for assertion in step["assertions"]
                 ]
                 event["finished_at"] = _timestamp()
@@ -319,6 +340,55 @@ class GraphimoVerifier:
         finally:
             project.close()
 
+    def fuzz_replay(
+        self,
+        scenario: VerifierScenario,
+        project_path: str | Path,
+        *,
+        rounds: int = 2,
+        journal_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Replay a scenario on fresh project copies and diff the journals.
+
+        Each round copies the project file (and its ``.graphimo`` state dir) into
+        a temporary directory, replays the seeded scenario, and compares the
+        normalized journal against the first round. Non-determinism in ids or
+        ordering is reported instead of silently passing.
+        """
+        if type(rounds) is not int or not 2 <= rounds <= 16:
+            raise ValueError("fuzz rounds must be an integer between 2 and 16")
+        source = Path(project_path)
+        base = (
+            Path(journal_dir)
+            if journal_dir is not None
+            else Path(tempfile.mkdtemp(prefix="graphimo-fuzz-"))
+        )
+        base.mkdir(parents=True, exist_ok=True)
+        journals: list[dict[str, Any]] = []
+        try:
+            for index in range(rounds):
+                workdir = base / f"round-{index}"
+                workdir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, workdir / source.name)
+                state_dir = source.parent / ".graphimo"
+                if state_dir.is_dir():
+                    shutil.copytree(state_dir, workdir / ".graphimo", dirs_exist_ok=True)
+                with self.project(workdir / source.name) as project:
+                    journal = project.run_scenario(
+                        scenario, journal_path=base / f"journal-{index}.json"
+                    )
+                journals.append(journal)
+        except ScenarioRunError:
+            raise
+        report: dict[str, Any] = {"rounds": rounds, "comparisons": []}
+        reference = journals[0]
+        for index, journal in enumerate(journals[1:], start=1):
+            comparison = compare_journals(reference, journal)
+            comparison["round"] = index
+            report["comparisons"].append(comparison)
+        report["deterministic"] = all(item["match"] for item in report["comparisons"])
+        return report
+
     def close(self) -> None:
         self.client.close()
 
@@ -394,6 +464,46 @@ class VerifiedProject:
                 raise VerificationError(f"edge {edge!r} has no matching source definition")
             if variable not in target.get("refs", []):
                 raise VerificationError(f"edge {edge!r} has no matching target reference")
+
+        # An active instance must actually define its result variable; a
+        # result_var without a matching def would silently mask a broken cell.
+        for cell in cells:
+            instance = cell.get("graphimo_instance")
+            if isinstance(instance, dict) and cell.get("graphimo_disabled_instance") is None:
+                result_var = instance.get("result_var")
+                if isinstance(result_var, str) and result_var not in cell.get("defs", []):
+                    raise VerificationError(
+                        f"active instance {instance.get('instance_id')!r} declares result_var "
+                        f"{result_var!r} but the cell does not define it"
+                    )
+
+        # Exhaustive edge check, both directions: every ref that some cell
+        # defines must be covered by an incoming edge (refs to builtins or
+        # imports have no defining cell and are marimo's own responsibility).
+        owners: dict[str, list[str]] = {}
+        for cell in cells:
+            for name in cell.get("defs", []):
+                owners.setdefault(name, []).append(cell["id"])
+        edge_triples = {
+            (
+                edge.get("source_cell_id"),
+                edge.get("target_cell_id"),
+                edge.get("variable"),
+            )
+            for edge in edges
+            if isinstance(edge, dict)
+        }
+        for cell in cells:
+            for ref in cell.get("refs", []):
+                if ref not in owners:
+                    continue
+                if not any(
+                    target_id == cell["id"] and variable == ref
+                    for _source, target_id, variable in edge_triples
+                ):
+                    raise VerificationError(
+                        f"cell {cell['id']!r} references {ref!r} but no edge covers it"
+                    )
         return {"cells": len(cells), "edges": len(edges), "consistent": True}
 
     def assert_formal_ports_consistent(self) -> dict[str, Any]:
@@ -659,6 +769,86 @@ def _validate_invariants(invariants: tuple[str, ...]) -> tuple[str, ...]:
     return invariants
 
 
+def _cell_fingerprint(project: VerifiedProject) -> list[list[str]]:
+    """Stable (cell id, source) pairs used to detect state drift after failures."""
+    snapshot = project.inspect_notebook()
+    cells = snapshot.get("cells")
+    if not isinstance(cells, list):
+        raise VerificationError("notebook snapshot has no cell array")
+    return sorted(
+        [str(cell.get("id")), str(cell.get("source", ""))]
+        for cell in cells
+        if isinstance(cell, dict)
+    )
+
+
+_HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
+_HEX32 = re.compile(r"\b[0-9a-f]{32}\b")
+
+
+def _normalize_ids(value: Any, registry: dict[str, str]) -> Any:
+    """Replace runtime-generated ids with stable placeholders, in first-seen order."""
+    if isinstance(value, str):
+
+        def _sub(match: re.Match[str]) -> str:
+            token = match.group(0)
+            return registry.setdefault(token, f"<id-{len(registry)}>")
+
+        value = _HEX64.sub(_sub, value)
+        value = _HEX32.sub(_sub, value)
+        return value
+    if isinstance(value, dict):
+        return {key: _normalize_ids(item, registry) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_ids(item, registry) for item in value]
+    return value
+
+
+def normalize_journal(journal: dict[str, Any]) -> dict[str, Any]:
+    """Strip timestamps and normalize runtime ids so two replays can be diffed."""
+    registry: dict[str, str] = {}
+    operations = []
+    for event in journal.get("operations", []):
+        if not isinstance(event, dict):
+            continue
+        normalized = {
+            key: _normalize_ids(value, registry)
+            for key, value in event.items()
+            if key not in {"started_at", "finished_at", "sequence"}
+        }
+        operations.append(normalized)
+    return {
+        "scenario": _normalize_ids(journal.get("scenario"), registry),
+        "seed": journal.get("seed"),
+        "completed": journal.get("completed"),
+        "operations": operations,
+    }
+
+
+def compare_journals(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Differential comparison of two replay journals (normalized, order-sensitive)."""
+    left = normalize_journal(previous)
+    right = normalize_journal(current)
+    differences: list[str] = []
+    if left.get("seed") != right.get("seed"):
+        differences.append(f"seed: {left.get('seed')!r} != {right.get('seed')!r}")
+    if left.get("completed") != right.get("completed"):
+        differences.append(f"completed: {left.get('completed')!r} != {right.get('completed')!r}")
+    left_ops = left.get("operations", [])
+    right_ops = right.get("operations", [])
+    if len(left_ops) != len(right_ops):
+        differences.append(f"operation count: {len(left_ops)} != {len(right_ops)}")
+    for index, (left_event, right_event) in enumerate(zip(left_ops, right_ops)):
+        for key in sorted(set(left_event) | set(right_event)):
+            if left_event.get(key) != right_event.get(key):
+                differences.append(
+                    f"operation {index} field {key!r}: {left_event.get(key)!r} != {right_event.get(key)!r}"
+                )
+                if len(differences) > 50:
+                    break
+    return {"match": not differences, "differences": differences}
+
+
 def _ensure_json(value: Any) -> None:
     try:
         encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -672,37 +862,12 @@ def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
-def _resolve_scenario_refs(value: Any, previous: dict[str, Any]) -> Any:
-    if isinstance(value, dict):
-        if set(value) == {"$ref"}:
-            reference = value["$ref"]
-            if not isinstance(reference, str):
-                raise VerificationError("scenario reference must be text")
-            parts = reference.split(".")
-            if len(parts) < 2 or parts[0] not in previous or parts[1] != "result":
-                raise VerificationError(
-                    f"scenario reference does not name a prior result: {reference!r}"
-                )
-            resolved = previous[parts[0]]
-            for part in parts[2:]:
-                if isinstance(resolved, dict) and part in resolved:
-                    resolved = resolved[part]
-                elif isinstance(resolved, list) and part.isdecimal():
-                    try:
-                        resolved = resolved[int(part)]
-                    except IndexError as exc:
-                        raise VerificationError(
-                            f"scenario reference index is out of range: {reference!r}"
-                        ) from exc
-                else:
-                    raise VerificationError(
-                        f"scenario reference path does not exist: {reference!r}"
-                    )
-            return resolved
-        return {key: _resolve_scenario_refs(item, previous) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_resolve_scenario_refs(item, previous) for item in value]
-    return value
+def _resolve_scenario_refs(value: Any, previous: dict[str, Any], *, seed: int | None = None) -> Any:
+    """Delegate to the canonical resolver; ``$seed`` injects the scenario seed."""
+    try:
+        return resolve_references(value, previous, seed=seed)
+    except RefResolutionError as exc:
+        raise VerificationError(str(exc)) from exc
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:

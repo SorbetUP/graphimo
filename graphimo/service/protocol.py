@@ -7,6 +7,8 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ..refs import RefResolutionError, resolve_references
+
 PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 5 * 1024 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -185,36 +187,11 @@ def execute_batch(
 
 
 def _resolve_references(value: Any, previous: Mapping[str, Any]) -> Any:
-    if isinstance(value, dict):
-        if set(value) == {"$ref"}:
-            reference = value["$ref"]
-            if not isinstance(reference, str):
-                raise BatchActionError("invalid_reference", "$ref must be text")
-            parts = reference.split(".")
-            if len(parts) < 2 or parts[0] not in previous or parts[1] != "result":
-                raise BatchActionError(
-                    "invalid_reference", f"reference does not name a prior result: {reference!r}"
-                )
-            resolved = previous[parts[0]]
-            for part in parts[2:]:
-                if isinstance(resolved, Mapping) and part in resolved:
-                    resolved = resolved[part]
-                elif isinstance(resolved, list) and part.isdecimal():
-                    try:
-                        resolved = resolved[int(part)]
-                    except IndexError as exc:
-                        raise BatchActionError(
-                            "invalid_reference", f"reference index is out of range: {reference!r}"
-                        ) from exc
-                else:
-                    raise BatchActionError(
-                        "invalid_reference", f"reference path does not exist: {reference!r}"
-                    )
-            return resolved
-        return {key: _resolve_references(item, previous) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_resolve_references(item, previous) for item in value]
-    return value
+    """Delegate to the canonical resolver shared with the Verifier."""
+    try:
+        return resolve_references(value, previous)
+    except RefResolutionError as exc:
+        raise BatchActionError("invalid_reference", str(exc)) from exc
 
 
 def _unique_object(items: list[tuple[str, Any]]) -> dict[str, Any]:
