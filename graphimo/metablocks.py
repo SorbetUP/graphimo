@@ -43,6 +43,16 @@ class MetaBlockHistoryError(MetaBlockError):
     """Raised when a MetaBlock history entry no longer matches its sidecar."""
 
 
+class MetaBlockRevisionConflict(MetaBlockError):
+    """Raised when a mutation's expected_revision does not match the sidecar."""
+
+    def __init__(self, message: str, *, expected: Any, actual: Any):
+        self.code = "revision_conflict"
+        self.expected = expected
+        self.actual = actual
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class MetaDialectRegistration:
     dialect_id: str
@@ -581,7 +591,7 @@ class MetaBlockAddonManager:
         )
         self._write_record(record)
         self._history[metablock_id] = {"undo": [], "redo": [], "expected_revision": record.revision}
-        return self._projection_result(record, self.host.current_scope(), handler)
+        return self._projection_result(record, "root", handler)
 
     def project(self, metablock_id: str, scope: str = "root") -> dict[str, Any]:
         record = self.load(metablock_id)
@@ -613,8 +623,21 @@ class MetaBlockAddonManager:
             record.state, scope, self.host.for_metablock(metablock_id)
         )
 
-    def apply(self, metablock_id: str, intent: dict[str, Any]) -> dict[str, Any]:
+    def apply(
+        self,
+        metablock_id: str,
+        intent: dict[str, Any],
+        scope: str = "root",
+        expected_revision: Any = None,
+    ) -> dict[str, Any]:
         record = self.load(metablock_id)
+        if expected_revision is not None and expected_revision != record.revision:
+            raise MetaBlockRevisionConflict(
+                f"MetaBlock '{metablock_id}' changed since revision {expected_revision!r}; "
+                f"current revision is {record.revision!r}",
+                expected=expected_revision,
+                actual=record.revision,
+            )
         handler = self._load(record.dialect_id)
         scoped_host = self.host.for_metablock(metablock_id)
         history = self._history_state(metablock_id, record.revision)
@@ -632,7 +655,7 @@ class MetaBlockAddonManager:
                 "state": updated,
             }
         )
-        projection = handler.project(next_record.state, self.host.current_scope(), scoped_host)
+        projection = handler.project(next_record.state, scope, scoped_host)
         self._write_record(next_record)
         if history_stale:
             history.update(undo=[], redo=[])

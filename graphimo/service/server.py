@@ -20,7 +20,6 @@ from .protocol import (
     PROTOCOL_VERSION,
     ServiceProtocolError,
     encode_response,
-    execute_batch,
     parse_json_object,
 )
 from .sessions import ProjectSession, ProjectSessionManager
@@ -269,8 +268,7 @@ class GraphimoService:
                 raise ServiceProtocolError(_action_error_code(exc), str(exc), status=422) from exc
         if path == "/v1/batch":
             session = self._project(request)
-            return execute_batch(
-                session.execute,
+            return session.execute_batch(
                 request.get("operations"),
                 continue_on_error=request.get("continue_on_error", False),
             )

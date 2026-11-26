@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,27 @@ from graphimo.metablocks import GraphimoHostAPI, MetaBlockError
 
 from .events import EventJournal
 from .marimo_kernel import MarimoKernelPort
+from .protocol import execute_batch
+
+_OPERATION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_MAX_OPERATION_JOURNAL = 256
+_READ_ONLY_ACTIONS = {
+    "notebook.inspect",
+    "component.list",
+    "component.validate",
+    "component.instance_source",
+    "control.catalog",
+    "group.list",
+    "group.inspect",
+    "metablock.list",
+    "metablock.catalog",
+    "metablock.project",
+    "metablock.events",
+    "artifact.inspect",
+    "artifact.stats",
+    "scope.current",
+    "layout.get",
+}
 
 
 class HostArtifactStore:
@@ -54,6 +77,7 @@ class ProjectSession:
         self._action_lock = threading.RLock()
         self._addon_cursors: dict[str, str] = {}
         self._subscriptions: set[tuple[str, str, str]] = set()
+        self._operation_journal: OrderedDict[str, Any] = OrderedDict()
         self._closed = False
         self._kernel_port: MarimoKernelPort | None = None
         host = GraphimoHostAPI(
@@ -72,18 +96,49 @@ class ProjectSession:
 
     def execute(self, action: str, args: dict[str, Any]) -> Any:
         with self._action_lock:
-            with self._state_lock:
-                self._ensure_open()
-            result = self.application.execute(action, args)
-            self._track_runtime_action(action, args, result)
-            self.events.publish(
-                {
-                    "kind": "application.action.completed",
-                    "project_id": self.project_id,
-                    "action": action,
-                }
+            return self._execute_locked(action, args)
+
+    def execute_batch(self, operations: Any, *, continue_on_error: bool = False) -> dict[str, Any]:
+        """Run a whole batch under one action lock so no other client interleaves."""
+        with self._action_lock:
+            return execute_batch(
+                self._execute_locked, operations, continue_on_error=continue_on_error
             )
-            return result
+
+    def _execute_locked(self, action: str, args: dict[str, Any]) -> Any:
+        """Execute one action; the caller must already hold ``_action_lock``."""
+        with self._state_lock:
+            self._ensure_open()
+        operation_id: str | None = None
+        if isinstance(args, dict) and "operation_id" in args:
+            candidate = args["operation_id"]
+            if not isinstance(candidate, str) or _OPERATION_ID.fullmatch(candidate) is None:
+                raise ValueError("operation_id must be 1-128 letters, digits, '_' or '-'")
+            operation_id = candidate
+            args = {key: value for key, value in args.items() if key != "operation_id"}
+        replayed = None
+        if operation_id is not None and action not in _READ_ONLY_ACTIONS:
+            with self._state_lock:
+                if operation_id in self._operation_journal:
+                    replayed = self._operation_journal[operation_id]
+        if replayed is not None:
+            return {"replayed": True, "operation_id": operation_id, "result": replayed}
+        result = self.application.execute(action, args)
+        self._track_runtime_action(action, args, result)
+        self.events.publish(
+            {
+                "kind": "application.action.completed",
+                "project_id": self.project_id,
+                "action": action,
+            }
+        )
+        if operation_id is not None and action not in _READ_ONLY_ACTIONS:
+            with self._state_lock:
+                self._operation_journal[operation_id] = result
+                self._operation_journal.move_to_end(operation_id)
+                while len(self._operation_journal) > _MAX_OPERATION_JOURNAL:
+                    self._operation_journal.popitem(last=False)
+        return result
 
     def attach_kernel(self, *, url: str, token: str, session_id: str) -> dict[str, Any]:
         port = MarimoKernelPort(

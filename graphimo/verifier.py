@@ -246,6 +246,10 @@ class VerifierScenario:
             return {"name": name, "result": project.assert_graph_consistent()}
         if name == "no_errors":
             return {"name": name, "result": project.assert_no_errors()}
+        if name == "formal_ports_consistent":
+            return {"name": name, "result": project.assert_formal_ports_consistent()}
+        if name == "binding_edges_complete":
+            return {"name": name, "result": project.assert_binding_edges_complete()}
         raise VerificationError(f"unknown Graphimo Verifier invariant: {name}")
 
     @staticmethod
@@ -391,6 +395,115 @@ class VerifiedProject:
             if variable not in target.get("refs", []):
                 raise VerificationError(f"edge {edge!r} has no matching target reference")
         return {"cells": len(cells), "edges": len(edges), "consistent": True}
+
+    def assert_formal_ports_consistent(self) -> dict[str, Any]:
+        """Every Graphimo instance projects a coherent formal port model."""
+        snapshot = self.inspect_notebook()
+        if snapshot.get("truncated"):
+            raise VerificationError("notebook snapshot is truncated; port check is incomplete")
+        cells = snapshot.get("cells")
+        if not isinstance(cells, list):
+            raise VerificationError("notebook snapshot has no cell array")
+        known_states = {
+            "ok",
+            "idle",
+            "stale",
+            "blocked",
+            "disabled",
+            "incomplete",
+            "component_unavailable",
+            "error",
+        }
+        known_kinds = {
+            "variable",
+            "literal",
+            "default",
+            "unbound",
+            "output_reference",
+            "expression",
+        }
+        checked = 0
+        for cell in cells:
+            instance = cell.get("graphimo_instance") if isinstance(cell, dict) else None
+            if not isinstance(instance, dict):
+                continue
+            checked += 1
+            state = instance.get("state")
+            if state not in known_states:
+                raise VerificationError(
+                    f"instance {instance.get('instance_id')!r} has unknown state {state!r}"
+                )
+            input_names = set()
+            for port in instance.get("inputs", []):
+                if not isinstance(port, dict) or not isinstance(port.get("name"), str):
+                    raise VerificationError(
+                        f"instance {instance.get('instance_id')!r} has a malformed input port"
+                    )
+                if port["name"] in input_names:
+                    raise VerificationError(
+                        f"instance {instance.get('instance_id')!r} has duplicate input {port['name']!r}"
+                    )
+                input_names.add(port["name"])
+                binding = port.get("binding")
+                if not isinstance(binding, dict) or binding.get("kind") not in known_kinds:
+                    raise VerificationError(
+                        f"instance {instance.get('instance_id')!r} input {port['name']!r} has invalid binding {binding!r}"
+                    )
+            indices = [output.get("index") for output in instance.get("outputs", [])]
+            if indices != list(range(len(indices))):
+                raise VerificationError(
+                    f"instance {instance.get('instance_id')!r} output indices are not contiguous: {indices!r}"
+                )
+            bound_names = {binding.get("name") for binding in instance.get("bindings", [])}
+            orphaned_names = {item.get("name") for item in instance.get("orphaned_bindings", [])}
+            if bound_names & input_names and (bound_names - input_names) != orphaned_names:
+                raise VerificationError(
+                    f"instance {instance.get('instance_id')!r} bindings/ports disagree: "
+                    f"bound={sorted(bound_names)!r} inputs={sorted(input_names)!r} orphaned={sorted(orphaned_names)!r}"
+                )
+        return {"instances": checked, "consistent": True}
+
+    def assert_binding_edges_complete(self) -> dict[str, Any]:
+        """Every bound input of an instance has a matching annotated edge."""
+        snapshot = self.inspect_notebook()
+        if snapshot.get("truncated"):
+            raise VerificationError("notebook snapshot is truncated; edge check is incomplete")
+        cells = snapshot.get("cells")
+        edges = snapshot.get("edges")
+        if not isinstance(cells, list) or not isinstance(edges, list):
+            raise VerificationError("notebook snapshot must contain cell and edge arrays")
+        by_id = {cell.get("id"): cell for cell in cells if isinstance(cell, dict)}
+        edge_keys = {
+            (edge.get("target_cell_id"), edge.get("input_ref"))
+            for edge in edges
+            if isinstance(edge, dict)
+        }
+        missing = []
+        for cell in cells:
+            instance = cell.get("graphimo_instance") if isinstance(cell, dict) else None
+            if not isinstance(instance, dict):
+                continue
+            for port in instance.get("inputs", []):
+                binding = port.get("binding") if isinstance(port, dict) else None
+                if not isinstance(binding, dict) or binding.get("kind") in {"default", "unbound"}:
+                    continue
+                if (cell.get("id"), port.get("name")) not in edge_keys:
+                    missing.append({"cell_id": cell.get("id"), "input": port.get("name")})
+        if missing:
+            raise VerificationError(f"bound inputs without annotated edges: {missing[:8]!r}")
+        # Instance sources with several outputs must carry an output_index.
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            source = by_id.get(edge.get("source_cell_id"))
+            source_instance = source.get("graphimo_instance") if isinstance(source, dict) else None
+            if isinstance(source_instance, dict) and len(source_instance.get("outputs", [])) > 1:
+                if (
+                    edge.get("variable") == source_instance.get("result_var")
+                    and "output_index" not in edge
+                ):
+                    raise VerificationError(f"multi-output edge lacks output_index: {edge!r}")
+        return {"edges": len(edges), "complete": True}
 
     def assert_no_errors(self) -> dict[str, Any]:
         """Assert that no cell in the live notebook snapshot reports an error."""
@@ -538,7 +651,7 @@ class VerifiedProject:
 
 
 def _validate_invariants(invariants: tuple[str, ...]) -> tuple[str, ...]:
-    allowed = {"graph_consistent", "no_errors"}
+    allowed = {"graph_consistent", "no_errors", "formal_ports_consistent", "binding_edges_complete"}
     if not isinstance(invariants, tuple) or any(
         not isinstance(item, str) or item not in allowed for item in invariants
     ):

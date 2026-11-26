@@ -135,7 +135,10 @@ class GraphimoApplication:
 
     def _apply(self, args: dict[str, Any]) -> Any:
         return self.metablocks.apply(
-            self._required(args, "metablock_id"), self._required(args, "intent")
+            self._required(args, "metablock_id"),
+            self._required(args, "intent"),
+            scope=args.get("scope", "root"),
+            expected_revision=args.get("expected_revision"),
         )
 
     def _undo_metablock(self, args: dict[str, Any]) -> Any:
@@ -201,6 +204,17 @@ class GraphimoApplication:
     def _create_control(args: dict[str, Any]) -> Any:
         return create_control_source(args)
 
+    def _compensate(self, created_cell_ids: list[str]) -> dict[str, Any]:
+        """Best-effort deletion of cells created by a failed composed operation."""
+        rollback: dict[str, Any] = {"deleted": [], "errors": []}
+        for cell_id in created_cell_ids:
+            try:
+                self._invoke_notebook("delete", {"cell_id": cell_id})
+                rollback["deleted"].append(cell_id)
+            except Exception as exc:
+                rollback["errors"].append({"cell_id": cell_id, "error": str(exc)[:500]})
+        return rollback
+
     def _add_control(self, args: dict[str, Any]) -> Any:
         built = create_control_source(args)
         snapshot = self._invoke_notebook("inspect", {})
@@ -213,10 +227,17 @@ class GraphimoApplication:
             for cell in cells
         ):
             raise FileExistsError(f"Graphimo control '{built['identity']}' already exists")
-        control_cell = self._invoke_notebook("add_cell", {"source": built["control_source"]})
-        value_cell = self._invoke_notebook("add_cell", {"source": built["value_source"]})
-        self._invoke_notebook("run", {"cell_id": control_cell["cell_id"]})
-        self._invoke_notebook("run", {"cell_id": value_cell["cell_id"]})
+        created: list[str] = []
+        try:
+            control_cell = self._invoke_notebook("add_cell", {"source": built["control_source"]})
+            created.append(control_cell["cell_id"])
+            value_cell = self._invoke_notebook("add_cell", {"source": built["value_source"]})
+            created.append(value_cell["cell_id"])
+            self._invoke_notebook("run", {"cell_id": control_cell["cell_id"]})
+            self._invoke_notebook("run", {"cell_id": value_cell["cell_id"]})
+        except Exception as exc:
+            rollback = self._compensate(created)
+            raise ValueError(f"control.add failed; rollback: {rollback}") from exc
         return {
             **built,
             "control_cell_id": control_cell["cell_id"],
@@ -245,34 +266,60 @@ class GraphimoApplication:
         library_cell_id = None
         library_source = built.get("library_source")
         library_marker = built.get("library_marker")
-        if isinstance(library_source, str) and isinstance(library_marker, str):
-            snapshot = self._invoke_notebook("inspect", {})
-            cells = snapshot.get("cells", []) if isinstance(snapshot, dict) else []
-            library_cell = next(
-                (
-                    cell
-                    for cell in cells
-                    if isinstance(cell, dict) and library_marker in cell.get("source", "")
-                ),
-                None,
-            )
-            if library_cell is None:
-                library_cell = self._invoke_notebook("add_cell", {"source": library_source})
-                library_cell_id = library_cell.get("cell_id")
-            else:
-                library_cell_id = library_cell.get("id")
-                if library_cell.get("source") != library_source:
+        created: list[str] = []
+        replaced: tuple[str, str, str] | None = None
+        try:
+            if isinstance(library_source, str) and isinstance(library_marker, str):
+                snapshot = self._invoke_notebook("inspect", {})
+                cells = snapshot.get("cells", []) if isinstance(snapshot, dict) else []
+                library_cell = next(
+                    (
+                        cell
+                        for cell in cells
+                        if isinstance(cell, dict) and library_marker in cell.get("source", "")
+                    ),
+                    None,
+                )
+                if library_cell is None:
+                    library_cell = self._invoke_notebook("add_cell", {"source": library_source})
+                    library_cell_id = library_cell.get("cell_id")
+                    if isinstance(library_cell_id, str):
+                        created.append(library_cell_id)
+                else:
+                    library_cell_id = library_cell.get("id")
+                    if library_cell.get("source") != library_source:
+                        replaced = (
+                            library_cell_id,
+                            library_marker,
+                            library_cell.get("source", ""),
+                        )
+                        self._invoke_notebook(
+                            "replace_library",
+                            {
+                                "cell_id": library_cell_id,
+                                "marker": library_marker,
+                                "source": library_source,
+                            },
+                        )
+                if isinstance(library_cell_id, str):
+                    self._invoke_notebook("run", {"cell_id": library_cell_id})
+            inserted = self._invoke_notebook("add_cell", {"source": built["source"]})
+            if isinstance(inserted.get("cell_id"), str):
+                created.append(inserted["cell_id"])
+        except Exception as exc:
+            rollback = self._compensate(created)
+            if replaced is not None:
+                try:
                     self._invoke_notebook(
                         "replace_library",
-                        {
-                            "cell_id": library_cell_id,
-                            "marker": library_marker,
-                            "source": library_source,
-                        },
+                        {"cell_id": replaced[0], "marker": replaced[1], "source": replaced[2]},
                     )
-            if isinstance(library_cell_id, str):
-                self._invoke_notebook("run", {"cell_id": library_cell_id})
-        inserted = self._invoke_notebook("add_cell", {"source": built["source"]})
+                    rollback["restored_library"] = replaced[0]
+                except Exception as restore_exc:
+                    rollback["errors"].append(
+                        {"cell_id": replaced[0], "error": str(restore_exc)[:500]}
+                    )
+            raise ValueError(f"component.add failed; rollback: {rollback}") from exc
         return {**built, **inserted, "library_cell_id": library_cell_id}
 
     def _delete_component(self, args: dict[str, Any]) -> Any:

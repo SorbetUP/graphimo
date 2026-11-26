@@ -451,3 +451,22 @@ def test_application_routes_layout_and_list_actions(tmp_path: Path) -> None:
     assert saved == {"saved": True}
     assert layout["layout"]["block"]["x"] == 10
     assert listed["items"][0]["metablock_id"] == "block"
+
+
+def test_apply_accepts_explicit_scope_and_rejects_stale_expected_revision(tmp_path: Path) -> None:
+    from graphimo.metablocks import MetaBlockRevisionConflict
+
+    _host, manager, _entry = setup_manager(tmp_path)
+    created = manager.create("test.counter", "block", {"name": "Samples"})
+    updated = manager.apply("block", {"type": "increment"}, scope="group:attention")
+    # The returned projection must use the requested scope, not a guessed one.
+    assert updated["projection"]["scope"] == "group:attention"
+
+    with pytest.raises(MetaBlockRevisionConflict) as conflict:
+        manager.apply("block", {"type": "increment"}, expected_revision=created["revision"])
+    assert conflict.value.code == "revision_conflict"
+    assert conflict.value.actual == updated["revision"]
+
+    # Matching expected_revision applies normally.
+    again = manager.apply("block", {"type": "increment"}, expected_revision=updated["revision"])
+    assert again["projection"]["value"] == 2

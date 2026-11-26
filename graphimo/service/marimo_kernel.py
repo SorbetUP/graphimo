@@ -597,7 +597,7 @@ def _notebook_action_source(action: str, encoded_payload: str) -> str:
                 "        item['graphimo_instance'] = projection['instance']",
                 "        if projection['component'] is not None: item['graphimo_component'] = projection['component']",
                 "    edges = expand_binding_edges(edges, _instances_by_cell)",
-                "    result = {'ok': True, 'cells': cells[:512], 'edges': edges[:4096], 'blocked_by': blocked, 'truncated': len(cells) > 512 or len(edges) > 4096}",
+                "    result = {'ok': True, 'cells': cells[:512], 'edges': edges[:4096], 'blocked_by': blocked, 'truncated': len(cells) > 512 or len(edges) > 4096, 'cells_truncated': len(cells) > 512, 'edges_truncated': len(edges) > 4096}",
             ]
         )
     common.append(
