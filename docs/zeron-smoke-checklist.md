@@ -71,9 +71,17 @@ change to `plugin/*.luau` or to `notebook.inspect`:
       `components/ml/lfw_sklearn.py`, inserts the 4 node instances, wires all
       edges with the correct `output_index`, runs them in order, and lays the
       cards out left-to-right.
-- [ ] Keyboard on the canvas: ⌘/Ctrl+Z / ⇧⌘Z undo-redo, ⌘/Ctrl+C copy,
+- [ ] Keyboard on the canvas: ⌘/Ctrl+Z / ⇧⌘Z / ⌘Y undo-redo, ⌘/Ctrl+C copy,
       ⌘/Ctrl+V paste (offset +40px), ⌘/Ctrl+A select all, ⌘/Ctrl+D duplicate,
       Delete/Backspace, Esc clears selection, R run, O open code, arrows nudge
-      (⇧ = 1px, else 10px), +/− zoom, ⌘0 fit.
+      (⇧ = 1px, else 10px), +/− zoom, ⌘/Ctrl+0 fit (Fit button must not crash).
+- [ ] Pointer: drag empty canvas or middle-button drag pans; mouse wheel and
+      trackpad pinch (ctrl) zoom around the cursor; shift+wheel and horizontal
+      trackpad scroll pan sideways; drag a node moves the selection; drag an
+      output port onto an input port wires `notebook.connect` (with the right
+      0-based `output_index` for multi-output nodes).
 - [ ] Card titles, subtitles and previews are selectable text
       (⌘A / ⌘C inside a card).
+- [ ] The agent tool `open_page` (permission `navigate`) opens this page in the
+      Zeron window; without the permission it returns `navigate_denied` instead
+      of crashing.

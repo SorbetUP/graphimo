@@ -112,7 +112,10 @@ local function is_group_selection_rejection(value)
 end
 
 zeron.tool({ name = "open_page", run = function(_args)
-	zeron.open({ name = "plugin", plugin = "graphimo", page = "canvas" })
+	local ok, err = pcall(zeron.open, { name = "plugin", plugin = "graphimo", page = "canvas" })
+	if not ok then
+		return { ok = false, error = { code = "navigate_denied", message = "Zeron refused navigation (needs the 'navigate' permission approved): " .. tostring(err) } }
+	end
 	return { ok = true, result = { opened = "canvas" } }
 end })
 
@@ -2103,6 +2106,11 @@ local Page = ui.component(function()
 	local function on_press(e)
 		local keyboard_target = canvas_keyboard:peek()
 		if keyboard_target then keyboard_target:focus() end
+		-- Middle-button drag always pans (space-free navigation).
+		if e.button == 1 then
+			drag = { kind = "pan", x = e.local_x or 0, y = e.local_y or 0, px = pan_x:peek(), py = pan_y:peek() }
+			return
+		end
 		local x, y = Canvas.point(e, zoom:peek(), pan_x:peek(), pan_y:peek())
 		local current_cells = snapshot:peek().cells or {}
 		local ps = positions:peek()
@@ -3280,7 +3288,15 @@ local Page = ui.component(function()
 				end,
 				on_press = on_press, on_pointer_move = on_move, on_release = on_release,
 				on_wheel = function(e)
-					if e.dy ~= 0 then zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), e.local_x or (canvas.width or 0) / 2, e.local_y or (canvas.height or 0) / 2) end
+					local cx = e.local_x or (canvas.width or 0) / 2
+					local cy = e.local_y or (canvas.height or 0) / 2
+					-- Trackpad horizontal scroll / mouse shift+wheel: pan sideways.
+					if e.dx and e.dx ~= 0 then pan_x:set(pan_x:peek() + e.dx) end
+					if e.shift and e.dy and e.dy ~= 0 then pan_x:set(pan_x:peek() - e.dy) end
+					-- Wheel / pinch (ctrl): zoom around the cursor.
+					if e.dy ~= 0 and not (e.shift and e.dy ~= 0) then
+						zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), cx, cy)
+					end
 					return true
 				end,
 			},

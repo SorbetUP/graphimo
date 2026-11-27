@@ -174,7 +174,7 @@ local ui = {
 	call_sync = function(_op, _args) return {} end,
 	shared = function(_key, def) return make_state(def) end,
 	persist = function(_key, def) return make_state(def) end,
-	presence = function(_key, def) return make_state(def) end,
+	presence = function(watch, render) return { __presence = true, watch = watch, render = render } end,
 	effect = function(fn) local ok, err = pcall(fn); if not ok then fail("ui.effect: " .. tostring(err)) end end,
 	task = function(fn)
 		local ok, err = pcall(fn)

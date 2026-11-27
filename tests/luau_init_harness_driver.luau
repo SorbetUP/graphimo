@@ -47,6 +47,14 @@ local function walk(node, visit)
 		if eval_cond(node.cond) then walk(node.child, visit) end
 		return
 	end
+	if node.__presence then
+		local ok, watched = pcall(node.watch)
+		if ok then
+			local rok, rendered = pcall(node.render, watched)
+			if rok then walk(rendered, visit) else fail("presence render: " .. tostring(rendered)) end
+		end
+		return
+	end
 	if node.__each then
 		local list = node.list
 		if type(list) == "table" and type(list.get) == "function" then list = list:get() end
@@ -59,6 +67,7 @@ local function walk(node, visit)
 		return
 	end
 	visit(node)
+	for _, child in node do if type(child) == "table" then walk(child, visit) end end
 	for _, child in node.props or {} do walk(child, visit) end
 end
 
