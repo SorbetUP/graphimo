@@ -329,6 +329,7 @@ local Page = ui.component(function()
 	-- Right rail: "inspect" (contextual) or "logs"; the rail itself appears
 	-- when a block is selected, a MetaBlock is open, or the Logs tab is active.
 	local rail_tab = ui.use_state("inspect")
+	local library_open = ui.use_state(true)
 	-- Left rail: which library category is shown (Theme.categories).
 	local library_category = ui.use_state("nodes")
 	local library_query = ui.use_state("")
@@ -3206,7 +3207,6 @@ local Page = ui.component(function()
 								Button {
 									function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
 									tone = "secondary", size = "sm", w_full = true,
-									Icon { name = "file-code", size = 13 },
 									on_click = function()
 										component_id:set(item.id)
 										callable_name:set(item.callables and item.callables[1] and item.callables[1].name or "")
@@ -3417,17 +3417,11 @@ local Page = ui.component(function()
 	return ui.column { w_full = true, h_full = true, min_h = 0, gap = 0,
 		-- Top bar: identity left, notebook state + two actions right.
 		ui.row { w_full = true, h = Theme.topbar_h, shrink = 0, px = "$space.4", items = "center", gap = "$space.3",
-			ui.div { w = 28, h = 28, shrink = 0, rounded = "$radius.md", bg = "$zeron.secondary.bg", items = "center", justify = "center",
-				ui.svg { code = Logo.svg, w = 18, h = 18, tint = "currentColor", color = "$accent" }
-			},
-			ui.column { gap = 0, shrink = 1, min_w = 0,
-				Text { "Graphimo", style = "heading", weight = 700, selectable = true },
-				Text { function()
-					local notebook_path = snapshot:get().notebook.path or ""
-					return if notebook_path ~= "" then Theme.basename(notebook_path) else "No notebook open"
-				end, style = "caption", tone = "secondary", truncate = true, selectable = true },
-			},
-			ui.div { grow = 1 },
+			IconButton { icon = if library_open:get() then "collapse-arrows" else "expand-arrows", label = if library_open:get() then "Hide library" else "Show library", tone = "quiet", size = "sm", on_click = function() library_open:set(not library_open:peek()) end },
+			Text { function()
+				local notebook_path = snapshot:get().notebook.path or ""
+				return if notebook_path ~= "" then Theme.basename(notebook_path) else "No notebook open"
+			end, style = "label", tone = "secondary", truncate = true, selectable = true, grow = 1, min_w = 0 },
 			ui.presence(function() return (snapshot:get().notebook.path or "") ~= "" end, function(connected)
 				return ui.row { items = "center", gap = "$space.1", shrink = 0,
 					ui.div { w = 8, h = 8, rounded = "$radius.md", bg = if connected then "$success" else "$text.tertiary" },
@@ -3442,7 +3436,8 @@ local Page = ui.component(function()
 		ui.div { w_full = true, h = 1, shrink = 0, bg = "$border" },
 		ui.row { grow = 1, min_h = 0, w_full = true, gap = 0,
 			-- Left rail: the library, one category at a time.
-			ui.column { w = Theme.library_w, h_full = true, shrink = 0, p = "$space.3", bg = "$zeron.secondary.bg", component_library_panel() },
+			ui.show(function() return library_open:get() end, ui.column { w = Theme.library_w, h_full = true, shrink = 0, p = "$space.3", bg = "$zeron.secondary.bg", component_library_panel() }),
+			ui.show(function() return not library_open:get() end, ui.column { w = 44, h_full = true, shrink = 0, p = "$space.2", bg = "$zeron.secondary.bg", items = "center", IconButton { icon = "expand-arrows", label = "Show library", tone = "quiet", size = "sm", on_click = function() library_open:set(true) end } }),
 			ui.div { w = 1, h_full = true, bg = "$border", shrink = 0 },
 			-- Center: the canvas is the product surface.
 			ui.column { grow = 1, min_w = 0, min_h = 0, p = "$space.3", gap = "$space.2",
@@ -3454,6 +3449,35 @@ local Page = ui.component(function()
 						Canvas.draw_edges(c, visible_positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
 						Canvas.draw_ports(c, visible_positioned_cells(), zoom:get(), pan_x:get(), pan_y:get())
 					end, pointer_events = "none" },
+					ContextMenu {
+						items = canvas_menu,
+						label = "Graphimo canvas actions",
+						absolute = true, left = 0, top = 0, right = 0, bottom = 0,
+						ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
+							ref = canvas_keyboard,
+							focusable = true,
+							on_key = on_canvas_key,
+							on_mount = function(el)
+								el:focus()
+								ui.after(150, function()
+									if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
+									else notice:set("Open or create a notebook to begin") end
+								end)
+							end,
+							on_press = on_press, on_pointer_move = on_move, on_release = on_release,
+							on_wheel = function(e)
+								local cx = e.local_x or (canvas.width or 0) / 2
+								local cy = e.local_y or (canvas.height or 0) / 2
+								if e.dx and e.dx ~= 0 then pan_x:set(pan_x:peek() + e.dx) end
+								if e.shift and e.dy and e.dy ~= 0 then pan_x:set(pan_x:peek() - e.dy) end
+								if e.dy ~= 0 and not (e.shift and e.dy ~= 0) then
+									zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), cx, cy)
+								end
+								return true
+							end,
+						},
+					},
+
 					ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
 						ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
 					},
@@ -3462,17 +3486,17 @@ local Page = ui.component(function()
 						pill({
 							ui.row { items = "center", gap = "$space.1",
 								Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
-								Button { "Open code", tone = "ghost", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
-								Button { "Delete", tone = "ghost", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
-								ui.div { w = 1, h = 16, bg = "$border", shrink = 0 },
-								Button { "Undo", tone = "ghost", size = "sm", disabled = function()
-									if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.undo_depth == 0 end
-									return #undo_stack == 0 or history_busy
-								end, on_click = undo_canvas },
-								Button { "Redo", tone = "ghost", size = "sm", disabled = function()
-									if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.redo_depth == 0 end
-									return #redo_stack == 0 or history_busy
-								end, on_click = redo_canvas },
+									IconButton { icon = "file-code", label = "Open code", tone = "quiet", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
+									IconButton { icon = "trash-bin-minimalistic", label = "Delete", tone = "quiet", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
+									ui.div { w = 1, h = 16, bg = "$border", shrink = 0 },
+									IconButton { icon = "arrow-left", label = "Undo", tone = "quiet", size = "sm", disabled = function()
+										if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.undo_depth == 0 end
+										return #undo_stack == 0 or history_busy
+									end, on_click = undo_canvas },
+									IconButton { icon = "arrow-right", label = "Redo", tone = "quiet", size = "sm", disabled = function()
+										if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.redo_depth == 0 end
+										return #redo_stack == 0 or history_busy
+									end, on_click = redo_canvas },
 							},
 						}),
 					},
@@ -3549,34 +3573,6 @@ local Page = ui.component(function()
 							},
 						}
 					),
-					ContextMenu {
-						items = canvas_menu,
-						label = "Graphimo canvas actions",
-						absolute = true, left = 0, top = 0, right = 0, bottom = 0,
-						ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
-							ref = canvas_keyboard,
-							focusable = true,
-							on_key = on_canvas_key,
-							on_mount = function(el)
-								el:focus()
-								ui.after(150, function()
-									if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
-									else notice:set("Open or create a notebook to begin") end
-								end)
-							end,
-							on_press = on_press, on_pointer_move = on_move, on_release = on_release,
-							on_wheel = function(e)
-								local cx = e.local_x or (canvas.width or 0) / 2
-								local cy = e.local_y or (canvas.height or 0) / 2
-								if e.dx and e.dx ~= 0 then pan_x:set(pan_x:peek() + e.dx) end
-								if e.shift and e.dy and e.dy ~= 0 then pan_x:set(pan_x:peek() - e.dy) end
-								if e.dy ~= 0 and not (e.shift and e.dy ~= 0) then
-									zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), cx, cy)
-								end
-								return true
-							end,
-						},
-					},
 				},
 				ui.row { w_full = true, shrink = 0, items = "center", gap = "$space.2",
 					Text { function() return notice:get() end, style = "caption", tone = "secondary", grow = 1, wrap = true, selectable = true },
