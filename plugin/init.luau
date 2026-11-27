@@ -2527,7 +2527,7 @@ local Page = ui.component(function()
 					return if instance then tostring(instance.node) .. "  ·  " .. Theme.basename(instance.component_path or "node") else "Selected block"
 				end, style = "label", grow = 1 },
 				Text { function() local _cell, instance = inspector_instance(); return instance and tostring(instance.state or "") or "" end, style = "caption", tone = "secondary" },
-				Button { "Deselect", tone = "quiet", size = "sm", on_click = function() selected:set(""); selected_many:set({}) end },
+				Button { "Deselect", tone = "ghost", size = "sm", on_click = function() selected:set(""); selected_many:set({}) end },
 			},
 			ui.show(function() return select(2, inspector_instance()) ~= nil end, ui.column { w_full = true, gap = "$space.2",
 				Text { "Inputs", style = "label" },
@@ -2577,7 +2577,7 @@ local Page = ui.component(function()
 						local _cell, instance = inspector_instance()
 						if instance and instance.disabled then return "Enable" end
 						return "Disable"
-					end, tone = "quiet", size = "sm", on_click = inspector_toggle_disabled },
+					end, tone = "ghost", size = "sm", on_click = inspector_toggle_disabled },
 				},
 			}),
 		}
@@ -3176,7 +3176,7 @@ local Page = ui.component(function()
 				ui.each(Theme.categories, function(category)
 					return Button {
 						function() return category.label end,
-						tone = function() return if library_category:get() == category.id then "primary" else "quiet" end,
+						tone = function() return if library_category:get() == category.id then "primary" else "ghost" end,
 						size = "sm",
 						on_click = function()
 							library_category:set(category.id)
@@ -3216,7 +3216,7 @@ local Page = ui.component(function()
 											Text { (callable.name or "") .. (callable.signature or ""), style = "caption", tone = "secondary", grow = 1, wrap = true },
 						Button { "Add", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end, on_click = function() add_selected_component(item, callable) end },
 						IconButton {
-							icon = "grip-horizontal", label = "Place on canvas", tone = "quiet", size = "sm",
+							icon = "grip-horizontal", label = "Place on canvas", tone = "ghost", size = "sm",
 							disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end,
 							on_click = function()
 								armed_place:set({ component_id = item.id, callable = callable.name })
@@ -3382,9 +3382,9 @@ local Page = ui.component(function()
 		return ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.2",
 			ui.row { w_full = true, items = "center", gap = "$space.1",
 				Text { function() return tostring(#problem_entries:get()) .. " problems · " .. tostring(#log_entries:get()) .. " events" end, style = "caption", tone = "secondary", grow = 1 },
-				Button { "Read marimo log", tone = "quiet", size = "sm", on_click = refresh_marimo_log },
-				Button { "Read events", tone = "quiet", size = "sm", on_click = read_service_events },
-				Button { "Export", tone = "quiet", size = "sm", on_click = export_logs },
+				Button { "Read marimo log", tone = "ghost", size = "sm", on_click = refresh_marimo_log },
+				Button { "Read events", tone = "ghost", size = "sm", on_click = read_service_events },
+				Button { "Export", tone = "ghost", size = "sm", on_click = export_logs },
 			},
 			Button {
 				function() return if show_technical:get() then "Hide technical cells" else "Show technical cells" end,
@@ -3461,14 +3461,14 @@ local Page = ui.component(function()
 						pill({
 							ui.row { items = "center", gap = "$space.1",
 								Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
-								Button { "Open code", tone = "quiet", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
-								Button { "Delete", tone = "quiet", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
+								Button { "Open code", tone = "ghost", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
+								Button { "Delete", tone = "ghost", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
 								ui.div { w = 1, h = 16, bg = "$border", shrink = 0 },
-								Button { "Undo", tone = "quiet", size = "sm", disabled = function()
+								Button { "Undo", tone = "ghost", size = "sm", disabled = function()
 									if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.undo_depth == 0 end
 									return #undo_stack == 0 or history_busy
 								end, on_click = undo_canvas },
-								Button { "Redo", tone = "quiet", size = "sm", disabled = function()
+								Button { "Redo", tone = "ghost", size = "sm", disabled = function()
 									if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.redo_depth == 0 end
 									return #redo_stack == 0 or history_busy
 								end, on_click = redo_canvas },
@@ -3480,14 +3480,14 @@ local Page = ui.component(function()
 						ui.div { absolute = true, left = 0, right = 0, top = Theme.canvas_inset, items = "center", pointer_events = "none",
 							pill({
 								ui.row { items = "center", gap = "$space.1",
-									Button { "Project", tone = "quiet", size = "sm", on_click = function()
+									Button { "Project", tone = "ghost", size = "sm", on_click = function()
 										if active_metablock:peek() ~= "" then leave_metablock() end
 										leave_to_group_depth(0)
 									end },
 									ui.each(group_scope_stack, function(item, index)
 										return Button {
 											function() return tostring(item.name or item.container_id or "Group") end,
-											tone = if index == #group_scope_stack:get() then "secondary" else "quiet",
+											tone = if index == #group_scope_stack:get() then "secondary" else "ghost",
 											size = "sm",
 											on_click = function() leave_to_group_depth(index) end,
 										}
@@ -3590,7 +3590,7 @@ local Page = ui.component(function()
 						ui.each(Theme.rail_tabs, function(tab)
 							return Button {
 								function() return tab.label end,
-								tone = function() return if rail_tab:get() == tab.id then "primary" else "quiet" end,
+								tone = function() return if rail_tab:get() == tab.id then "primary" else "ghost" end,
 								size = "sm",
 								on_click = function() rail_tab:set(tab.id) end,
 							}
