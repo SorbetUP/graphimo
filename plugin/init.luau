@@ -1667,7 +1667,7 @@ local Page = ui.component(function()
 								return ui.svg { code = Logo.roles[role] or Logo.roles.ordinary_python, w = 16, h = 16, tint = "currentColor", color = role_color(role) }
 							end),
 						},
-						ui.column { grow = 1, min_w = 0, gap = 2,
+						ui.column { grow = 1, min_w = 0, gap = "$space.1",
 							Text { function() return cell_title(cell(), id) end, style = "body", weight = 600, truncate = true, selectable = true, pointer_events = "auto" },
 							Text { function() return cell_subtitle(cell()) end, style = "caption", tone = "secondary", truncate = true, selectable = true, pointer_events = "auto" },
 						},

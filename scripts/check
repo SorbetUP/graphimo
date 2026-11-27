@@ -273,6 +273,17 @@ def main() -> int:
             if not isinstance(tool.get("name"), str) or not isinstance(tool.get("input"), dict):
                 raise SystemExit(f"zeron-plugin.json tool is malformed: {tool!r}")
         print(f"Zeron plugin manifest OK ({len(manifest['tools'])} tools).", flush=True)
+        # Optional ZGX/Zeron linter (https://…/axiom): enabled when the binary is
+        # on PATH or pointed to by $AXIOM. Exit 1 (gate failed) fails this gate.
+        axiom = os.environ.get("AXIOM") or shutil.which("axiom")
+        if axiom is not None:
+            run("Zeron plugin axiom lint (ZERON*/LUA*)", axiom, "check", "plugin")
+        else:
+            print(
+                "Axiom binary not found; skipping ZERON*/LUA* lint "
+                "(set AXIOM=/path/to/axiom to enable).",
+                flush=True,
+            )
 
     with tempfile.TemporaryDirectory(prefix="graphimo-check-") as temporary:
         if mode == "full":
