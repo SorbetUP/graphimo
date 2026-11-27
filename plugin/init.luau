@@ -3586,30 +3586,29 @@ local Page = ui.component(function()
 				},
 			},
 			ui.div { w = 1, h_full = true, bg = "$border", shrink = 0 },
-			-- Right rail: contextual inspector (selection / MetaBlock) or logs.
-			ui.show(function() return selected:get() ~= "" or active_metablock:get() ~= "" or rail_tab:get() == "logs" end,
-				ui.column { w = Theme.inspector_w, h_full = true, shrink = 0, p = "$space.3", gap = "$space.2", bg = "$zeron.secondary.bg",
-					ui.row { w_full = true, items = "center", gap = "$space.1",
-						ui.each(Theme.rail_tabs, function(tab)
-							return Button {
-								function() return tab.label end,
-								tone = function() return if rail_tab:get() == tab.id then "primary" else "ghost" end,
-								size = "sm",
-								on_click = function() rail_tab:set(tab.id) end,
-							}
-						end),
-					},
-					ui.show(function() return rail_tab:get() == "inspect" end, ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.3",
-						ui.show(function() return active_metablock:get() ~= "" end, metablock_editor()),
-						ui.show(function() return active_metablock:get() == "" and selected:get() ~= "" end, inspector_panel()),
-						ui.show(function() return active_metablock:get() == "" and selected:get() == "" end, EmptyState {
-							icon = "bot", size = "sm",
-							title = "Nothing selected",
-							body = "Click a block on the canvas to inspect, wire and run it.",
-						}),
+			-- Right rail: always visible — Inspect shows the selection (or an empty state), Logs the events.
+			ui.column { w = Theme.inspector_w, h_full = true, shrink = 0, p = "$space.3", gap = "$space.2", bg = "$zeron.secondary.bg",
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					ui.each(Theme.rail_tabs, function(tab)
+						return Button {
+							function() return tab.label end,
+							tone = function() return if rail_tab:get() == tab.id then "primary" else "ghost" end,
+							size = "sm",
+							on_click = function() rail_tab:set(tab.id) end,
+						}
+					end),
+				},
+				ui.show(function() return rail_tab:get() == "inspect" end, ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.3",
+					ui.show(function() return active_metablock:get() ~= "" end, metablock_editor()),
+					ui.show(function() return active_metablock:get() == "" and selected:get() ~= "" end, inspector_panel()),
+					ui.show(function() return active_metablock:get() == "" and selected:get() == "" end, EmptyState {
+						icon = "bot", size = "sm",
+						title = "Nothing selected",
+						body = "Click a block on the canvas to inspect, wire and run it.",
 					}),
-					ui.show(function() return rail_tab:get() == "logs" end, logs_panel()),
 				}),
+			ui.show(function() return rail_tab:get() == "logs" end, logs_panel()),
+			},
 		},
 
 		Dialog {
