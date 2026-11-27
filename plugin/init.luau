@@ -6,6 +6,7 @@ local Canvas = require("./canvas")
 local BaseBlock = require("./base_block")
 local Library = require("./component_library")
 local MetaBlockProjection = require("./metablock_projection")
+local Presets = require("./presets")
 local Text = require("@ds/text")
 local Button = require("@ds/button")
 local Glass = require("@ds/glass")
@@ -1397,11 +1398,19 @@ local Page = ui.component(function()
 	local function create_notebook()
 		ui.save_file({ title = "Create marimo notebook", name = "notebook.py", filters = { { "Python notebook", { "py" } } } }):after(function(file)
 			if not file then return end
+			-- save_file may answer with a file object ({ path = … }) or a plain path string.
+			local path = if type(file) == "table" then file.path else file
+			if type(path) ~= "string" or path == "" then
+				local message = "Could not create notebook: no file path returned"
+				notice:set(message); log(message, "error")
+				return
+			end
 			local source = "import marimo\n\n__generated_with = \"0.25.2\"\napp = marimo.App()\n\n\nif __name__ == \"__main__\":\n    app.run()\n"
+			notice:set("Creating notebook " .. path .. "…")
 			ui.write_file(file, source):after(function()
-				if type(file.path) == "string" then start_notebook(file.path) end
+				start_notebook(path)
 			end, function(err)
-				local message = "Could not create notebook: " .. tostring(err)
+				local message = "Could not write notebook: " .. tostring(err)
 				notice:set(message); log(message, "error")
 			end)
 		end, function(err)
@@ -1622,8 +1631,8 @@ local Page = ui.component(function()
 							end),
 						},
 						ui.column { grow = 1, min_w = 0, gap = 2,
-							Text { function() return cell_title(cell(), id) end, style = "body", weight = 600, truncate = true },
-							Text { function() return cell_subtitle(cell()) end, style = "caption", tone = "secondary", truncate = true },
+							Text { function() return cell_title(cell(), id) end, style = "body", weight = 600, truncate = true, selectable = true, pointer_events = "auto" },
+							Text { function() return cell_subtitle(cell()) end, style = "caption", tone = "secondary", truncate = true, selectable = true, pointer_events = "auto" },
 						},
 						ui.presence(function() local v = cell(); return (v and v.status or "") .. "|" .. tostring(v and v.graphimo_dependency_state and v.graphimo_dependency_state.state or "") end, function()
 							local label, tone = status_of(cell())
@@ -1660,14 +1669,14 @@ local Page = ui.component(function()
 				ui.show(function()
 					local v = cell()
 					return v and type(v.output) == "table" and not v.output.image_data_url and v.output.mimetype ~= "text/markdown" and (v.output.preview or "") ~= ""
-				end, ui.div { mx = "$space.3", mt = "$space.1", mb = "$space.2", w_full = true, rounded = "$radius.md", bg = "$background", p = "$space.2", shrink = 0,
+				end, ui.div { mx = "$space.3", mt = "$space.1", mb = "$space.2", w_full = true, rounded = "$radius.md", bg = "$background", p = "$space.2", shrink = 0, pointer_events = "auto",
 					Text { function()
 						local v = cell()
 						local out = v and v.output
 						if not out then return "" end
 						local stale = v.graphimo_dependency_state and v.graphimo_dependency_state.state == "blocked"
 						return (if stale then "stale · " else "") .. tostring(out.mimetype or "output") .. " · " .. tostring(out.preview or "")
-					end, style = "caption", tone = "secondary", wrap = true },
+					end, style = "caption", tone = "secondary", wrap = true, selectable = true },
 				}),
 				ui.show(function() local v = cell(); return v and v.errors and #v.errors > 0 end,
 					ui.div { mx = "$space.3", mt = "$space.1", mb = "$space.2", w_full = true, rounded = "$radius.md", bg = "$background", p = "$space.2", shrink = 0,
@@ -1910,6 +1919,8 @@ local Page = ui.component(function()
 	end
 
 	local delete_selected
+	local run_selected
+	local open_selected
 	local function move_history_for_active_scope(action, label)
 		local metablock_id = active_metablock:peek()
 		if metablock_id == "" then return false end
@@ -1943,18 +1954,118 @@ local Page = ui.component(function()
 		return move_history(redo_stack, undo_stack, false)
 	end
 
+	-- Clipboard of selected cells (sources + positions), also exported to the
+	-- system clipboard as JSON so ⌘/Ctrl+C then ⌘/Ctrl+V works anywhere.
+	local copied_records = ui.use_state(nil)
+
+	local function copy_selected()
+		local ids = selected_ids()
+		if #ids == 0 then notice:set("Select a cell first (click or ⌘A)"); return false end
+		local records = records_for_ids(ids)
+		if #records == 0 then notice:set("Nothing copyable selected"); return false end
+		copied_records:set(records)
+		local ok = pcall(ui.clipboard.write, ui.json.encode({ app = "graphimo", cells = records }))
+		notice:set(if ok then "Copied " .. #records .. " block(s) to the clipboard" else "Copied " .. #records .. " block(s) (system clipboard unavailable)")
+		return true
+	end
+
+	local function paste_cells()
+		local records = copied_records:peek()
+		if not records or #records == 0 then notice:set("Clipboard is empty — select blocks and ⌘/Ctrl+C first"); return end
+		local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+		if project_path == "" then notice:set("Open a notebook first"); return end
+		observe("Paste blocks", function()
+			return Service.execute(zeron, project_path, "notebook.restore_cells", { records = records })
+		end, function(result)
+			local new_ids = result.cell_ids or {}
+			local ps = clone_positions(positions:peek())
+			local min_x, min_y = math.huge, math.huge
+			for _, record in records do
+				min_x = math.min(min_x, record.x or 0); min_y = math.min(min_y, record.y or 0)
+			end
+			for index, cell_id in new_ids do
+				local record = records[index] or {}
+				ps[cell_id] = { x = (record.x or min_x) + 40, y = (record.y or min_y) + 40 }
+			end
+			positions:set(ps)
+			save_positions()
+			notice:set("Pasted " .. #new_ids .. " block(s)")
+			refresh_graph()
+		end, function(err)
+			notice:set("Paste failed: " .. tostring(err))
+		end)
+	end
+
+	local function duplicate_selected()
+		if copy_selected() then paste_cells() end
+	end
+
+	local function nudge_selected(dx, dy)
+		local ids = selected_ids()
+		if #ids == 0 then return end
+		local ps = clone_positions(positions:peek())
+		for _, id in ids do
+			local p = ps[id]
+			if p then p.x, p.y = (p.x or 0) + dx, (p.y or 0) + dy end
+		end
+		positions:set(ps)
+		save_positions()
+	end
+
 	local function on_canvas_key(e)
 		local key = string.lower(tostring(e.key or ""))
+		-- ⌘ on macOS, Ctrl on Windows/Linux: e.cmd / e.meta / e.ctrl.
 		local command = e.cmd == true or e.meta == true or e.ctrl == true
+		local ids = selected_ids()
 		if command and key == "z" then
 			if e.shift then redo_canvas() else undo_canvas() end
 			return true
 		elseif command and key == "y" then
 			redo_canvas()
 			return true
+		elseif command and key == "c" then
+			copy_selected()
+			return true
+		elseif command and key == "v" then
+			paste_cells()
+			return true
+		elseif command and key == "a" then
+			local all = {}
+			for _, id in visible_cell_ids:get() or {} do all[id] = true end
+			selected_many:set(all)
+			local first = ""
+			for id in all do first = id; break end
+			selected:set(first)
+			return true
+		elseif command and key == "d" then
+			duplicate_selected()
+			return true
 		elseif key == "delete" or key == "backspace" then
-			if #selected_ids() == 0 then return false end
+			if #ids == 0 then return false end
 			delete_selected()
+			return true
+		elseif key == "escape" then
+			selected_many:set({}); selected:set("")
+			inspector_open:set(false)
+			return true
+		elseif key == "r" and not command then
+			run_selected()
+			return true
+		elseif key == "o" and not command then
+			open_selected()
+			return true
+		elseif key == "arrowleft" then nudge_selected(if e.shift then -1 else -10, 0); return true
+		elseif key == "arrowright" then nudge_selected(if e.shift then 1 else 10, 0); return true
+		elseif key == "arrowup" then nudge_selected(0, if e.shift then -1 else -10); return true
+		elseif key == "arrowdown" then nudge_selected(0, if e.shift then 1 else 10); return true
+		elseif key == "+" or key == "=" then
+			zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2)
+			return true
+		elseif key == "-" then
+			zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2)
+			return true
+		elseif key == "0" and command then
+			fit()
 			return true
 		end
 		return false
@@ -2205,7 +2316,7 @@ local Page = ui.component(function()
 		return items
 	end
 
-	local function run_selected()
+	run_selected = function()
 		if active_metablock:peek() ~= "" then
 			notice:set("Select a notebook cell to run; MetaBlock execution materializes through the application API")
 			return
@@ -2225,7 +2336,7 @@ local Page = ui.component(function()
 		end)
 	end
 
-	local function open_selected()
+	open_selected = function()
 		if active_metablock:peek() ~= "" then
 			notice:set("Select a notebook cell to open in marimo")
 			return
@@ -2490,6 +2601,134 @@ local Page = ui.component(function()
 		end, function(err) notice:set("Could not add component: " .. tostring(err)) end)
 	end
 
+	local function project_service_path()
+		return project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+	end
+
+	local function block_already_present(path)
+		for _, item in components:peek() do
+			if item.id == path then return true end
+		end
+		return false
+	end
+
+	local function insert_block_file(block)
+		local path = project_service_path()
+		if path == "" then notice:set("Open a local project before adding blocks"); return end
+		if block_already_present(block.path) then
+			notice:set("Block components/" .. block.path .. " is already in this project")
+			refresh_graph()
+			return
+		end
+		observe("Add block " .. block.path, function()
+			return Service.execute(zeron, path, "component.write", { path = block.path, source = block.source })
+		end, function(result)
+			if type(result) == "table" and result.valid == false then
+				local diagnostic = result.diagnostics and result.diagnostics[1]
+				notice:set("Block " .. block.path .. " was rejected: " .. tostring(diagnostic and diagnostic.message or "invalid component"))
+			else
+				notice:set("Block added: components/" .. block.path .. " — find it under Components")
+			end
+			refresh_graph()
+		end, function(err) notice:set("Could not add block: " .. tostring(err)) end)
+	end
+
+	local function insert_pipeline(pipeline)
+		if session_id:peek() == "" then notice:set("Open a live marimo notebook before inserting a pipeline"); return end
+		if active_metablock:peek() ~= "" then notice:set("Pipelines are available in normal Python scopes"); return end
+		local path = project_service_path()
+		if path == "" then notice:set("Open a local project first"); return end
+		notice:set("Inserting pipeline “" .. pipeline.name .. "”…")
+		local steps = pipeline.steps
+		local created = {}
+		local function run_steps(index)
+			if index > #created then
+				notice:set("Pipeline “" .. pipeline.name .. "” inserted and executed — check the last block's output")
+				refresh_graph()
+				return
+			end
+			observe("Run pipeline step " .. tostring(index), function()
+				return Service.execute(zeron, path, "notebook.run", { cell_id = created[index].cell_id })
+			end, function() run_steps(index + 1) end, function(err)
+				notice:set("Pipeline step " .. tostring(index) .. " failed: " .. tostring(err))
+				refresh_graph()
+			end)
+		end
+		local function finish()
+			local next_positions = clone_positions(positions:peek())
+			local ids, records = {}, {}
+			for index, record in created do
+				local point = { x = 80 + ((index - 1) % 3) * 400, y = 140 + math.floor((index - 1) / 3) * 320 }
+				next_positions[record.cell_id] = point
+				table.insert(ids, record.cell_id)
+				table.insert(records, { source = record.source, x = point.x, y = point.y })
+			end
+			positions:set(next_positions)
+			push_history({ kind = "cells", before_records = {}, after_records = records, current_ids = ids })
+			save_positions()
+			run_steps(1)
+		end
+		local function add_step(index)
+			if index > #steps then finish(); return end
+			local step = steps[index]
+			observe("Pipeline add " .. step.callable, function()
+				return Service.execute(zeron, path, "component.add", {
+					path = pipeline.block, callable = step.callable,
+					output_name = step.callable .. "_result_" .. tostring(index), bindings = {},
+				})
+			end, function(value)
+				if type(value) ~= "table" or type(value.cell_id) ~= "string" then
+					notice:set("Pipeline step " .. step.callable .. " returned no cell")
+					return
+				end
+				local instance_id = string.match(tostring(value.source or ""), "# Graphimo instance: (%x+)")
+				local record = {
+					cell_id = value.cell_id,
+					source = value.source,
+					result_var = "g_" .. step.callable .. "_" .. tostring(instance_id or ""),
+				}
+				created[index] = record
+				local connections = step.connections or {}
+				local function connect_at(conn_index)
+					if conn_index > #connections then add_step(index + 1); return end
+					local conn = connections[conn_index]
+					local from = created[conn.from]
+					if not from then
+						notice:set("Pipeline connection references a missing step")
+						add_step(index + 1)
+						return
+					end
+					observe("Pipeline connect " .. conn.input, function()
+						return Service.execute(zeron, path, "notebook.connect", {
+							from_cell_id = from.cell_id, variable = from.result_var, output_index = conn.output_index,
+							to_cell_id = value.cell_id, input_ref = conn.input,
+						})
+					end, function() connect_at(conn_index + 1) end, function(err)
+						notice:set("Could not connect " .. conn.input .. ": " .. tostring(err))
+						connect_at(conn_index + 1)
+					end)
+				end
+				connect_at(1)
+			end, function(err)
+				notice:set("Pipeline step " .. step.callable .. " failed: " .. tostring(err))
+			end)
+		end
+		local function ensure_block()
+			if block_already_present(pipeline.block) then add_step(1); return end
+			observe("Pipeline block " .. pipeline.block, function()
+				return Service.execute(zeron, path, "component.write", { path = pipeline.block, source = pipeline.source })
+			end, function(result)
+				if type(result) == "table" and result.valid == false then
+					local diagnostic = result.diagnostics and result.diagnostics[1]
+					notice:set("Pipeline block was rejected: " .. tostring(diagnostic and diagnostic.message or "invalid component"))
+					return
+				end
+				add_step(1)
+			end, function(err) notice:set("Could not write pipeline block: " .. tostring(err)) end)
+		end
+		ensure_block()
+	end
+
 	local function component_library_panel()
 		local component_groups = ui.computed(function()
 			return Library.project(components:get(), library_query:get())
@@ -2541,6 +2780,30 @@ local Page = ui.component(function()
 		end
 		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
 			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
+				SectionTitle { "Blocks" },
+				ui.each(Presets.pipelines, function(pipeline)
+					return ui.column { w_full = true, gap = "$space.1",
+						Button {
+							icon = true,
+							"Insert · " .. pipeline.name,
+							tone = "secondary", size = "sm", w_full = true,
+							Icon { name = "bot", size = 13 },
+							disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end,
+							on_click = function() insert_pipeline(pipeline) end,
+						},
+						Text { pipeline.description, style = "caption", tone = "secondary", wrap = true },
+					}
+				end),
+				ui.each(Presets.blocks, function(block)
+					return Button {
+						icon = true,
+						"Add block · " .. block.name,
+						tone = "secondary", size = "sm", w_full = true,
+						Icon { name = "file-code", size = 13 },
+						disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+						on_click = function() insert_block_file(block) end,
+					}
+				end),
 				SectionTitle { "Controls" },
 				ui.each(controls, function(control)
 					local labels = {
@@ -2909,7 +3172,18 @@ local Page = ui.component(function()
 			ui.div { w = 1, h = 18, bg = "$border", shrink = 0 },
 			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
 			Button { function() return if inspector_open:get() then "Inspector −" else "Inspector +" end, tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function() inspector_open:set(not inspector_open:peek()) end },
-			Button { function() return if show_technical:get() then "Technical −" else "Technical +" end, tone = "secondary", size = "sm", on_click = function() show_technical:set(not show_technical:peek()); refresh_graph() end },
+			Button {
+				icon = true, tone = "secondary", size = "sm",
+				function() return if show_technical:get() then "Technical −" else "Technical +" end,
+				Icon { name = "eye-closed", size = 13 },
+				on_click = function()
+					show_technical:set(not show_technical:peek())
+					local count = 0
+					for _, cell in snapshot:peek().cells or {} do if cell_role(cell) == "library" then count += 1 end end
+					notice:set(if show_technical:peek() then "Showing " .. tostring(count) .. " technical library cell(s)" else "Hiding technical library cells")
+					if session_id:peek() ~= "" then refresh_graph() end
+				end,
+			},
 			Button { function() return if logs_open:get() then "Logs −" else "Logs +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
 		},
 		ui.show(function() return #group_scope_stack:get() > 0 and active_metablock:get() == "" end, ui.row {
@@ -3060,4 +3334,4 @@ local Page = ui.component(function()
 	}
 end)
 
-zeron.page({ id = "canvas", title = "Graphimo", icon = "git-branch", build = function() return Page {} end })
+zeron.page({ id = "canvas", title = "Graphimo", icon = "bot", build = function() return Page {} end })

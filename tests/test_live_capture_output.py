@@ -195,3 +195,53 @@ def test_live_capture_output_and_catalogue(live_kernel) -> None:
     project.gc_artifacts()
     stats_after = project.artifact_stats()["stats"]
     assert stats_after["artifacts"] == stats_before["artifacts"]
+
+
+def test_live_capture_output_multi_output_index_zero(live_kernel, tmp_path: Path) -> None:
+    """output_index=0 on a two-output node captures element 0, not the whole tuple."""
+    project, base, session = live_kernel
+
+    project.execute(
+        "component.write",
+        {
+            "path": "pair.py",
+            "source": "from graphimo import node\n\n@node\ndef pair():\n    return 0.5, [1, 2, 3]\n",
+        },
+    )
+    added = project.execute(
+        "component.add",
+        {"path": "pair.py", "callable": "pair", "output_name": "pair_result", "bindings": {}},
+    )
+    cell_id = added["cell_id"]
+    var = added["result_var"]
+    project.execute("notebook.run", {"cell_id": cell_id})
+
+    deadline = time.monotonic() + 20
+    ready = False
+    while time.monotonic() < deadline:
+        has = json.loads(
+            _kernel_execute(
+                base,
+                session,
+                f"import json\nprint('GRAPHIMO_RESULT:' + json.dumps({{'has': {var!r} in globals()}}))",
+            )
+        )
+        if has.get("has"):
+            ready = True
+            break
+        time.sleep(0.3)
+    assert ready, "multi-output instance did not produce its result variable"
+
+    from graphimo.artifacts.store import LocalArtifactStore
+
+    store = LocalArtifactStore(tmp_path / "artifact-store")
+
+    def read_capture(output_index: int) -> bytes:
+        captured = project.execute(
+            "notebook.capture_output",
+            {"result_var": var, "output_index": output_index, "cell_id": cell_id, "format": "json"},
+        )
+        return store.read_bytes(store.get(captured["artifact_id"]))
+
+    assert json.loads(read_capture(0)) == 0.5
+    assert json.loads(read_capture(1)) == [1, 2, 3]

@@ -6,9 +6,9 @@ change to `plugin/*.luau` or to `notebook.inspect`:
 
 ## Canvas
 
-- [ ] The Graphimo page shows the node-graph glyph (`git-branch`) in the
+- [ ] The Graphimo page shows the robot glyph (`bot`) in the
       sidebar and rail; the plugin tile in Settings → Plugins shows
-      `graphimo.svg`.
+      `graphimo.svg` (the robot mark).
 - [ ] The page header shows the Graphimo mark on an accent-tinted tile, the
       notebook path, and icon buttons (refresh, fit, zoom, grid).
 - [ ] Cards show a role stripe + glyph, a friendly title (node name, variable
@@ -61,3 +61,19 @@ change to `plugin/*.luau` or to `notebook.inspect`:
 
 - [ ] The artifact panel lists recent artifacts (kind, size, metadata) via
       `artifact.list`, supports pin/unpin, and snapshots via capture output.
+
+## Blocks library & keyboard
+
+- [ ] The left panel shows a "Blocks" section: pipeline presets
+      ("Insert · …") and block files ("Add block · …") from
+      `plugin/presets.luau`.
+- [ ] "Insert · LFW face recognition (sklearn)" writes
+      `components/ml/lfw_sklearn.py`, inserts the 4 node instances, wires all
+      edges with the correct `output_index`, runs them in order, and lays the
+      cards out left-to-right.
+- [ ] Keyboard on the canvas: ⌘/Ctrl+Z / ⇧⌘Z undo-redo, ⌘/Ctrl+C copy,
+      ⌘/Ctrl+V paste (offset +40px), ⌘/Ctrl+A select all, ⌘/Ctrl+D duplicate,
+      Delete/Backspace, Esc clears selection, R run, O open code, arrows nudge
+      (⇧ = 1px, else 10px), +/− zoom, ⌘0 fit.
+- [ ] Card titles, subtitles and previews are selectable text
+      (⌘A / ⌘C inside a card).

@@ -68,6 +68,15 @@ def test_run_action_guards_empty_graph_and_missing_cell() -> None:
     assert "cell_not_found" in source
 
 
+def test_capture_output_resolves_multi_output_index_zero() -> None:
+    source = notebook_action_source("capture_output", _payload())
+    # output_index == 0 must still select element 0 of a multi-output node
+    # instead of being treated as falsy and capturing the whole tuple.
+    assert "output_count" in source
+    assert "output_count > 1" in source
+    assert "value = value[output_index]" in source
+
+
 def test_connect_action_guards_empty_graph() -> None:
     source = notebook_action_source("connect", _payload())
     assert "except KeyError" in source
