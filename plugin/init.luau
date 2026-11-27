@@ -77,10 +77,26 @@ local function start_tool(request)
 	return tool_result(promise)
 end
 
+-- NB: character classes like [:/] are parsed as a (backwards, empty) range in
+-- Luau patterns, so host/port splitting uses plain string.find instead.
 local function is_local_url(value)
-	return string.match(value or "", "^https?://localhost([:/]|$)") ~= nil
-		or string.match(value or "", "^https?://127%.0%.0%.1([:/]|$)") ~= nil
-		or string.match(value or "", "^https?://%[::1%]([:/]|$)") ~= nil
+	local rest = string.match(value or "", "^https?://(.+)$")
+	if not rest then return false end
+	local cut = #rest + 1
+	for _, ch in { ":", "/", "?", "#" } do
+		local p = string.find(rest, ch, 1, true)
+		if p and p < cut then cut = p end
+	end
+	local host = string.sub(rest, 1, cut - 1)
+	return host == "localhost" or host == "127.0.0.1" or host == "[::1]"
+end
+
+local function parent_dir(path)
+	for i = #path, 1, -1 do
+		local ch = string.sub(path, i, i)
+		if ch == "/" or ch == "\\" then return string.sub(path, 1, i) end
+	end
+	return nil
 end
 
 local function error_message(value)
@@ -766,7 +782,7 @@ local Page = ui.component(function()
 	local function group_notebook_path(relative_path)
 		local root = project_root_path:peek()
 		if root == "" or type(relative_path) ~= "string" or relative_path == "" then return nil end
-		local parent = string.match(root, "^(.*[/\\])")
+		local parent = parent_dir(root)
 		if not parent then return nil end
 		local relative = string.gsub(relative_path, "\\", "/")
 		if string.sub(relative, 1, 1) == "/" or string.find(relative, "..", 1, true) then return nil end

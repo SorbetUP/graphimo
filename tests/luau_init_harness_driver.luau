@@ -78,7 +78,18 @@ local function fake_event(overrides)
 	return e
 end
 
-local function exercise_tree(tree, label)
+local function collect_buttons(tree)
+	local buttons = {}
+	walk(tree, function(node)
+		local props = node.props or {}
+		if type(props.on_click) == "function" then
+			table.insert(buttons, { label = tostring(props[1] or ""), fn = props.on_click, kind = node.__kind or "?" })
+		end
+	end)
+	return buttons
+end
+
+local function exercise_tree(tree, label, skip_buttons)
 	walk(tree, function(node)
 		local props = node.props or {}
 		local kind = node.__kind or "?"
@@ -91,7 +102,7 @@ local function exercise_tree(tree, label)
 		if type(props.on_key) == "function" then
 			on_key_handler = props.on_key
 		end
-		if type(props.on_click) == "function" then
+		if not skip_buttons and type(props.on_click) == "function" then
 			guard(label .. " on_click " .. kind, function() props.on_click() end)
 		end
 		if type(props.on_press) == "function" then
@@ -141,9 +152,25 @@ guard("open notebook flow", function()
 end)
 drain_after(200)
 
--- rebuild with populated state and exercise everything again
+-- rebuild with populated state: click the Blocks buttons first (a later
+-- MetaBlock click would hide that section mid-walk), then exercise the rest
+guard("page.build (populated) blocks first", function()
+	local buttons = collect_buttons(page.build({}))
+	for _, button in buttons do
+		if string.find(button.label, "Insert", 1, true) or string.find(button.label, "Add block", 1, true) then
+			guard("blocks on_click " .. button.label, button.fn)
+		end
+	end
+end)
+drain_after(200)
 guard("page.build (populated)", function()
-	exercise_tree(page.build({}), "full")
+	exercise_tree(page.build({}), "full", true)
+	-- still click the remaining (non-Blocks) buttons
+	for _, button in collect_buttons(page.build({})) do
+		if not (string.find(button.label, "Insert", 1, true) or string.find(button.label, "Add block", 1, true)) then
+			guard("full on_click " .. button.label, button.fn)
+		end
+	end
 end)
 drain_after(200)
 
@@ -172,6 +199,19 @@ for _, tool in registry.tools do
 end
 
 drain_after(100)
+
+-- behavioural assertions: the canned "open notebook" flow must have driven the
+-- service batch (groups/addons/…), and clicking the Blocks buttons must have
+-- inserted + wired + run a pipeline through component.add/notebook.connect.
+local run_log = table.concat(registry.run_log, "\n")
+local function ran(fragment)
+	return string.find(run_log, fragment, 1, true) ~= nil
+end
+if not ran('"operation":"batch"') then fail("service batch (Load Graphimo project) never ran — is_local_url gate broken?") end
+if not ran('"action":"component.write"') then fail("Blocks 'Add block' never wrote a component file") end
+if not ran('"action":"component.add"') then fail("pipeline insert never called component.add") end
+if not ran('"action":"notebook.connect"') then fail("pipeline insert never wired edges with notebook.connect") end
+if not ran('"action":"notebook.run"') then fail("pipeline insert never ran its steps") end
 
 if #failures > 0 then
 	print("INIT_HARNESS_FAILED (" .. #failures .. " failures)")
