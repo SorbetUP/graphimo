@@ -87,7 +87,7 @@ local function call(zeron, request, timeout)
 	local native = zeron.run("python3", { "-m", "graphimo.service.invoke" }, { stdin = encoded, timeout = timeout or 20 })
 	return wrap(native):after(function(response)
 		local stdout = if type(response) == "table" and type(response.stdout) == "string" then response.stdout else ""
-		local encoded_result = string.match(stdout, "([^\r\n]+)\s*$")
+		local encoded_result = string.match(stdout, "([^\r\n]+)%s*$")
 		local decoded_ok, decoded = pcall(ui.json.decode, encoded_result or "")
 		if not decoded_ok or type(decoded) ~= "table" then
 			local stderr = if type(response) == "table" and type(response.stderr) == "string" then response.stderr else ""

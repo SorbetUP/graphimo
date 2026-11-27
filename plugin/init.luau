@@ -95,6 +95,11 @@ local function is_group_selection_rejection(value)
 	return string.sub(message, 1, 12) == "unsafe_edit:" or string.sub(message, 1, 18) == "invalid_selection:"
 end
 
+zeron.tool({ name = "open_page", run = function(_args)
+	zeron.open({ name = "plugin", plugin = "graphimo", page = "canvas" })
+	return { ok = true, result = { opened = "canvas" } }
+end })
+
 zeron.tool({ name = "inspect", run = function(args)
 	local path = project_path_for(args or {})
 	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end
@@ -1697,14 +1702,18 @@ local Page = ui.component(function()
 	end
 
 	local function fit()
-		local ids = cell_ids()
+		local ids = visible_cell_ids:peek()
 		if #ids == 0 then zoom:set(0.85); pan_x:set(24); pan_y:set(24); return end
 		local ps = positions:peek()
+		local cells = snapshot:peek().cells or {}
 		local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
-		for _, cell in snapshot:peek().cells do
-			local p = ps[cell.id] or { x = 0, y = 0 }
-			left = math.min(left, p.x); top = math.min(top, p.y)
-			right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell))
+		for _, id in ids do
+			local cell = Canvas.node(cells, id)
+			if cell then
+				local p = ps[id] or { x = 0, y = 0 }
+				left = math.min(left, p.x); top = math.min(top, p.y)
+				right = math.max(right, p.x + Canvas.width); bottom = math.max(bottom, p.y + Canvas.height(cell))
+			end
 		end
 		local w, h = canvas.width or 800, canvas.height or 600
 		local scale = math.min((w - 64) / math.max(1, right - left), (h - 64) / math.max(1, bottom - top), 1.3)
