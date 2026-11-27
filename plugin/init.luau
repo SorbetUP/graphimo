@@ -111,14 +111,6 @@ local function is_group_selection_rejection(value)
 	return string.sub(message, 1, 12) == "unsafe_edit:" or string.sub(message, 1, 18) == "invalid_selection:"
 end
 
-zeron.tool({ name = "open_page", run = function(_args)
-	local ok, err = pcall(zeron.open, { name = "plugin", plugin = "graphimo", page = "canvas" })
-	if not ok then
-		return { ok = false, error = { code = "navigate_denied", message = "Zeron refused navigation (needs the 'navigate' permission approved): " .. tostring(err) } }
-	end
-	return { ok = true, result = { opened = "canvas" } }
-end })
-
 zeron.tool({ name = "inspect", run = function(args)
 	local path = project_path_for(args or {})
 	if path == "" then return { ok = false, error = { code = "selection_required", message = "Open a local Graphimo project first" } } end

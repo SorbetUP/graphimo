@@ -11,23 +11,13 @@
     "commands",
     "links.open",
     "files",
-    "clipboard",
-    "navigate"
+    "clipboard"
   ],
   "commands": [
     "curl",
     "python3"
   ],
   "tools": [
-    {
-      "name": "open_page",
-      "description": "Open the Graphimo canvas page in the Zeron window.",
-      "input": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    },
     {
       "name": "inspect",
       "description": "Inspect the live cells and dependencies of the selected marimo notebook.",
