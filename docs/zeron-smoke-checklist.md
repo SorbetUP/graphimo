@@ -4,6 +4,14 @@ Automated tests cover the Luau projections and the Python service; they cannot
 prove the real renderer. Run this checklist on a live Zeron host after any
 change to `plugin/*.luau` or to `notebook.inspect`:
 
+## Layout
+
+- [ ] Left rail = Blocks/Controls/MetaBlocks/Components (collapsible with
+      "Components +/−"); center = canvas; right rail = Inspector + Logs when
+      open ("Inspector +" / "Logs +" in the header).
+- [ ] Library rows have a grip button ("Place on canvas"): arm it, then click
+      the canvas to drop the block at that exact position; Esc cancels.
+
 ## Canvas
 
 - [ ] The Graphimo page shows the robot glyph (`bot`) in the

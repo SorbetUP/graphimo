@@ -333,6 +333,9 @@ local Page = ui.component(function()
 	local components = ui.use_state({})
 	local component_id = ui.use_state("")
 	local callable_name = ui.use_state("")
+	-- Armed library block: click a callable's grip, then click the canvas to
+	-- place the block at that exact position (Esc cancels).
+	local armed_place = ui.use_state(nil)
 	local selected = ui.use_state("")
 	local selected_many = ui.use_state({})
 	local group_dialog = ui.use_state(false)
@@ -1940,6 +1943,7 @@ local Page = ui.component(function()
 
 	local delete_selected
 	local run_selected
+	local add_selected_component
 	local open_selected
 	local function move_history_for_active_scope(action, label)
 		local metablock_id = active_metablock:peek()
@@ -2067,6 +2071,7 @@ local Page = ui.component(function()
 		elseif key == "escape" then
 			selected_many:set({}); selected:set("")
 			inspector_open:set(false)
+			if armed_place:peek() then armed_place:set(nil); notice:set("Placement cancelled") end
 			return true
 		elseif key == "r" and not command then
 			run_selected()
@@ -2138,6 +2143,23 @@ local Page = ui.component(function()
 				drag = { kind = "node", x = x, y = y, origins = origins, before_positions = clone_positions(ps) }
 				return
 			end
+		end
+		-- Click-to-place: an armed library block lands where the user clicks.
+		local armed = armed_place:peek()
+		if armed and session_id:peek() ~= "" and active_metablock:peek() == "" then
+			local item, callable
+			for _, candidate in components:peek() do
+				if candidate.id == armed.component_id then
+					item = candidate
+					for _, entry in candidate.callables or {} do if entry.name == armed.callable then callable = entry end end
+				end
+			end
+			if item and callable then
+				armed_place:set(nil)
+				add_selected_component(item, callable, { x = x, y = y })
+				return
+			end
+			armed_place:set(nil)
 		end
 		if not e.shift then
 			selected_many:set({})
@@ -2474,7 +2496,7 @@ local Page = ui.component(function()
 	end)
 
 	local function inspector_panel()
-		return ui.column { w_full = true, max_h = 340, overflow = "auto", gap = "$space.2", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+		return ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.2", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function()
 					local _cell, instance = inspector_instance()
@@ -2589,7 +2611,7 @@ local Page = ui.component(function()
 		end)
 	end
 
-	local function add_selected_component(item, callable)
+	add_selected_component = function(item, callable, point)
 		if not item or not callable then
 			for _, candidate in components:peek() do
 				if candidate.id == component_id:peek() then
@@ -2614,11 +2636,11 @@ local Page = ui.component(function()
 			})
 		end, function(value)
 			if type(value) == "table" and type(value.cell_id) == "string" and type(value.source) == "string" then
-				local point = default_cell_position(#cells_now() + 1)
+				local at = point or default_cell_position(#cells_now() + 1)
 				local next_positions = clone_positions(positions:peek())
-				next_positions[value.cell_id] = point
+				next_positions[value.cell_id] = at
 				positions:set(next_positions)
-				push_history({ kind = "cells", before_records = {}, after_records = { { source = value.source, x = point.x, y = point.y } }, current_ids = { value.cell_id } })
+				push_history({ kind = "cells", before_records = {}, after_records = { { source = value.source, x = at.x, y = at.y } }, current_ids = { value.cell_id } })
 				save_positions()
 			end
 			notice:set("Inserted ordinary Python into the marimo notebook")
@@ -2905,6 +2927,14 @@ local Page = ui.component(function()
 										return ui.row { w_full = true, items = "center", gap = "$space.1",
 											Text { (callable.name or "") .. (callable.signature or ""), style = "caption", tone = "secondary", grow = 1, wrap = true },
 						Button { "Add", tone = "secondary", size = "sm", disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end, on_click = function() add_selected_component(item, callable) end },
+						IconButton {
+							icon = "grip-horizontal", label = "Place on canvas", tone = "quiet", size = "sm",
+							disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end,
+							on_click = function()
+								armed_place:set({ component_id = item.id, callable = callable.name })
+								notice:set("Click on the canvas to place “" .. callable.name .. "” there (Esc to cancel)")
+							end,
+						},
 										}
 									end),
 								}),
@@ -3255,7 +3285,7 @@ local Page = ui.component(function()
 				ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, items = "center", justify = "center", pointer_events = "none",
 					ui.div { pointer_events = "auto", rounded = "$radius.lg", p = "$space.3",
 						EmptyState {
-							icon = "git-branch", fill = false,
+							icon = "bot", fill = false,
 							title = "Open a notebook to see its graph",
 							body = "Graphimo draws your live marimo notebook as a node canvas. @node functions in components/ become draggable blocks.",
 							action = { label = "Open notebook", icon = "folder", on_click = choose_notebook },
@@ -3295,8 +3325,12 @@ local Page = ui.component(function()
 			},
 			},
 			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
+			},
+			-- Right rail: contextual inspector and logs sit beside the canvas,
+			-- not under it.
+			ui.show(function() return inspector_open:get() or logs_open:get() end, ui.column { w = 300, h_full = true, shrink = 0, gap = "$space.3",
 			ui.show(function() return inspector_open:get() end, inspector_panel()),
-			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 240, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 260, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
 				Button { "Read marimo log", tone = "secondary", size = "sm", on_click = refresh_marimo_log },
@@ -3316,8 +3350,8 @@ local Page = ui.component(function()
 				return if #view == 0 then "No log events yet" else table.concat(view, "\n")
 			end, style = "caption", tone = "secondary", wrap = true },
 			}),
-			},
-			},
+			}),
+		},
 		Dialog {
 			open = group_dialog,
 			title = "Create Group Block",
