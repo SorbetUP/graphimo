@@ -662,7 +662,14 @@ local Page = ui.component(function()
 				groups:set({}); metablocks:set({})
 				apply_layout({})
 			end
-		end, function(err) notice:set("Could not inspect marimo: " .. tostring(err)) end)
+		end, function(err)
+			if (snapshot:peek().notebook.path or "") == "" then
+				notice:set("Open or create a notebook to begin")
+				log("Inspect marimo graph failed: " .. tostring(err), "error")
+			else
+				notice:set("Could not inspect marimo: " .. tostring(err))
+			end
+		end)
 	end
 
 	local function save_positions()
@@ -3558,7 +3565,6 @@ local Page = ui.component(function()
 											return Button {
 												function() return tostring(block.name or "Template") end,
 												tone = "secondary", size = "sm", w_full = true,
-												Icon { name = "file-code", size = 13 },
 												on_click = function()
 													if (snapshot:peek().notebook.path or "") == "" then
 														notice:set("Create or open a notebook first")
