@@ -116,6 +116,8 @@ local function exercise_tree(tree, label, skip_buttons)
 		end
 		if type(props.on_press) == "function" then
 			guard(label .. " on_press " .. kind, function() props.on_press(fake_event()) end)
+			guard(label .. " on_press middle " .. kind, function() props.on_press(fake_event({ button = 1 })) end)
+			guard(label .. " on_press shift " .. kind, function() props.on_press(fake_event({ shift = true })) end)
 		end
 		if type(props.on_release) == "function" then
 			guard(label .. " on_release " .. kind, function() props.on_release(fake_event()) end)
@@ -124,7 +126,10 @@ local function exercise_tree(tree, label, skip_buttons)
 			guard(label .. " on_move " .. kind, function() props.on_pointer_move(fake_event({ dx = 3, dy = 4 })) end)
 		end
 		if type(props.on_wheel) == "function" then
-			guard(label .. " on_wheel " .. kind, function() props.on_wheel(fake_event({ dy = -120 })) end)
+			guard(label .. " on_wheel dy " .. kind, function() props.on_wheel(fake_event({ dy = -120 })) end)
+			guard(label .. " on_wheel pinch " .. kind, function() props.on_wheel(fake_event({ dy = -60, ctrl = true })) end)
+			guard(label .. " on_wheel dx " .. kind, function() props.on_wheel(fake_event({ dx = 30, dy = 0 })) end)
+			guard(label .. " on_wheel shift " .. kind, function() props.on_wheel(fake_event({ dy = 40, shift = true })) end)
 		end
 		if type(props.on_change) == "function" then
 			guard(label .. " on_change " .. kind, function() props.on_change("test") end)
