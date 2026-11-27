@@ -29,6 +29,7 @@ PLUGIN_MODULES = [
     "metablock_projection",
     "presets",
     "logo",
+    "theme",
     "tool_adapter",
 ]
 DS_COMPONENTS = [

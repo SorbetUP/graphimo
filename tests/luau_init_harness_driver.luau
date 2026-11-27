@@ -166,11 +166,19 @@ guard("open notebook flow", function()
 end)
 drain_after(200)
 
--- rebuild with populated state: click the Blocks buttons first (a later
--- MetaBlock click would hide that section mid-walk), then exercise the rest
+-- Populated phase on ONE tree, so state mutations (library category tabs,
+-- selection opening the inspector rail) are visible to later walks of the
+-- same tree. Presets must be active before its Insert/Add block buttons are
+-- collected.
+local tree = page.build({})
+guard("page.build (populated) presets tab", function()
+	for _, button in collect_buttons(tree) do
+		if button.label == "Presets" then guard("tab presets on_click", button.fn) end
+	end
+end)
+drain_after(50)
 guard("page.build (populated) blocks first", function()
-	local buttons = collect_buttons(page.build({}))
-	for _, button in buttons do
+	for _, button in collect_buttons(tree) do
 		if string.find(button.label, "Insert", 1, true) or string.find(button.label, "Add block", 1, true) then
 			guard("blocks on_click " .. button.label, button.fn)
 		end
@@ -178,14 +186,28 @@ guard("page.build (populated) blocks first", function()
 end)
 drain_after(200)
 guard("page.build (populated)", function()
-	exercise_tree(page.build({}), "full", true)
+	exercise_tree(tree, "full", true)
 	-- still click the remaining (non-Blocks) buttons
-	for _, button in collect_buttons(page.build({})) do
+	for _, button in collect_buttons(tree) do
 		if not (string.find(button.label, "Insert", 1, true) or string.find(button.label, "Add block", 1, true)) then
 			guard("full on_click " .. button.label, button.fn)
 		end
 	end
 end)
+drain_after(200)
+-- if a library "Add" click opened the inspector rail, switch it to the Logs
+-- tab and cover the logs panel handlers too
+for _, button in collect_buttons(tree) do
+	if button.label == "Logs" then guard("tab logs on_click", button.fn) end
+end
+for _, button in collect_buttons(tree) do
+	local label = button.label
+	if string.find(label, "Read marimo log", 1, true) or string.find(label, "Read events", 1, true)
+		or string.find(label, "Export", 1, true) or string.find(label, "technical cells", 1, true) then
+		guard("logs on_click " .. label, button.fn)
+	end
+end
+exercise_tree(tree, "logs", true)
 drain_after(200)
 
 -- keyboard shortcuts on the canvas key handler

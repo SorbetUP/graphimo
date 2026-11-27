@@ -21,6 +21,7 @@ local SectionTitle = require("@ds/section_title")
 local IconButton = require("@ds/icon_button").IconButton
 local Icon = require("@ds/icon")
 local Logo = require("./logo")
+local Theme = require("./theme")
 
 local active_notebook = zeron.store("active-notebook-v1", { url = "", session_id = "", path = "", log_path = "" })
 local saved_logs = zeron.store("logs-v1", {})
@@ -325,9 +326,14 @@ local Page = ui.component(function()
 	local problem_entries = ui.use_state(saved_problems:peek() or {})
 	local server_log_text = ui.use_state("")
 	local problem_log_text = ui.use_state("")
-	local logs_open = ui.use_state(false)
-	local components_open = ui.use_state(true)
+	-- Right rail: "inspect" (contextual) or "logs"; the rail itself appears
+	-- when a block is selected, a MetaBlock is open, or the Logs tab is active.
+	local rail_tab = ui.use_state("inspect")
+	-- Left rail: which library category is shown (Theme.categories).
+	local library_category = ui.use_state("nodes")
 	local library_query = ui.use_state("")
+	local artifacts = ui.use_state({})
+	local runs = ui.use_state({})
 	local expanded_component = ui.use_state("")
 	local positions = ui.use_state({})
 	local components = ui.use_state({})
@@ -347,7 +353,6 @@ local Page = ui.component(function()
 	local grid = ui.use_state(true)
 	local output_counter = ui.use_state(1)
 	local notice = ui.use_state("")
-	local inspector_open = ui.use_state(false)
 	local show_technical = ui.use_state(false)
 	local literal_target = ui.use_state("")
 	local literal_value = ui.use_state("")
@@ -1515,14 +1520,29 @@ local Page = ui.component(function()
 	end
 
 	local function toggle_logs()
-		local next_value = not logs_open:peek()
-		logs_open:set(next_value)
+		local next_value = rail_tab:peek() ~= "logs"
+		rail_tab:set(if next_value then "logs" else "inspect")
 		-- Event polling runs while a notebook is open (started in refresh_graph),
 		-- so external CLI/agent mutations refresh the canvas even with logs closed.
 		if next_value and not service_polling:peek() and poll_service_events ~= nil then
 			service_polling:set(true)
 			poll_service_events()
 		end
+	end
+
+	local function refresh_artifacts()
+		local path = project_root_path:peek() ~= "" and project_root_path:peek() or (snapshot:peek().notebook.path or "")
+		if path == "" then return end
+		observe("List artifacts", function()
+			return Service.execute(zeron, path, "artifact.list", { limit = 64 })
+		end, function(value)
+			artifacts:set(if type(value) == "table" and type(value.items) == "table" then value.items else {})
+		end, function() end)
+		observe("List runs", function()
+			return Service.execute(zeron, path, "run.list", { limit = 64 })
+		end, function(value)
+			runs:set(if type(value) == "table" and type(value.items) == "table" then value.items else {})
+		end, function() end)
 	end
 
 	local function export_logs()
@@ -1572,9 +1592,7 @@ local Page = ui.component(function()
 		local role = cell_role(value)
 		if role == "node_instance" and type(value.graphimo_instance) == "table" then
 			local instance = value.graphimo_instance
-			local component = instance.component_path
-			local short = tostring(instance.instance_id or ""):sub(1, 8)
-			return truncate(tostring(component or "node") .. " · " .. short, 34)
+			return truncate(Theme.basename(instance.component_path or "node"), 34)
 		end
 		if role == "library" then
 			local marker = string.match(type(value.source) == "string" and value.source or "", "# Graphimo node library: ([^\n]*)")
@@ -1632,7 +1650,7 @@ local Page = ui.component(function()
 			pointer_events = "none",
 			overflow = "hidden",
 		}, "island")
-		style.border_color = function() return if selected_many:get()[id] then "$accent" else "$border.strong" end
+		style.border_color = function() return if selected_many:get()[id] then "$accent" else "$border" end
 		style.bg = "$zeron.secondary.bg"
 		table.insert(style, ui.row { w_full = true, h_full = true, gap = 0,
 			-- Role stripe on the card's left edge.
@@ -1675,7 +1693,13 @@ local Page = ui.component(function()
 									tone = function() return if value and row.input and Canvas.input_bound(value, row.input) then "primary" else "tertiary" end,
 									truncate = true, grow = 1,
 								},
-								Text { function() return if row.input then Canvas.input_hint(value, row.input) else "" end, style = "caption", tone = "tertiary", truncate = true },
+								Text { function()
+									if not row.input then return "" end
+									local hint = Canvas.input_hint(value, row.input)
+									-- Hollow-dot states are already visible as ports; keep the row clean.
+									if hint == "unbound" or hint == "default" then return "" end
+									return hint
+								end, style = "caption", tone = "tertiary", truncate = true },
 							},
 							Text { function() return if row.output then Canvas.output_label(value, row.output) else "" end, style = "caption", mono = true, tone = "secondary", truncate = true },
 						}
@@ -1736,6 +1760,7 @@ local Page = ui.component(function()
 	end
 
 	local function select_cell(id, additive)
+		rail_tab:set("inspect")
 		if additive then
 			local many = table.clone(selected_many:peek())
 			many[id] = if many[id] then nil else true
@@ -2070,7 +2095,6 @@ local Page = ui.component(function()
 			return true
 		elseif key == "escape" then
 			selected_many:set({}); selected:set("")
-			inspector_open:set(false)
 			if armed_place:peek() then armed_place:set(nil); notice:set("Placement cancelled") end
 			return true
 		elseif key == "r" and not command then
@@ -2352,7 +2376,7 @@ local Page = ui.component(function()
 		local items = {}
 		local single = if #ids == 1 then Canvas.node(snapshot:peek().cells or {}, ids[1]) else nil
 		if single and type(single.graphimo_instance) == "table" then
-			table.insert(items, { label = "Inspect node…", on_select = function() inspector_open:set(true) end })
+			table.insert(items, { label = "Inspect node…", on_select = function() rail_tab:set("inspect") end })
 		end
 		if #ids >= 2 then
 			table.insert(items, { label = "Create Group Block…", on_select = function()
@@ -2496,14 +2520,14 @@ local Page = ui.component(function()
 	end)
 
 	local function inspector_panel()
-		return ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.2", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+		return ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.2",
 			ui.row { w_full = true, items = "center", gap = "$space.2",
 				Text { function()
 					local _cell, instance = inspector_instance()
-					return if instance then tostring(instance.node) .. "  ·  " .. tostring(instance.component_id or "legacy instance") else "Select a Graphimo node to inspect it"
+					return if instance then tostring(instance.node) .. "  ·  " .. Theme.basename(instance.component_path or "node") else "Selected block"
 				end, style = "label", grow = 1 },
 				Text { function() local _cell, instance = inspector_instance(); return instance and tostring(instance.state or "") or "" end, style = "caption", tone = "secondary" },
-				Button { "Close", tone = "secondary", size = "sm", on_click = function() inspector_open:set(false) end },
+				Button { "Deselect", tone = "quiet", size = "sm", on_click = function() selected:set(""); selected_many:set({}) end },
 			},
 			ui.show(function() return select(2, inspector_instance()) ~= nil end, ui.column { w_full = true, gap = "$space.2",
 				Text { "Inputs", style = "label" },
@@ -2547,11 +2571,13 @@ local Page = ui.component(function()
 				end),
 				ui.row { w_full = true, items = "center", gap = "$space.1",
 					Button { "Run", size = "sm", on_click = run_selected },
+					Button { "Open code", tone = "secondary", size = "sm", on_click = open_selected },
+					Button { "Delete", tone = "secondary", size = "sm", on_click = delete_selected },
 					Button { function()
 						local _cell, instance = inspector_instance()
 						if instance and instance.disabled then return "Enable" end
 						return "Disable"
-					end, tone = "secondary", size = "sm", on_click = inspector_toggle_disabled },
+					end, tone = "quiet", size = "sm", on_click = inspector_toggle_disabled },
 				},
 			}),
 		}
@@ -2776,10 +2802,7 @@ local Page = ui.component(function()
 		ensure_block()
 	end
 
-	local function component_library_panel()
-		local component_groups = ui.computed(function()
-			return Library.project(components:get(), library_query:get())
-		end)
+	local function metablock_editor()
 		local model_methods = ui.computed(function()
 			local view = metablock_projection:get()
 			return view and view.method_tabs or {}
@@ -2825,82 +2848,347 @@ local Page = ui.component(function()
 			local step = if event.step ~= nil then " · step " .. tostring(event.step) else ""
 			return string.sub(tostring(event.kind or "event") .. " · " .. tostring(target) .. step .. "\n" .. tostring(payload), 1, 1800)
 		end
-		return ui.column { w = 250, h_full = true, shrink = 0, gap = "$space.2", p = "$space.2", rounded = "$radius.lg", bg = "$zeron.secondary.bg", overflow = "auto",
-			ui.show(function() return active_metablock:get() == "" end, ui.column { w_full = true, gap = "$space.2",
-				SectionTitle { "Blocks" },
-				ui.each(Presets.pipelines, function(pipeline)
-					return ui.column { w_full = true, gap = "$space.1",
-						Button {
-							icon = true,
-							"Insert · " .. pipeline.name,
-							tone = "secondary", size = "sm", w_full = true,
-							Icon { name = "bot", size = 13 },
-							disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end,
-							on_click = function() insert_pipeline(pipeline) end,
-						},
-						Text { pipeline.description, style = "caption", tone = "secondary", wrap = true },
-					}
-				end),
-				ui.each(Presets.blocks, function(block)
-					return Button {
-						icon = true,
-						"Add block · " .. block.name,
-						tone = "secondary", size = "sm", w_full = true,
-						Icon { name = "file-code", size = 13 },
-						disabled = function() return (snapshot:get().notebook.path or "") == "" end,
-						on_click = function() insert_block_file(block) end,
-					}
-				end),
-				SectionTitle { "Controls" },
-				ui.each(controls, function(control)
-					local labels = {
-						slider = "Slider", range_slider = "Range Slider", number = "Number Input",
-						dropdown = "Select", checkbox = "Checkbox", text = "Text Input", run_button = "Run Trigger",
-					}
-					return Button {
-						labels[control.kind] or control.kind,
-						tone = "secondary", size = "sm", w_full = true,
-						disabled = function() return session_id:get() == "" end,
-						on_click = function() add_control(control.kind) end,
-					}
-				end),
-				SectionTitle { "MetaBlocks" },
-				ui.show(function() return #addon_dialects:get() == 0 end, Text { "No MetaBlock addon installed (addon.list)", style = "caption", tone = "secondary" }),
-				ui.each(addon_dialects, function(dialect)
-					return Button {
-						"Create " .. dialect.label,
-						tone = "secondary", size = "sm", w_full = true,
-						disabled = function() return (snapshot:get().notebook.path or "") == "" end,
-						on_click = function() create_metablock(dialect.dialect_id, dialect.label) end,
-					}
-				end),
+		return ui.column { w_full = true, gap = "$space.2", min_h = 0, overflow = "auto",
+			Button { "← Project canvas", tone = "secondary", size = "sm", w_full = true, on_click = leave_metablock },
+			Text { function()
+				local view = metablock_projection:get()
+				return if view then tostring(view.name or "MetaBlock") .. " · " .. active_metablock_scope:get() else "MetaBlock"
+			end, style = "heading", wrap = true },
+			Text { function()
+				local view = metablock_projection:get()
+				local selector = view and view.runtime_selector
+				local items = selector and selector.items or {}
+				if #items > 0 then
+					return "Runtime visibility: " .. tostring(#items) .. " active runtime(s) in the Graphimo service process"
+				end
+				return "Runtime visibility: none in the Graphimo service. A model running in the separate marimo kernel is not visible here yet."
+			end, style = "caption", tone = "secondary", wrap = true },
+			Button {
+				"Insert generated definition",
+				tone = "primary", size = "sm", w_full = true,
+				disabled = function() return session_id:get() == "" or (not is_local_url(url:get())) end,
+				on_click = materialize_metablock,
+			},
+			ui.show(function()
+				local view = metablock_projection:get()
+				return view ~= nil and type(view.ui) == "table"
+			end, render_addon_ui_panels()),
+			ui.row { w_full = true, items = "center", gap = "$space.1",
 				Button {
-					"Import MetaBlock state",
-					tone = "secondary", size = "sm", w_full = true,
-					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
-					on_click = import_metablock_state,
+					function() return if generated_source_open:get() then "Hide generated Python" else "Inspect generated Python" end,
+					tone = "secondary", size = "sm", grow = 1,
+					disabled = function() return metablock_projection:get() == nil end,
+					on_click = function() generated_source_open:set(not generated_source_open:peek()) end,
 				},
-				ui.show(function() return #metablocks:get() == 0 end, Text { "No saved MetaBlocks", style = "caption", tone = "secondary" }),
-				ui.each(metablocks, function(item)
+				Button { "Copy", tone = "secondary", size = "sm", disabled = function()
+					local view = metablock_projection:get()
+					return not view or type(view.generated_source) ~= "string" or view.generated_source == ""
+				end, on_click = copy_generated_source },
+			},
+			ui.show(generated_source_open, ui.column { w_full = true, max_h = 360, min_h = 0, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.primary.bg",
+				Text { function()
+					local view = metablock_projection:get()
+					return "Generated Python · revision " .. string.sub(tostring(view and view.graph_revision or "unknown"), 1, 12)
+				end, style = "caption", tone = "secondary" },
+				ui.show(function()
+					local view = metablock_projection:get()
+					return not view or type(view.generated_source) ~= "string" or view.generated_source == ""
+				end, Text { "Source is unavailable until the MetaBlock graph validates.", style = "caption", tone = "secondary", wrap = true }),
+				ui.show(function()
+					local view = metablock_projection:get()
+					return view ~= nil and type(view.generated_source) == "string" and view.generated_source ~= ""
+				end, Markdown { text = function()
+					local view = metablock_projection:get()
+					local source = view and view.generated_source
+					if type(source) ~= "string" or source == "" then return "" end
+					return "```python\n" .. source .. (string.sub(source, -1) == "\n" and "" or "\n") .. "```"
+				end }),
+			}),
+			ui.show(function()
+				local view = metablock_projection:get()
+				return view ~= nil and active_metablock_scope:get() == "root" and selected:get() == ""
+			end, ui.column { w_full = true, gap = "$space.1",
+				Text { "Model parameters", style = "heading" },
+				Button {
+					function() local view = metablock_projection:get(); return "Rename · " .. tostring(view and view.name or "MetaBlock") end,
+					tone = "secondary", size = "sm", w_full = true,
+					on_click = function()
+						local view = metablock_projection:peek()
+					open_metablock_parameter_editor({ external = true, id = "name", name = "Name", type = "str", value = view and view.name or "MetaBlock" })
+					end,
+				},
+				ui.each(model_parameters, function(parameter)
 					return Button {
-						(item.dialect_id or "MetaBlock") .. " · " .. item.metablock_id,
+						"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.default),
 						tone = "secondary", size = "sm", w_full = true,
-						on_click = function() open_metablock(item.metablock_id, "root") end,
+						on_click = function()
+							open_metablock_parameter_editor({
+								external = true, id = parameter.id, name = parameter.name,
+								type = parameter.type, value = parameter.default,
+							})
+						end,
 					}
 				end),
-				ui.show(function() return #groups:get() > 0 end, ui.column { w_full = true, gap = "$space.1",
-					Text { "Reusable Groups", style = "heading" },
-					ui.each(groups, function(group)
-						return Button {
-							"Open · " .. tostring(group.name or group.group_id),
-							tone = "secondary", size = "sm", w_full = true,
-							disabled = function() return session_id:get() == "" end,
-							on_click = function() open_group(group) end,
-						}
-					end),
+			}),
+			ui.show(function() return selected_metablock_element() ~= nil end, ui.column { w_full = true, gap = "$space.1",
+				Text { function()
+					local element = selected_metablock_element()
+					return element and (element.name or element.id) or "Selection"
+				end, style = "heading", wrap = true },
+				Text { function()
+					local element = selected_metablock_element()
+					return element and tostring(element.kind or "component") or ""
+				end, style = "caption", tone = "secondary" },
+				Button {
+					function() local element = selected_metablock_element(); return "Rename · " .. tostring(element and (element.name or element.id) or "element") end,
+					tone = "secondary", size = "sm", w_full = true,
+					on_click = function()
+						local element = selected_metablock_element()
+					open_metablock_parameter_editor({ rename_element = true, element_id = element.id, name = "Element name", type = "str", value = element.name })
+					end,
+				},
+				Text { function()
+					local element = selected_metablock_element()
+					local shape = element and element.output_shape
+					if type(shape) ~= "table" then return "Output shape unresolved" end
+					local dimensions = {}
+					for _, size in shape.shape or {} do table.insert(dimensions, tostring(size)) end
+					return (shape.dtype or "?") .. " [" .. table.concat(dimensions, " × ") .. "]"
+				end, style = "caption", tone = "secondary", wrap = true },
+				ui.each(selected_element_parameters, function(parameter)
+					return Button {
+						"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.value),
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function()
+							open_metablock_parameter_editor({
+								element_id = selected:peek(), name = parameter.name,
+								type = parameter.type, value = parameter.value,
+								choices = parameter.choices, minimum = parameter.minimum,
+								maximum = parameter.maximum,
+							})
+						end,
+					}
+				end),
+				ui.show(function()
+					local element = selected_metablock_element()
+					return element ~= nil and element.kind == "group_instance"
+				end, Button {
+					function()
+						local element = selected_metablock_element()
+						return "Edit repetitions · " .. tostring(element and element["repeat"] or 1)
+				end,
+					tone = "secondary", size = "sm", w_full = true,
+					on_click = function()
+						local element = selected_metablock_element()
+					open_metablock_parameter_editor({
+							group_repeat = true, element_id = element.id, name = "repetitions",
+							type = "int", value = element["repeat"],
+						})
+					end,
 				}),
-				SectionTitle { "Components" },
-				SearchField { value = library_query, placeholder = "Search components", name = "Search components", size = "sm", quiet = true, w_full = true },
+			}),
+			ui.each(model_methods, function(method)
+				return Button {
+					method.name, tone = if active_metablock_scope:get() == method.name then "primary" else "secondary",
+					size = "sm", w_full = true,
+					on_click = function() active_metablock_scope:set(method.name); selected:set(""); refresh_metablock() end,
+				}
+			end),
+			ui.each(model_groups, function(group)
+				return Button {
+					"Group · " .. group.name,
+					tone = if active_metablock_scope:get() == "group:" .. group.id then "primary" else "secondary",
+					size = "sm", w_full = true,
+					on_click = function() active_metablock_scope:set("group:" .. group.id); selected:set(""); refresh_metablock() end,
+				}
+			end),
+			Text { "Components", style = "heading" },
+			ui.each(model_palette, function(item)
+				return Button {
+					item.kind, tone = "secondary", size = "sm", w_full = true,
+					on_click = function()
+						output_counter:set(output_counter:peek() + 1)
+						apply_metablock_intent({
+							type = "add_element", kind = item.kind,
+							id = item.kind .. "_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek()),
+						})
+					end,
+				}
+			end),
+			Button {
+				function() return if checkpoint_panel_open:get() then "Checkpoints −" else "Checkpoints +" end,
+				tone = "secondary", size = "sm", w_full = true,
+				on_click = function() checkpoint_panel_open:set(not checkpoint_panel_open:peek()) end,
+			},
+			ui.show(checkpoint_panel_open, ui.column { w_full = true, gap = "$space.1",
+				Text { "Inspect checkpoint metadata or preview exact-shape migration. Nothing is loaded or changed.", style = "caption", tone = "secondary", wrap = true },
+				TextField { value = checkpoint_artifact_id, label = "Artifact ID", placeholder = "Graphimo Artifact ID", w_full = true },
+				Button { "Inspect checkpoint", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = inspect_checkpoint },
+				ui.show(function() return checkpoint_details:get() ~= nil end, ui.column { w_full = true, gap = "$space.1",
+					Text { function()
+						local details = checkpoint_details:get()
+						return "Artifact " .. tostring(details and details.artifact_id or "") .. " · " .. tostring(details and details.kind or "checkpoint")
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						return "Model: " .. tostring(details and details.model_name or "unknown") .. " · MetaBlock: " .. tostring(details and details.metablock_id or "unknown")
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						return "Graph revision: " .. tostring(details and details.graph_revision or "unknown")
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						return "Materialization: " .. tostring(details and details.materialization_key or "unknown")
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						return "checkpoint " .. tostring(details and details.pytorch_version or "unknown") .. " · addon " .. tostring(details and details.addon_version or "unknown")
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						local optimizer = details and details.optimizer_state_present and "present" or "absent"
+						local scheduler = details and details.scheduler_state_present and "present" or "absent"
+						return "Optimizer state: " .. optimizer .. " · scheduler state: " .. scheduler
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						return format_checkpoint_metadata(details and details.metadata)
+					end, style = "caption", tone = "secondary", wrap = true },
+					Text { function()
+						local details = checkpoint_details:get()
+						local current = metablock_projection:get()
+						return if details and current and details.graph_revision == current.graph_revision then "Compatibility: same graph revision" else "Compatibility: migration preview may be required"
+					end, style = "caption", tone = "secondary", wrap = true },
+					ui.show(function()
+						local details = checkpoint_details:get()
+						local current = metablock_projection:get()
+						return details ~= nil and current ~= nil and details.graph_revision ~= current.graph_revision
+					end, Button { "Preview exact-shape migration", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = preview_checkpoint_migration }),
+					ui.show(function()
+						local details = checkpoint_details:get()
+						local current = metablock_projection:get()
+						return details ~= nil and current ~= nil and type(details.migration_preview) == "table" and details.migration_preview_revision == current.graph_revision
+					end, ui.column { w_full = true, gap = "$space.1",
+						Text { function()
+							local details = checkpoint_details:get()
+							local report = details and details.migration_preview and details.migration_preview.report or nil
+							return format_checkpoint_migration_report(report)
+						end, style = "caption", tone = "secondary", wrap = true },
+						Button { "Apply migration (strict off)", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = function() restore_checkpoint(true) end },
+					}),
+					ui.show(function() return checkpoint_details:get() ~= nil end, ui.column { w_full = true, gap = "$space.1",
+						Button { "Restore checkpoint into live runtime", tone = "primary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = function() restore_checkpoint(false) end },
+						Text { function()
+							local details = checkpoint_details:get()
+							local restore = details and details.last_restore or nil
+							if type(restore) ~= "table" then return "Not restored yet" end
+							return "Last restore: runtime " .. tostring(restore.runtime_instance_id or "?") .. " · migrated " .. tostring(restore.migrated or false) .. " · revision match " .. tostring(restore.revision_match or false)
+						end, style = "caption", tone = "secondary", wrap = true },
+					}),
+					ui.show(function()
+						local details = checkpoint_details:get()
+						local current = metablock_projection:get()
+						return details ~= nil and current ~= nil and type(details.migration_preview) == "table" and details.migration_preview_revision ~= current.graph_revision
+					end, Text { "The model graph changed after this preview. Run the migration preview again before relying on it.", style = "caption", tone = "secondary", wrap = true }),
+				}),
+			}),
+			ui.row { w_full = true, items = "center", gap = "$space.1",
+				Button {
+					function() return if metablock_events_open:get() then "Runtime events −" else "Runtime events +" end,
+					tone = "secondary", size = "sm", grow = 1,
+					on_click = function() metablock_events_open:set(not metablock_events_open:peek()) end,
+				},
+				Button { "Read", tone = "secondary", size = "sm", on_click = read_metablock_events },
+			},
+			ui.show(metablock_events_open, ui.column { w_full = true, gap = "$space.1",
+				Text { "Events delivered to the Graphimo service. Events in another marimo process are not bridged yet.", style = "caption", tone = "secondary", wrap = true },
+				ui.show(function() return #metablock_event_entries:get() == 0 end, Text { "No events loaded", style = "caption", tone = "secondary" }),
+				ui.each(metablock_event_entries, function(event)
+					return Text { display_meta_event(event), style = "caption", tone = "secondary", wrap = true }
+				end),
+			}),
+		}
+	end
+
+	local function component_library_panel()
+		local component_groups = ui.computed(function()
+			return Library.project(components:get(), library_query:get())
+		end)
+		local function matches_query(text)
+			local query = string.lower(string.match(library_query:peek() or "", "^%s*(.-)%s*$") or "")
+			if query == "" then return true end
+			return string.find(string.lower(tostring(text or "")), query, 1, true) ~= nil
+		end
+
+		local controls_filtered = ui.computed(function()
+			local result = {}
+			for _, control in (controls:get() or {}) do
+				if matches_query(tostring(control.kind or "")) then table.insert(result, control) end
+			end
+			return result
+		end)
+		local dialects_filtered = ui.computed(function()
+			local result = {}
+			for _, dialect in (addon_dialects:get() or {}) do
+				if matches_query(tostring(dialect.label or "") .. " " .. tostring(dialect.dialect_id or "")) then table.insert(result, dialect) end
+			end
+			return result
+		end)
+		local saved_filtered = ui.computed(function()
+			local result = {}
+			for _, item in (metablocks:get() or {}) do
+				if matches_query(tostring(item.metablock_id or "") .. " " .. tostring(item.dialect_id or "")) then table.insert(result, item) end
+			end
+			return result
+		end)
+		local pipelines_filtered = ui.computed(function()
+			local result = {}
+			for _, pipeline in (Presets.pipelines or {}) do
+				if matches_query(tostring(pipeline.name or "") .. " " .. tostring(pipeline.description or "")) then table.insert(result, pipeline) end
+			end
+			return result
+		end)
+		local blocks_filtered = ui.computed(function()
+			local result = {}
+			for _, block in (Presets.blocks or {}) do
+				if matches_query(tostring(block.name or "") .. " " .. tostring(block.description or "")) then table.insert(result, block) end
+			end
+			return result
+		end)
+		local artifacts_filtered = ui.computed(function()
+			local result = {}
+			for _, item in (artifacts:get() or {}) do
+				if matches_query(tostring(item.id or "") .. " " .. tostring(item.kind or "")) then table.insert(result, item) end
+			end
+			return result
+		end)
+		local runs_filtered = ui.computed(function()
+			local result = {}
+			for _, item in (runs:get() or {}) do
+				if matches_query(tostring(item.run_id or item.id or "") .. " " .. tostring(item.status or "")) then table.insert(result, item) end
+			end
+			return result
+		end)
+
+		local function category_tabs()
+			return ui.row { w_full = true, gap = "$space.1",
+				ui.each(Theme.categories, function(category)
+					return Button {
+						function() return category.label end,
+						tone = function() return if library_category:get() == category.id then "primary" else "quiet" end,
+						size = "sm",
+						on_click = function()
+							library_category:set(category.id)
+							if category.id == "artifacts" then refresh_artifacts() end
+						end,
+					}
+				end),
+			}
+		end
+
+		local function nodes_section()
+			return ui.column { w_full = true, gap = "$space.1",
 				ui.show(function() return #component_groups:get() == 0 end, EmptyState {
 					icon = "file-code", size = "sm",
 					title = function() return if #components:get() == 0 then "No components yet" else "No matches" end,
@@ -2942,416 +3230,385 @@ local Page = ui.component(function()
 						end),
 					}
 				end),
-			}),
-			ui.show(function() return active_metablock:get() ~= "" end, ui.column { w_full = true, gap = "$space.2",
-				Button { "← Project canvas", tone = "secondary", size = "sm", w_full = true, on_click = leave_metablock },
-				Text { function()
-					local view = metablock_projection:get()
-					return if view then tostring(view.name or "MetaBlock") .. " · " .. active_metablock_scope:get() else "MetaBlock"
-				end, style = "heading", wrap = true },
-				Text { function()
-					local view = metablock_projection:get()
-					local selector = view and view.runtime_selector
-					local items = selector and selector.items or {}
-					if #items > 0 then
-						return "Runtime visibility: " .. tostring(#items) .. " active runtime(s) in the Graphimo service process"
-					end
-					return "Runtime visibility: none in the Graphimo service. A model running in the separate marimo kernel is not visible here yet."
-				end, style = "caption", tone = "secondary", wrap = true },
-				Button {
-					"Insert generated definition",
-					tone = "primary", size = "sm", w_full = true,
-					disabled = function() return session_id:get() == "" or (not is_local_url(url:get())) end,
-					on_click = materialize_metablock,
-				},
-				ui.show(function()
-					local view = metablock_projection:get()
-					return view ~= nil and type(view.ui) == "table"
-				end, render_addon_ui_panels()),
-				ui.row { w_full = true, items = "center", gap = "$space.1",
-					Button {
-						function() return if generated_source_open:get() then "Hide generated Python" else "Inspect generated Python" end,
-						tone = "secondary", size = "sm", grow = 1,
-						disabled = function() return metablock_projection:get() == nil end,
-						on_click = function() generated_source_open:set(not generated_source_open:peek()) end,
-					},
-					Button { "Copy", tone = "secondary", size = "sm", disabled = function()
-						local view = metablock_projection:get()
-						return not view or type(view.generated_source) ~= "string" or view.generated_source == ""
-					end, on_click = copy_generated_source },
-				},
-				ui.show(generated_source_open, ui.column { w_full = true, max_h = 360, min_h = 0, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.primary.bg",
-					Text { function()
-						local view = metablock_projection:get()
-						return "Generated Python · revision " .. string.sub(tostring(view and view.graph_revision or "unknown"), 1, 12)
-					end, style = "caption", tone = "secondary" },
-					ui.show(function()
-						local view = metablock_projection:get()
-						return not view or type(view.generated_source) ~= "string" or view.generated_source == ""
-					end, Text { "Source is unavailable until the MetaBlock graph validates.", style = "caption", tone = "secondary", wrap = true }),
-					ui.show(function()
-						local view = metablock_projection:get()
-						return view ~= nil and type(view.generated_source) == "string" and view.generated_source ~= ""
-					end, Markdown { text = function()
-						local view = metablock_projection:get()
-						local source = view and view.generated_source
-						if type(source) ~= "string" or source == "" then return "" end
-						return "```python\n" .. source .. (string.sub(source, -1) == "\n" and "" or "\n") .. "```"
-					end }),
+			}
+		end
+
+		local function controls_section()
+			return ui.column { w_full = true, gap = "$space.1",
+				ui.show(function() return #controls_filtered:get() == 0 end, Text {
+					function() return if #controls:get() == 0 then "Controls appear here once a notebook is open" else "No matches" end,
+					style = "caption", tone = "secondary", wrap = true,
 				}),
-				ui.show(function()
-					local view = metablock_projection:get()
-					return view ~= nil and active_metablock_scope:get() == "root" and selected:get() == ""
-				end, ui.column { w_full = true, gap = "$space.1",
-					Text { "Model parameters", style = "heading" },
-					Button {
-						function() local view = metablock_projection:get(); return "Rename · " .. tostring(view and view.name or "MetaBlock") end,
+				ui.each(controls_filtered, function(control)
+					local labels = {
+						slider = "Slider", range_slider = "Range Slider", number = "Number Input",
+						dropdown = "Select", checkbox = "Checkbox", text = "Text Input", run_button = "Run Trigger",
+					}
+					return Button {
+						labels[control.kind] or control.kind,
 						tone = "secondary", size = "sm", w_full = true,
-						on_click = function()
-							local view = metablock_projection:peek()
-						open_metablock_parameter_editor({ external = true, id = "name", name = "Name", type = "str", value = view and view.name or "MetaBlock" })
-						end,
-					},
-					ui.each(model_parameters, function(parameter)
-						return Button {
-							"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.default),
-							tone = "secondary", size = "sm", w_full = true,
-							on_click = function()
-								open_metablock_parameter_editor({
-									external = true, id = parameter.id, name = parameter.name,
-									type = parameter.type, value = parameter.default,
-								})
-							end,
-						}
-					end),
-				}),
-				ui.show(function() return selected_metablock_element() ~= nil end, ui.column { w_full = true, gap = "$space.1",
-					Text { function()
-						local element = selected_metablock_element()
-						return element and (element.name or element.id) or "Selection"
-					end, style = "heading", wrap = true },
-					Text { function()
-						local element = selected_metablock_element()
-						return element and tostring(element.kind or "component") or ""
-					end, style = "caption", tone = "secondary" },
-					Button {
-						function() local element = selected_metablock_element(); return "Rename · " .. tostring(element and (element.name or element.id) or "element") end,
-						tone = "secondary", size = "sm", w_full = true,
-						on_click = function()
-							local element = selected_metablock_element()
-						open_metablock_parameter_editor({ rename_element = true, element_id = element.id, name = "Element name", type = "str", value = element.name })
-						end,
-					},
-					Text { function()
-						local element = selected_metablock_element()
-						local shape = element and element.output_shape
-						if type(shape) ~= "table" then return "Output shape unresolved" end
-						local dimensions = {}
-						for _, size in shape.shape or {} do table.insert(dimensions, tostring(size)) end
-						return (shape.dtype or "?") .. " [" .. table.concat(dimensions, " × ") .. "]"
-					end, style = "caption", tone = "secondary", wrap = true },
-					ui.each(selected_element_parameters, function(parameter)
-						return Button {
-							"Edit " .. tostring(parameter.name) .. " · " .. display_parameter_value(parameter.value),
-							tone = "secondary", size = "sm", w_full = true,
-							on_click = function()
-								open_metablock_parameter_editor({
-									element_id = selected:peek(), name = parameter.name,
-									type = parameter.type, value = parameter.value,
-									choices = parameter.choices, minimum = parameter.minimum,
-									maximum = parameter.maximum,
-								})
-							end,
-						}
-					end),
-					ui.show(function()
-						local element = selected_metablock_element()
-						return element ~= nil and element.kind == "group_instance"
-					end, Button {
-						function()
-							local element = selected_metablock_element()
-							return "Edit repetitions · " .. tostring(element and element["repeat"] or 1)
-					end,
-						tone = "secondary", size = "sm", w_full = true,
-						on_click = function()
-							local element = selected_metablock_element()
-						open_metablock_parameter_editor({
-								group_repeat = true, element_id = element.id, name = "repetitions",
-								type = "int", value = element["repeat"],
-							})
-						end,
+						disabled = function() return session_id:get() == "" end,
+						on_click = function() add_control(control.kind) end,
+					}
+				end),
+			}
+		end
+
+		local function metablocks_section()
+			return ui.column { w_full = true, gap = "$space.1",
+				ui.show(function() return #addon_dialects:get() == 0 end, ui.column { w_full = true, gap = "$space.1",
+						Text { "No addon installed yet", style = "caption", tone = "secondary" },
+						Text { "Graphimo addons (PyTorch, SSH, …) register their building blocks here. Technical detail: Logs tab.", style = "caption", tone = "tertiary", wrap = true },
 					}),
-				}),
-				ui.each(model_methods, function(method)
+				ui.each(dialects_filtered, function(dialect)
 					return Button {
-						method.name, tone = if active_metablock_scope:get() == method.name then "primary" else "secondary",
-						size = "sm", w_full = true,
-						on_click = function() active_metablock_scope:set(method.name); selected:set(""); refresh_metablock() end,
-					}
-				end),
-				ui.each(model_groups, function(group)
-					return Button {
-						"Group · " .. group.name,
-						tone = if active_metablock_scope:get() == "group:" .. group.id then "primary" else "secondary",
-						size = "sm", w_full = true,
-						on_click = function() active_metablock_scope:set("group:" .. group.id); selected:set(""); refresh_metablock() end,
-					}
-				end),
-				Text { "Components", style = "heading" },
-				ui.each(model_palette, function(item)
-					return Button {
-						item.kind, tone = "secondary", size = "sm", w_full = true,
-						on_click = function()
-							output_counter:set(output_counter:peek() + 1)
-							apply_metablock_intent({
-								type = "add_element", kind = item.kind,
-								id = item.kind .. "_" .. tostring(os.time()) .. "_" .. tostring(output_counter:peek()),
-							})
-						end,
+						"Create " .. dialect.label,
+						tone = "secondary", size = "sm", w_full = true,
+						disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+						on_click = function() create_metablock(dialect.dialect_id, dialect.label) end,
 					}
 				end),
 				Button {
-					function() return if checkpoint_panel_open:get() then "Checkpoints −" else "Checkpoints +" end,
+					"Import MetaBlock state",
 					tone = "secondary", size = "sm", w_full = true,
-					on_click = function() checkpoint_panel_open:set(not checkpoint_panel_open:peek()) end,
+					disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+					on_click = import_metablock_state,
 				},
-				ui.show(checkpoint_panel_open, ui.column { w_full = true, gap = "$space.1",
-					Text { "Inspect checkpoint metadata or preview exact-shape migration. Nothing is loaded or changed.", style = "caption", tone = "secondary", wrap = true },
-					TextField { value = checkpoint_artifact_id, label = "Artifact ID", placeholder = "Graphimo Artifact ID", w_full = true },
-					Button { "Inspect checkpoint", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = inspect_checkpoint },
-					ui.show(function() return checkpoint_details:get() ~= nil end, ui.column { w_full = true, gap = "$space.1",
-						Text { function()
-							local details = checkpoint_details:get()
-							return "Artifact " .. tostring(details and details.artifact_id or "") .. " · " .. tostring(details and details.kind or "checkpoint")
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							return "Model: " .. tostring(details and details.model_name or "unknown") .. " · MetaBlock: " .. tostring(details and details.metablock_id or "unknown")
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							return "Graph revision: " .. tostring(details and details.graph_revision or "unknown")
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							return "Materialization: " .. tostring(details and details.materialization_key or "unknown")
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							return "checkpoint " .. tostring(details and details.pytorch_version or "unknown") .. " · addon " .. tostring(details and details.addon_version or "unknown")
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							local optimizer = details and details.optimizer_state_present and "present" or "absent"
-							local scheduler = details and details.scheduler_state_present and "present" or "absent"
-							return "Optimizer state: " .. optimizer .. " · scheduler state: " .. scheduler
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							return format_checkpoint_metadata(details and details.metadata)
-						end, style = "caption", tone = "secondary", wrap = true },
-						Text { function()
-							local details = checkpoint_details:get()
-							local current = metablock_projection:get()
-							return if details and current and details.graph_revision == current.graph_revision then "Compatibility: same graph revision" else "Compatibility: migration preview may be required"
-						end, style = "caption", tone = "secondary", wrap = true },
-						ui.show(function()
-							local details = checkpoint_details:get()
-							local current = metablock_projection:get()
-							return details ~= nil and current ~= nil and details.graph_revision ~= current.graph_revision
-						end, Button { "Preview exact-shape migration", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = preview_checkpoint_migration }),
-						ui.show(function()
-							local details = checkpoint_details:get()
-							local current = metablock_projection:get()
-							return details ~= nil and current ~= nil and type(details.migration_preview) == "table" and details.migration_preview_revision == current.graph_revision
-						end, ui.column { w_full = true, gap = "$space.1",
-							Text { function()
-								local details = checkpoint_details:get()
-								local report = details and details.migration_preview and details.migration_preview.report or nil
-								return format_checkpoint_migration_report(report)
-							end, style = "caption", tone = "secondary", wrap = true },
-							Button { "Apply migration (strict off)", tone = "secondary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = function() restore_checkpoint(true) end },
-						}),
-						ui.show(function() return checkpoint_details:get() ~= nil end, ui.column { w_full = true, gap = "$space.1",
-							Button { "Restore checkpoint into live runtime", tone = "primary", size = "sm", w_full = true, disabled = function() return checkpoint_busy:get() end, on_click = function() restore_checkpoint(false) end },
-							Text { function()
-								local details = checkpoint_details:get()
-								local restore = details and details.last_restore or nil
-								if type(restore) ~= "table" then return "Not restored yet" end
-								return "Last restore: runtime " .. tostring(restore.runtime_instance_id or "?") .. " · migrated " .. tostring(restore.migrated or false) .. " · revision match " .. tostring(restore.revision_match or false)
-							end, style = "caption", tone = "secondary", wrap = true },
-						}),
-						ui.show(function()
-							local details = checkpoint_details:get()
-							local current = metablock_projection:get()
-							return details ~= nil and current ~= nil and type(details.migration_preview) == "table" and details.migration_preview_revision ~= current.graph_revision
-						end, Text { "The model graph changed after this preview. Run the migration preview again before relying on it.", style = "caption", tone = "secondary", wrap = true }),
-					}),
-				}),
-				ui.row { w_full = true, items = "center", gap = "$space.1",
-					Button {
-						function() return if metablock_events_open:get() then "Runtime events −" else "Runtime events +" end,
-						tone = "secondary", size = "sm", grow = 1,
-						on_click = function() metablock_events_open:set(not metablock_events_open:peek()) end,
-					},
-					Button { "Read", tone = "secondary", size = "sm", on_click = read_metablock_events },
-				},
-				ui.show(metablock_events_open, ui.column { w_full = true, gap = "$space.1",
-					Text { "Events delivered to the Graphimo service. Events in another marimo process are not bridged yet.", style = "caption", tone = "secondary", wrap = true },
-					ui.show(function() return #metablock_event_entries:get() == 0 end, Text { "No events loaded", style = "caption", tone = "secondary" }),
-					ui.each(metablock_event_entries, function(event)
-						return Text { display_meta_event(event), style = "caption", tone = "secondary", wrap = true }
+				ui.show(function() return #metablocks:get() == 0 end, Text { "No saved MetaBlocks yet", style = "caption", tone = "secondary" }),
+				ui.each(saved_filtered, function(item)
+					return Button {
+						(item.dialect_id or "MetaBlock") .. " · " .. item.metablock_id,
+						tone = "secondary", size = "sm", w_full = true,
+						on_click = function() open_metablock(item.metablock_id, "root") end,
+					}
+				end),
+			}
+		end
+
+		local function presets_section()
+			return ui.column { w_full = true, gap = "$space.2",
+				ui.each(pipelines_filtered, function(pipeline)
+					return ui.column { w_full = true, gap = "$space.1",
+						Button {
+							icon = true,
+							"Insert · " .. pipeline.name,
+							tone = "secondary", size = "sm", w_full = true,
+							Icon { name = "bot", size = 13 },
+							disabled = function() return session_id:get() == "" or active_metablock:get() ~= "" end,
+							on_click = function() insert_pipeline(pipeline) end,
+						},
+						Text { pipeline.description, style = "caption", tone = "secondary", wrap = true },
+					}
+				end),
+				ui.each(blocks_filtered, function(block)
+					return Button {
+						icon = true,
+						"Add block · " .. block.name,
+						tone = "secondary", size = "sm", w_full = true,
+						Icon { name = "file-code", size = 13 },
+						disabled = function() return (snapshot:get().notebook.path or "") == "" end,
+						on_click = function() insert_block_file(block) end,
+					}
+				end),
+				ui.show(function() return #groups:get() > 0 end, ui.column { w_full = true, gap = "$space.1",
+					Text { "Reusable Groups", style = "heading" },
+					ui.each(groups, function(group)
+						return Button {
+							"Open · " .. tostring(group.name or group.group_id),
+							tone = "secondary", size = "sm", w_full = true,
+							disabled = function() return session_id:get() == "" end,
+							on_click = function() open_group(group) end,
+						}
 					end),
 				}),
-			}),
+			}
+		end
+
+		local function artifacts_section()
+			return ui.column { w_full = true, gap = "$space.2",
+				ui.row { w_full = true, items = "center", gap = "$space.1",
+					Text { "Artifacts & runs", style = "label", grow = 1 },
+					IconButton { icon = "refresh", label = "Refresh artifacts", tone = "quiet", size = "sm", disabled = function() return (snapshot:get().notebook.path or "") == "" end, on_click = refresh_artifacts },
+				},
+				ui.show(function() return #artifacts_filtered:get() == 0 and #runs_filtered:get() == 0 end, EmptyState {
+					icon = "file-code", size = "sm",
+					title = "No artifacts yet",
+					body = "Checkpoints, captured outputs and run manifests appear here.",
+				}),
+				ui.show(function() return #artifacts_filtered:get() > 0 end, ui.column { w_full = true, gap = "$space.1",
+					SectionTitle { "Artifacts" },
+					ui.each(artifacts_filtered, function(item)
+						return Text { function()
+							return truncate(tostring(item.id or "?"), 30) .. " · " .. tostring(item.kind or "artifact") .. (item.pinned and " · pinned" or "")
+						end, style = "caption", tone = "secondary", wrap = true, selectable = true }
+					end),
+				}),
+				ui.show(function() return #runs_filtered:get() > 0 end, ui.column { w_full = true, gap = "$space.1",
+					SectionTitle { "Runs" },
+					ui.each(runs_filtered, function(item)
+						return Text { function()
+							return truncate(tostring(item.run_id or item.id or "?"), 30) .. (item.status and (" · " .. tostring(item.status)) or "")
+						end, style = "caption", tone = "secondary", wrap = true, selectable = true }
+					end),
+				}),
+			}
+		end
+
+		return ui.column { w_full = true, h_full = true, min_h = 0, gap = "$space.2",
+			ui.row { w_full = true, items = "center", gap = "$space.2",
+				SectionTitle { "Library" },
+				ui.div { grow = 1 },
+				IconButton { icon = "refresh", label = "Refresh library", tone = "quiet", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
+			},
+			SearchField { value = library_query, placeholder = "Search the library", name = "Search the library", size = "sm", quiet = true, w_full = true },
+			category_tabs(),
+			ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.2",
+				ui.show(function() return library_category:get() == "nodes" end, nodes_section()),
+				ui.show(function() return library_category:get() == "controls" end, controls_section()),
+				ui.show(function() return library_category:get() == "metablocks" end, metablocks_section()),
+				ui.show(function() return library_category:get() == "presets" end, presets_section()),
+				ui.show(function() return library_category:get() == "artifacts" end, artifacts_section()),
+			},
 		}
 	end
 
-	return ui.column { w_full = true, h_full = true, min_h = 0, gap = "$space.3", p = "$space.4",
-		ui.row { w_full = true, items = "center", gap = "$space.2",
-			ui.div { w = 30, h = 30, shrink = 0, rounded = "$radius.md", bg = "$zeron.secondary.bg", items = "center", justify = "center",
-				ui.svg { code = Logo.svg, w = 20, h = 20, tint = "currentColor", color = "$accent" }
+	local function pill(children)
+		local style = Glass.style({ p = "$space.1", rounded = "$radius.lg", bg = "$zeron.secondary.bg", pointer_events = "auto" }, "island")
+		for _, child in children do table.insert(style, child) end
+		return ui.div(style)
+	end
+
+	local function logs_panel()
+		return ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.2",
+			ui.row { w_full = true, items = "center", gap = "$space.1",
+				Text { function() return tostring(#problem_entries:get()) .. " problems · " .. tostring(#log_entries:get()) .. " events" end, style = "caption", tone = "secondary", grow = 1 },
+				Button { "Read marimo log", tone = "quiet", size = "sm", on_click = refresh_marimo_log },
+				Button { "Read events", tone = "quiet", size = "sm", on_click = read_service_events },
+				Button { "Export", tone = "quiet", size = "sm", on_click = export_logs },
 			},
-			ui.column { gap = 2, shrink = 1, min_w = 0,
-				Text { "Graphimo", style = "heading" },
-				Text { function() return snapshot:get().notebook.path or "Visual view of your marimo notebook" end, style = "caption", tone = "secondary", truncate = true },
-			},
-			ui.div { grow = 1 },
-			Button { icon = true, size = "sm", on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
-			Button { icon = true, tone = "secondary", size = "sm", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
-			IconButton { icon = "refresh", label = "Refresh", tone = "quiet", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
-			IconButton { icon = "expand-arrows", label = "Fit to view", tone = "quiet", size = "sm", on_click = fit },
-			IconButton { icon = "minus", label = "Zoom out", tone = "quiet", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			IconButton { icon = "plus", label = "Zoom in", tone = "quiet", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
-			IconButton { icon = if grid:get() then "grip-horizontal" else "close-thin", label = if grid:get() then "Hide grid" else "Show grid", tone = "quiet", size = "sm", on_click = function() grid:set(not grid:peek()) end },
-			ui.div { w = 1, h = 18, bg = "$border", shrink = 0 },
-			Button { function() return if components_open:get() then "Components −" else "Components +" end, tone = "secondary", size = "sm", on_click = function() components_open:set(not components_open:peek()) end },
-			Button { function() return if inspector_open:get() then "Inspector −" else "Inspector +" end, tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = function() inspector_open:set(not inspector_open:peek()) end },
 			Button {
-				icon = true, tone = "secondary", size = "sm",
-				function() return if show_technical:get() then "Technical −" else "Technical +" end,
-				Icon { name = "eye-closed", size = 13 },
+				function() return if show_technical:get() then "Hide technical cells" else "Show technical cells" end,
+				tone = "secondary", size = "sm", w_full = true,
 				on_click = function()
 					show_technical:set(not show_technical:peek())
-					local count = 0
-					for _, cell in snapshot:peek().cells or {} do if cell_role(cell) == "library" then count += 1 end end
-					notice:set(if show_technical:peek() then "Showing " .. tostring(count) .. " technical library cell(s)" else "Hiding technical library cells")
 					if session_id:peek() ~= "" then refresh_graph() end
 				end,
 			},
-			Button { function() return if logs_open:get() then "Logs −" else "Logs +" end, tone = "secondary", size = "sm", on_click = toggle_logs },
-		},
-		ui.show(function() return #group_scope_stack:get() > 0 and active_metablock:get() == "" end, ui.row {
-			w_full = true, items = "center", gap = "$space.1",
-			Button { "Project", tone = "secondary", size = "sm", on_click = function() leave_to_group_depth(0) end },
-			ui.each(group_scope_stack, function(item, index)
-				return Button {
-					item.name or item.container_id or "Group",
-					tone = if index == #group_scope_stack:get() then "primary" else "secondary",
-					size = "sm",
-					on_click = function() leave_to_group_depth(index) end,
+			ui.div { w_full = true, p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
+				Text { function()
+					local recent = log_entries:get()
+					local problems = problem_entries:get()
+					local first = math.max(1, #recent - 30)
+					local view = {}
+					for index = first, #recent do table.insert(view, recent[index]) end
+					if #problems > 0 then table.insert(view, "--- Saved problems ---") end
+					for index = math.max(1, #problems - 20), #problems do table.insert(view, problems[index]) end
+					if problem_log_text:get() ~= "" then table.insert(view, "--- Persistent problem log file ---"); table.insert(view, problem_log_text:get()) end
+					if server_log_text:get() ~= "" then table.insert(view, "--- Marimo process log ---"); table.insert(view, server_log_text:get()) end
+					return if #view == 0 then "No log events yet" else table.concat(view, "\n")
+				end, style = "caption", tone = "secondary", wrap = true, selectable = true },
+			},
+		}
+	end
+
+
+
+	return ui.column { w_full = true, h_full = true, min_h = 0, gap = 0,
+		-- Top bar: identity left, notebook state + two actions right.
+		ui.row { w_full = true, h = Theme.topbar_h, shrink = 0, px = "$space.4", items = "center", gap = "$space.3",
+			ui.div { w = 28, h = 28, shrink = 0, rounded = "$radius.md", bg = "$zeron.secondary.bg", items = "center", justify = "center",
+				ui.svg { code = Logo.svg, w = 18, h = 18, tint = "currentColor", color = "$accent" }
+			},
+			ui.column { gap = 0, shrink = 1, min_w = 0,
+				Text { "Graphimo", style = "heading", weight = 700, selectable = true },
+				Text { function()
+					local notebook_path = snapshot:get().notebook.path or ""
+					return if notebook_path ~= "" then Theme.basename(notebook_path) else "No notebook open"
+				end, style = "caption", tone = "secondary", truncate = true, selectable = true },
+			},
+			ui.div { grow = 1 },
+			ui.presence(function() return session_id:get() ~= "" end, function(connected)
+				return ui.row { items = "center", gap = "$space.1", shrink = 0,
+					ui.div { w = 8, h = 8, rounded = "$radius.md", bg = if connected then "$success" else "$text.tertiary" },
+					Text { if connected then "Kernel connected" else "No notebook", style = "caption", tone = "secondary", selectable = true },
 				}
 			end),
-		}),
-		ui.row { w_full = true, gap = "$space.2", items = "center",
-			Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
-			Button { "Open code", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
-			Button { "Delete", tone = "secondary", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
-			Button { "Undo", tone = "secondary", size = "sm", disabled = function()
-				if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.undo_depth == 0 end
-				return #undo_stack == 0 or history_busy
-			end, on_click = undo_canvas },
-			Button { "Redo", tone = "secondary", size = "sm", disabled = function()
-				if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.redo_depth == 0 end
-				return #redo_stack == 0 or history_busy
-			end, on_click = redo_canvas },
-			Button { function() return if grid:get() then "Hide grid" else "Show grid" end, tone = "secondary", size = "sm", on_click = function() grid:set(not grid:peek()) end },
+			ui.div { w = 1, h = 18, bg = "$border", shrink = 0 },
+			IconButton { icon = "refresh", label = "Refresh", tone = "quiet", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
+			Button { icon = true, tone = "secondary", size = "sm", on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
+			Button { icon = true, size = "sm", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
 		},
-		ui.row { grow = 1, min_h = 0, w_full = true, gap = "$space.3",
-			ui.show(function() return components_open:get() end, component_library_panel()),
-			ui.column { grow = 1, min_w = 0, min_h = 0, gap = "$space.3",
-			ui.div { ref = canvas, grow = 1, min_h = 0, w_full = true, relative = true, rounded = "$radius.lg", overflow = "hidden",
-			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c, w, h)
-				Canvas.draw_grid(c, w, h, zoom:get(), pan_x:get(), pan_y:get(), grid:get())
-			end, pointer_events = "none" },
-			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c)
-				Canvas.draw_edges(c, visible_positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
-				Canvas.draw_ports(c, visible_positioned_cells(), zoom:get(), pan_x:get(), pan_y:get())
-			end, pointer_events = "none" },
-			ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
-				ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
-			},
-			ui.show(function() return (snapshot:get().notebook.path or "") == "" and active_metablock:get() == "" end,
-				ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, items = "center", justify = "center", pointer_events = "none",
-					ui.div { pointer_events = "auto", rounded = "$radius.lg", p = "$space.3",
-						EmptyState {
-							icon = "bot", fill = false,
-							title = "Open a notebook to see its graph",
-							body = "Graphimo draws your live marimo notebook as a node canvas. @node functions in components/ become draggable blocks.",
-							action = { label = "Open notebook", icon = "folder", on_click = choose_notebook },
-							secondary = { label = "New notebook", icon = "document-add", on_click = create_notebook },
+		ui.div { w_full = true, h = 1, shrink = 0, bg = "$border" },
+		ui.row { grow = 1, min_h = 0, w_full = true, gap = 0,
+			-- Left rail: the library, one category at a time.
+			ui.column { w = Theme.library_w, h_full = true, shrink = 0, p = "$space.3", component_library_panel() },
+			ui.div { w = 1, h_full = true, bg = "$border", shrink = 0 },
+			-- Center: the canvas is the product surface.
+			ui.column { grow = 1, min_w = 0, min_h = 0, p = "$space.3", gap = "$space.2",
+				ui.div { ref = canvas, grow = 1, min_h = 0, w_full = true, relative = true, rounded = "$radius.lg", overflow = "hidden", bg = "$zeron.primary.bg",
+					ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c, w, h)
+						Canvas.draw_grid(c, w, h, zoom:get(), pan_x:get(), pan_y:get(), grid:get())
+					end, pointer_events = "none" },
+					ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c)
+						Canvas.draw_edges(c, visible_positioned_cells(), snapshot:get().edges or {}, zoom:get(), pan_x:get(), pan_y:get(), selected:get())
+						Canvas.draw_ports(c, visible_positioned_cells(), zoom:get(), pan_x:get(), pan_y:get())
+					end, pointer_events = "none" },
+					ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, pointer_events = "none",
+						ui.each(visible_cell_ids, card, { key = function(id) return id end, w_full = true, h_full = true, relative = true }),
+					},
+					-- Floating selection toolbar (top-left).
+					ui.div { absolute = true, left = Theme.canvas_inset, top = Theme.canvas_inset, pointer_events = "none",
+						pill({
+							ui.row { items = "center", gap = "$space.1",
+								Button { "Run", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = run_selected },
+								Button { "Open code", tone = "quiet", size = "sm", disabled = function() return selected:get() == "" or active_metablock:get() ~= "" end, on_click = open_selected },
+								Button { "Delete", tone = "quiet", size = "sm", disabled = function() return selected:get() == "" end, on_click = delete_selected },
+								ui.div { w = 1, h = 16, bg = "$border", shrink = 0 },
+								Button { "Undo", tone = "quiet", size = "sm", disabled = function()
+									if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.undo_depth == 0 end
+									return #undo_stack == 0 or history_busy
+								end, on_click = undo_canvas },
+								Button { "Redo", tone = "quiet", size = "sm", disabled = function()
+									if active_metablock:get() ~= "" then local history = metablock_history:get(); return history_busy or history.stale or history.redo_depth == 0 end
+									return #redo_stack == 0 or history_busy
+								end, on_click = redo_canvas },
+							},
+						}),
+					},
+					-- Breadcrumbs when inside a Group Block or MetaBlock.
+					ui.show(function() return #group_scope_stack:get() > 0 or active_metablock:get() ~= "" end,
+						ui.div { absolute = true, left = 0, right = 0, top = Theme.canvas_inset, items = "center", pointer_events = "none",
+							pill({
+								ui.row { items = "center", gap = "$space.1",
+									Button { "Project", tone = "quiet", size = "sm", on_click = function()
+										if active_metablock:peek() ~= "" then leave_metablock() end
+										leave_to_group_depth(0)
+									end },
+									ui.each(group_scope_stack, function(item, index)
+										return Button {
+											function() return tostring(item.name or item.container_id or "Group") end,
+											tone = if index == #group_scope_stack:get() then "secondary" else "quiet",
+											size = "sm",
+											on_click = function() leave_to_group_depth(index) end,
+										}
+									end),
+									ui.show(function() return active_metablock:get() ~= "" end, Text { function()
+										local view = metablock_projection:get()
+										return "› " .. tostring(view and view.name or "MetaBlock")
+									end, style = "caption", tone = "secondary" }),
+								},
+							}),
+						}
+					),
+					-- Zoom / fit / grid controls (bottom-left).
+					ui.div { absolute = true, left = Theme.canvas_inset, bottom = Theme.canvas_inset, pointer_events = "none",
+						pill({
+							ui.row { items = "center", gap = "$space.1",
+								IconButton { icon = "minus", label = "Zoom out", tone = "quiet", size = "sm", on_click = function() zoom_at(zoom:peek() / 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+								Text { function() return tostring(math.floor(zoom:get() * 100 + 0.5)) .. "%" end, style = "caption", tone = "secondary", shrink = 0 },
+								IconButton { icon = "plus", label = "Zoom in", tone = "quiet", size = "sm", on_click = function() zoom_at(zoom:peek() * 1.15, (canvas.width or 0) / 2, (canvas.height or 0) / 2) end },
+								ui.div { w = 1, h = 16, bg = "$border", shrink = 0 },
+								IconButton { icon = "expand-arrows", label = "Fit to view", tone = "quiet", size = "sm", on_click = fit },
+								IconButton { icon = if grid:get() then "grip-horizontal" else "close-thin", label = if grid:get() then "Hide grid" else "Show grid", tone = "quiet", size = "sm", on_click = function() grid:set(not grid:peek()) end },
+							},
+						}),
+					},
+					-- Empty state: a workspace starter, not a debug hint.
+					ui.show(function() return (snapshot:get().notebook.path or "") == "" and active_metablock:get() == "" end,
+						ui.div { absolute = true, left = 0, right = 0, top = 0, bottom = 0, items = "center", justify = "center", pointer_events = "none",
+							ui.div { pointer_events = "auto", max_w = 560, p = "$space.4", rounded = "$radius.lg", bg = "$zeron.secondary.bg",
+								ui.column { w_full = true, items = "center", gap = "$space.3",
+									ui.div { w = 52, h = 52, rounded = "$radius.lg", bg = "$background", items = "center", justify = "center",
+										ui.svg { code = Logo.svg, w = 30, h = 30, tint = "currentColor", color = "$accent" }
+									},
+									Text { "Start a Graphimo workspace", style = "heading", selectable = true },
+									Text { "Open a marimo notebook or create a new one — Graphimo draws it live as a canvas of blocks you can wire and run.", style = "body", tone = "secondary", wrap = true, selectable = true },
+									ui.row { items = "center", gap = "$space.2",
+										Button { icon = true, on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
+										Button { icon = true, tone = "secondary", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
+									},
+									Text { "or start from a template", style = "caption", tone = "tertiary" },
+									ui.column { w_full = true, gap = "$space.1",
+										ui.each(Presets.blocks, function(block)
+											return Button {
+												function() return tostring(block.name or "Template") end,
+												icon = true, tone = "secondary", size = "sm", w_full = true,
+												Icon { name = "file-code", size = 13 },
+												on_click = function()
+													if (snapshot:peek().notebook.path or "") == "" then
+														notice:set("Create or open a notebook first")
+														return
+													end
+													insert_block_file(block)
+												end,
+											}
+										end),
+									},
+								},
+							},
+						}
+					),
+					ContextMenu {
+						items = canvas_menu,
+						label = "Graphimo canvas actions",
+						absolute = true, left = 0, top = 0, right = 0, bottom = 0,
+						ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
+							ref = canvas_keyboard,
+							focusable = true,
+							on_key = on_canvas_key,
+							on_mount = function(el)
+								el:focus()
+								ui.after(150, function()
+									if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
+									else notice:set("Open or create a notebook to begin") end
+								end)
+							end,
+							on_press = on_press, on_pointer_move = on_move, on_release = on_release,
+							on_wheel = function(e)
+								local cx = e.local_x or (canvas.width or 0) / 2
+								local cy = e.local_y or (canvas.height or 0) / 2
+								if e.dx and e.dx ~= 0 then pan_x:set(pan_x:peek() + e.dx) end
+								if e.shift and e.dy and e.dy ~= 0 then pan_x:set(pan_x:peek() - e.dy) end
+								if e.dy ~= 0 and not (e.shift and e.dy ~= 0) then
+									zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), cx, cy)
+								end
+								return true
+							end,
 						},
 					},
+				},
+				ui.row { w_full = true, shrink = 0, items = "center", gap = "$space.2",
+					Text { function() return notice:get() end, style = "caption", tone = "secondary", grow = 1, wrap = true, selectable = true },
+					ui.show(function() return armed_place:peek() ~= nil end, Text { "Click the canvas to place the block · Esc cancels", style = "caption", tone = "secondary" }),
+				},
+			},
+			ui.div { w = 1, h_full = true, bg = "$border", shrink = 0 },
+			-- Right rail: contextual inspector (selection / MetaBlock) or logs.
+			ui.show(function() return selected:get() ~= "" or active_metablock:get() ~= "" or rail_tab:get() == "logs" end,
+				ui.column { w = Theme.inspector_w, h_full = true, shrink = 0, p = "$space.3", gap = "$space.2",
+					ui.row { w_full = true, items = "center", gap = "$space.1",
+						ui.each(Theme.rail_tabs, function(tab)
+							return Button {
+								function() return tab.label end,
+								tone = function() return if rail_tab:get() == tab.id then "primary" else "quiet" end,
+								size = "sm",
+								on_click = function() rail_tab:set(tab.id) end,
+							}
+						end),
+					},
+					ui.show(function() return rail_tab:get() == "inspect" end, ui.column { w_full = true, grow = 1, min_h = 0, overflow = "auto", gap = "$space.3",
+						ui.show(function() return active_metablock:get() ~= "" end, metablock_editor()),
+						ui.show(function() return active_metablock:get() == "" and selected:get() ~= "" end, inspector_panel()),
+						ui.show(function() return active_metablock:get() == "" and selected:get() == "" end, EmptyState {
+							icon = "bot", size = "sm",
+							title = "Nothing selected",
+							body = "Click a block on the canvas to inspect, wire and run it.",
+						}),
+					}),
+					ui.show(function() return rail_tab:get() == "logs" end, logs_panel()),
 				}),
-			ContextMenu {
-				items = canvas_menu,
-				label = "Graphimo canvas actions",
-				absolute = true, left = 0, top = 0, right = 0, bottom = 0,
-			ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function() end,
-				ref = canvas_keyboard,
-				focusable = true,
-				on_key = on_canvas_key,
-				on_mount = function(el)
-					el:focus()
-					ui.after(150, function()
-						if url:peek() ~= "" and session_id:peek() ~= "" then refresh_sessions()
-						else notice:set("Open or create a notebook to begin") end
-					end)
-				end,
-				on_press = on_press, on_pointer_move = on_move, on_release = on_release,
-				on_wheel = function(e)
-					local cx = e.local_x or (canvas.width or 0) / 2
-					local cy = e.local_y or (canvas.height or 0) / 2
-					-- Trackpad horizontal scroll / mouse shift+wheel: pan sideways.
-					if e.dx and e.dx ~= 0 then pan_x:set(pan_x:peek() + e.dx) end
-					if e.shift and e.dy and e.dy ~= 0 then pan_x:set(pan_x:peek() - e.dy) end
-					-- Wheel / pinch (ctrl): zoom around the cursor.
-					if e.dy ~= 0 and not (e.shift and e.dy ~= 0) then
-						zoom_at(zoom:peek() * math.exp(-math.clamp(e.dy, -120, 120) * 0.002), cx, cy)
-					end
-					return true
-				end,
-			},
-			},
-			},
-			Text { function() return notice:get() end, style = "caption", tone = "secondary", wrap = true },
-			},
-			-- Right rail: contextual inspector and logs sit beside the canvas,
-			-- not under it.
-			ui.show(function() return inspector_open:get() or logs_open:get() end, ui.column { w = 300, h_full = true, shrink = 0, gap = "$space.3",
-			ui.show(function() return inspector_open:get() end, inspector_panel()),
-			ui.show(function() return logs_open:get() end, ui.column { w_full = true, max_h = 260, overflow = "auto", gap = "$space.1", p = "$space.2", rounded = "$radius.md", bg = "$zeron.secondary.bg",
-			ui.row { w_full = true, items = "center", gap = "$space.2",
-				Text { function() return tostring(#problem_entries:get()) .. " saved problems · " .. tostring(#log_entries:get()) .. " saved events" end, style = "caption", tone = "secondary", grow = 1 },
-				Button { "Read marimo log", tone = "secondary", size = "sm", on_click = refresh_marimo_log },
-				Button { "Read Graphimo events", tone = "secondary", size = "sm", on_click = read_service_events },
-				Button { "Export logs", tone = "secondary", size = "sm", on_click = export_logs },
-			},
-			Text { function()
-				local recent = log_entries:get()
-				local problems = problem_entries:get()
-				local first = math.max(1, #recent - 30)
-				local view = {}
-				for index = first, #recent do table.insert(view, recent[index]) end
-				if #problems > 0 then table.insert(view, "--- Saved problems ---") end
-				for index = math.max(1, #problems - 20), #problems do table.insert(view, problems[index]) end
-				if problem_log_text:get() ~= "" then table.insert(view, "--- Persistent problem log file ---"); table.insert(view, problem_log_text:get()) end
-				if server_log_text:get() ~= "" then table.insert(view, "--- Marimo process log ---"); table.insert(view, server_log_text:get()) end
-				return if #view == 0 then "No log events yet" else table.concat(view, "\n")
-			end, style = "caption", tone = "secondary", wrap = true },
-			}),
-			}),
 		},
+
 		Dialog {
 			open = group_dialog,
 			title = "Create Group Block",
