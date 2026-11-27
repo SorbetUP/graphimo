@@ -528,9 +528,13 @@ local Page = ui.component(function()
 			refresh_metablock()
 			return
 		end
+		local graph_path = project_root_path:peek() ~= "" and project_root_path:peek() or (active_notebook:peek().root_path or active_notebook:peek().path or "")
+		if graph_path == "" then
+			notice:set("Open or create a notebook to begin")
+			return
+		end
 		observe("Inspect marimo graph", function()
-			local project_path = project_root_path:peek() ~= "" and project_root_path:peek() or (active_notebook:peek().root_path or active_notebook:peek().path or "")
-			return Service.execute(zeron, project_path, "notebook.inspect", {})
+			return Service.execute(zeron, graph_path, "notebook.inspect", {})
 		end, function(value)
 			local metablock_labels = {}
 			for _, item in metablocks:get() or {} do
@@ -3172,7 +3176,7 @@ local Page = ui.component(function()
 		end)
 
 		local function category_tabs()
-			return ui.row { w_full = true, gap = "$space.1",
+			return ui.row { w_full = true, gap = "$space.1", wrap = true,
 				ui.each(Theme.categories, function(category)
 					return Button {
 						function() return category.label end,
@@ -3200,7 +3204,6 @@ local Page = ui.component(function()
 						ui.each(group.components, function(item)
 							return ui.column { w_full = true, gap = "$space.1",
 								Button {
-									icon = true,
 									function() return (if expanded_component:get() == item.id then "▾ " else "▸ ") .. string.gsub(item.id, "/", " · ") end,
 									tone = "secondary", size = "sm", w_full = true,
 									Icon { name = "file-code", size = 13 },
@@ -3290,7 +3293,6 @@ local Page = ui.component(function()
 				ui.each(pipelines_filtered, function(pipeline)
 					return ui.column { w_full = true, gap = "$space.1",
 						Button {
-							icon = true,
 							"Insert · " .. pipeline.name,
 							tone = "secondary", size = "sm", w_full = true,
 							Icon { name = "bot", size = 13 },
@@ -3302,7 +3304,6 @@ local Page = ui.component(function()
 				end),
 				ui.each(blocks_filtered, function(block)
 					return Button {
-						icon = true,
 						"Add block · " .. block.name,
 						tone = "secondary", size = "sm", w_full = true,
 						Icon { name = "file-code", size = 13 },
@@ -3427,7 +3428,7 @@ local Page = ui.component(function()
 				end, style = "caption", tone = "secondary", truncate = true, selectable = true },
 			},
 			ui.div { grow = 1 },
-			ui.presence(function() return session_id:get() ~= "" end, function(connected)
+			ui.presence(function() return (snapshot:get().notebook.path or "") ~= "" end, function(connected)
 				return ui.row { items = "center", gap = "$space.1", shrink = 0,
 					ui.div { w = 8, h = 8, rounded = "$radius.md", bg = if connected then "$success" else "$text.tertiary" },
 					Text { if connected then "Kernel connected" else "No notebook", style = "caption", tone = "secondary", selectable = true },
@@ -3435,17 +3436,17 @@ local Page = ui.component(function()
 			end),
 			ui.div { w = 1, h = 18, bg = "$border", shrink = 0 },
 			IconButton { icon = "refresh", label = "Refresh", tone = "quiet", size = "sm", disabled = function() return session_id:get() == "" end, on_click = refresh_graph },
-			Button { icon = true, tone = "secondary", size = "sm", on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
-			Button { icon = true, size = "sm", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
+			Button { tone = "secondary", size = "sm", on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
+			Button { size = "sm", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
 		},
 		ui.div { w_full = true, h = 1, shrink = 0, bg = "$border" },
 		ui.row { grow = 1, min_h = 0, w_full = true, gap = 0,
 			-- Left rail: the library, one category at a time.
-			ui.column { w = Theme.library_w, h_full = true, shrink = 0, p = "$space.3", component_library_panel() },
+			ui.column { w = Theme.library_w, h_full = true, shrink = 0, p = "$space.3", bg = "$zeron.secondary.bg", component_library_panel() },
 			ui.div { w = 1, h_full = true, bg = "$border", shrink = 0 },
 			-- Center: the canvas is the product surface.
 			ui.column { grow = 1, min_w = 0, min_h = 0, p = "$space.3", gap = "$space.2",
-				ui.div { ref = canvas, grow = 1, min_h = 0, w_full = true, relative = true, rounded = "$radius.lg", overflow = "hidden", bg = "$zeron.primary.bg",
+				ui.div { ref = canvas, grow = 1, min_h = 0, w_full = true, relative = true, rounded = "$radius.lg", overflow = "hidden",
 					ui.canvas { absolute = true, left = 0, top = 0, w_full = true, h_full = true, draw = function(c, w, h)
 						Canvas.draw_grid(c, w, h, zoom:get(), pan_x:get(), pan_y:get(), grid:get())
 					end, pointer_events = "none" },
@@ -3524,15 +3525,15 @@ local Page = ui.component(function()
 									Text { "Start a Graphimo workspace", style = "heading", selectable = true },
 									Text { "Open a marimo notebook or create a new one — Graphimo draws it live as a canvas of blocks you can wire and run.", style = "body", tone = "secondary", wrap = true, selectable = true },
 									ui.row { items = "center", gap = "$space.2",
-										Button { icon = true, on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
-										Button { icon = true, tone = "secondary", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
+										Button { on_click = choose_notebook, Icon { name = "folder", size = 14 }, "Open notebook" },
+										Button { tone = "secondary", on_click = create_notebook, Icon { name = "document-add", size = 14 }, "New notebook" },
 									},
 									Text { "or start from a template", style = "caption", tone = "tertiary" },
 									ui.column { w_full = true, gap = "$space.1",
 										ui.each(Presets.blocks, function(block)
 											return Button {
 												function() return tostring(block.name or "Template") end,
-												icon = true, tone = "secondary", size = "sm", w_full = true,
+												tone = "secondary", size = "sm", w_full = true,
 												Icon { name = "file-code", size = 13 },
 												on_click = function()
 													if (snapshot:peek().notebook.path or "") == "" then
@@ -3585,7 +3586,7 @@ local Page = ui.component(function()
 			ui.div { w = 1, h_full = true, bg = "$border", shrink = 0 },
 			-- Right rail: contextual inspector (selection / MetaBlock) or logs.
 			ui.show(function() return selected:get() ~= "" or active_metablock:get() ~= "" or rail_tab:get() == "logs" end,
-				ui.column { w = Theme.inspector_w, h_full = true, shrink = 0, p = "$space.3", gap = "$space.2",
+				ui.column { w = Theme.inspector_w, h_full = true, shrink = 0, p = "$space.3", gap = "$space.2", bg = "$zeron.secondary.bg",
 					ui.row { w_full = true, items = "center", gap = "$space.1",
 						ui.each(Theme.rail_tabs, function(tab)
 							return Button {
